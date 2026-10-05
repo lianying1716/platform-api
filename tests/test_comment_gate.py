@@ -181,3 +181,48 @@ def test_comment_settings_api(client):
     r2 = client.put("/api/system/comment-settings", json={"budget": 4, "top_pct": 0.3})
     assert r2.status_code == 200
     assert client.get("/api/system/comment-settings").json()["budget"] == 4
+
+
+def test_comment_settings_api_rejects_invalid_values(client):
+    """Task 8 carry-forward（C-Task 3/4 review MUST）：越界值必须 422，且不得落库。
+
+    budget=-1 会让门控 take=min(n-1, -1) 变成 n-1（off-by-one）；top_pct>1 / pages<1 等
+    同样会破坏门控或抓取逻辑，故写入端必须校验范围。
+    """
+    baseline = client.get("/api/system/comment-settings").json()
+    assert baseline["budget"] == 10  # 默认未被污染
+
+    invalid = [
+        {"budget": -1},
+        {"top_pct": 1.5},
+        {"top_pct": -0.1},
+        {"min_comments": -1},
+        {"min_likes": -1},
+        {"weight": -1},
+        {"pages": 0},
+        {"per_page": 0},
+        {"top_n": 0},
+        {"interval": -0.1},
+    ]
+    for body in invalid:
+        r = client.put("/api/system/comment-settings", json=body)
+        assert r.status_code == 422, (body, r.status_code, r.text)
+
+    # 越界写入被拒后，配置应保持原样（未被局部污染）。
+    assert client.get("/api/system/comment-settings").json() == baseline
+
+
+def test_comment_settings_api_rejects_non_numeric(client):
+    for body in ({"budget": "abc"}, {"top_pct": "NaN"}, {"weight": None}):
+        r = client.put("/api/system/comment-settings", json=body)
+        assert r.status_code == 422, (body, r.status_code, r.text)
+
+
+def test_comment_settings_api_valid_write_readback(client):
+    """合法值写入后读回，且类型归一（interval 整型 2 -> 2.0）。"""
+    r = client.put("/api/system/comment-settings", json={"budget": 4, "top_pct": 0.3, "interval": 2})
+    assert r.status_code == 200
+    got = client.get("/api/system/comment-settings").json()
+    assert got["budget"] == 4
+    assert got["top_pct"] == 0.3
+    assert got["interval"] == 2.0
