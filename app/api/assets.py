@@ -7,16 +7,17 @@
 """
 
 import json
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import security
 from app.core.queue import enqueue
-from app.core.storage import resolve_asset_dir
+from app.core.storage import join_root, resolve_asset_dir
 from app.db import get_db
 from app.models import (
     AnalysisResult,
@@ -135,6 +136,9 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
             "download": asset.download_status,
             "transcribe": asset.transcribe_status,
             "analyze": asset.analyze_status,
+            "tier": asset.process_tier,
+            "frames": asset.frames_status,
+            "understand": asset.understand_status,
             "error": asset.error,
         },
         "metrics": {
@@ -249,6 +253,35 @@ def list_frames(asset_id: int, db: Session = Depends(get_db)):
             for f in rows
         ],
     }
+
+
+def _asset_storage_root_path(db: Session, asset: MediaAsset) -> str:
+    """素材所属 storage_root 的物理根路径（未绑定则回退默认根）。"""
+    from app.core.storage import get_default_root
+    from app.models import StorageRoot
+
+    root = db.get(StorageRoot, asset.storage_root_id) if asset.storage_root_id is not None else None
+    if root is None:
+        root = get_default_root(db)
+    return root.path if root is not None else ""
+
+
+@router.get("/assets/{asset_id}/frames/{scene_index}/image")
+def get_frame_image(asset_id: int, scene_index: int, db: Session = Depends(get_db)):
+    """按 (asset_id, scene_index) 提供帧缩略图；路径由后端从库中解析，不接受外部路径。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    frame = db.scalar(
+        select(AssetFrame).where(AssetFrame.asset_id == asset_id, AssetFrame.scene_index == scene_index)
+    )
+    if frame is None or not frame.path:
+        raise HTTPException(status_code=404, detail="帧不存在")
+    root = _asset_storage_root_path(db, asset)
+    full = join_root(root, frame.path) if root else frame.path
+    if not os.path.isfile(full):
+        raise HTTPException(status_code=404, detail="帧文件缺失")
+    return FileResponse(full, media_type="image/jpeg")
 
 
 @router.get("/assets/{asset_id}/understanding")

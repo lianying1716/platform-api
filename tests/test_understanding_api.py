@@ -153,6 +153,62 @@ def test_get_frames_unknown_asset(client):
     assert client.get("/api/assets/999999/frames").status_code == 404
 
 
+def test_get_frame_image_serves_file(client, _engine, tmp_path):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import AssetFrame, MediaAsset, StorageRoot
+
+    Session = sessionmaker(bind=_engine)
+    db = Session()
+    _, asset_id = _seed_asset(db, relative_path="douyin/a/1")
+    root = StorageRoot(name="t", path=str(tmp_path), is_default=True)
+    db.add(root)
+    db.flush()
+    asset = db.get(MediaAsset, asset_id)
+    asset.storage_root_id = root.id
+    fdir = tmp_path / "douyin" / "a" / "1" / "frames"
+    fdir.mkdir(parents=True)
+    (fdir / "frame_001.jpg").write_bytes(b"\xff\xd8\xff-jpeg")
+    db.add(
+        AssetFrame(
+            asset_id=asset_id,
+            scene_index=0,
+            timestamp_sec=0.0,
+            path="douyin/a/1/frames/frame_001.jpg",
+        )
+    )
+    db.commit()
+    db.close()
+
+    r = client.get(f"/api/assets/{asset_id}/frames/0/image")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/")
+
+
+def test_get_frame_image_missing_file_404(client, _engine):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import AssetFrame
+
+    Session = sessionmaker(bind=_engine)
+    db = Session()
+    _, asset_id = _seed_asset(db)
+    db.add(AssetFrame(asset_id=asset_id, scene_index=0, path="douyin/a/1/frames/gone.jpg"))
+    db.commit()
+    db.close()
+    assert client.get(f"/api/assets/{asset_id}/frames/0/image").status_code == 404
+
+
+def test_get_frame_image_unknown_frame_404(client, _engine):
+    from sqlalchemy.orm import sessionmaker
+
+    Session = sessionmaker(bind=_engine)
+    db = Session()
+    _, asset_id = _seed_asset(db)
+    db.close()
+    assert client.get(f"/api/assets/{asset_id}/frames/0/image").status_code == 404
+
+
 def test_get_understanding_pending(client, _engine):
     from sqlalchemy.orm import sessionmaker
 
