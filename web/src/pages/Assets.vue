@@ -91,6 +91,54 @@
         <p v-else class="comment-hint">
           该作品评论数或点赞数未达抓取门槛，仅显示数量。
         </p>
+
+        <el-divider>分档加工</el-divider>
+        <div class="tier-row">
+          <el-tag size="small" type="info">当前档位：{{ detail.status?.tier || '未加工' }}</el-tag>
+          <el-tag size="small" :type="t(proc.frames_status)">抽帧 {{ sStatus(proc.frames_status) }}</el-tag>
+          <el-tag size="small" :type="t(proc.understand_status)">理解 {{ sStatus(proc.understand_status) }}</el-tag>
+        </div>
+        <div class="tier-actions">
+          <el-button size="small" @click="runProcess('l2')">抽帧（L2）</el-button>
+          <el-button size="small" type="primary" @click="runProcess('l3')">视频理解（L3）</el-button>
+          <el-checkbox v-model="proc.use_cover">判类用封面</el-checkbox>
+          <el-select v-model="proc.force_category" placeholder="改类型重跑（可选）" clearable size="small" style="width: 180px">
+            <el-option v-for="(label, key) in taxonomy" :key="key" :label="label" :value="key" />
+          </el-select>
+          <el-button size="small" :disabled="!proc.force_category" @click="runReclassify">按类型重跑</el-button>
+        </div>
+
+        <div v-if="understanding" class="understand">
+          <p>
+            <b>判类：</b>
+            <el-tag size="small" type="success">{{ taxonomy[understanding.category] || understanding.category }}</el-tag>
+            <span class="c-meta">置信度 {{ (understanding.category_confidence * 100).toFixed(0) }}%</span>
+            <el-tag v-if="understanding.low_confidence" size="small" type="warning">低置信度</el-tag>
+          </p>
+          <p class="c-meta">{{ understanding.category_reason }}</p>
+          <p v-if="understanding.summary"><b>概述：</b>{{ understanding.summary }}</p>
+          <div v-if="understanding.dimensions && Object.keys(understanding.dimensions).length" class="dims">
+            <div v-for="(v, k) in understanding.dimensions" :key="k" class="dim">
+              <span class="dim-k">{{ dimensionName(k) }}</span>
+              <span class="dim-v">{{ fmtVal(v) }}</span>
+            </div>
+          </div>
+          <p v-if="understanding.timeline?.length" class="c-meta">
+            时间线：<template v-for="(e, i) in understanding.timeline" :key="i">{{ e.t }}s {{ e.event }}<template v-if="i < understanding.timeline.length - 1"> · </template></template>
+          </p>
+          <p class="c-meta">模型 {{ understanding.model }} · 版本 {{ understanding.prompt_version }}</p>
+          <p v-if="understanding.error" class="err">{{ understanding.error }}</p>
+        </div>
+        <p v-else-if="proc.understand_status === 'error'" class="err">理解失败：{{ detail.status?.error }}</p>
+
+        <div v-if="frames.length" class="frame-wall">
+          <img
+            v-for="f in frames"
+            :key="f.scene_index"
+            :src="frameUrls[f.scene_index]"
+            :title="`${f.timestamp_sec}s`"
+          />
+        </div>
       </div>
     </el-drawer>
   </div>
@@ -115,6 +163,79 @@ const importing = ref(false)
 const comments = ref<any[]>([])
 const commentTotal = ref(0)
 const commentOffset = ref(0)
+
+// 分档加工
+const proc = reactive<any>({ frames_status: '', understand_status: '', use_cover: false, force_category: '' })
+const frames = ref<any[]>([])
+const frameUrls = ref<Record<number, string>>({})
+const understanding = ref<any>(null)
+const taxonomy = ref<Record<string, string>>({})
+const commonDimensions = ref<any[]>([])
+
+const procStatusText: Record<string, string> = {
+  pending: '待处理', doing: '进行中', done: '完成', error: '失败',
+}
+function sStatus(v: string) { return procStatusText[v] ?? (v || '—') }
+
+function dimensionName(key: string) {
+  const dim = (commonDimensions.value || []).find((d: any) => d.key === key)
+  return dim ? dim.name : key
+}
+function fmtVal(v: any) {
+  if (v === null || v === undefined || v === '') return '—'
+  return typeof v === 'object' ? JSON.stringify(v, null, 0) : String(v)
+}
+
+async function loadProcess(assetId: number) {
+  proc.use_cover = false
+  proc.force_category = ''
+  frames.value = []
+  frameUrls.value = {}
+  understanding.value = null
+  if (!commonDimensions.value.length) {
+    try {
+      const { data } = await api.get('/api/system/process-settings')
+      taxonomy.value = data.taxonomy || {}
+      commonDimensions.value = data.common_dimensions || []
+      proc.use_cover = !!data.use_cover
+    } catch { /* 设置不可用不阻塞详情 */ }
+  }
+  const f = await api.get(`/api/assets/${assetId}/frames`)
+  frames.value = f.data.frames || []
+  proc.frames_status = f.data.frames_status
+  const urls: Record<number, string> = {}
+  for (const fr of frames.value) {
+    try {
+      const resp = await api.get(`/api/assets/${assetId}/frames/${fr.scene_index}/image`, { responseType: 'blob' })
+      urls[fr.scene_index] = URL.createObjectURL(resp.data)
+    } catch { /* 单帧缺失跳过 */ }
+  }
+  frameUrls.value = urls
+  const u = await api.get(`/api/assets/${assetId}/understanding`)
+  proc.understand_status = u.data.understand_status
+  understanding.value = u.data.status === 'pending' ? null : u.data
+}
+
+async function runProcess(tier: string) {
+  if (!detail.value) return
+  await api.post(`/api/assets/${detail.value.asset_id}/process`, {
+    tier,
+    force_category: proc.force_category || undefined,
+    use_cover: proc.use_cover,
+  })
+  ElMessage.success('已加入队列')
+  await load()
+}
+
+async function runReclassify() {
+  if (!detail.value || !proc.force_category) return
+  await api.post(`/api/assets/${detail.value.asset_id}/reclassify`, {
+    force_category: proc.force_category,
+    use_cover: proc.use_cover,
+  })
+  ElMessage.success('已按新类型重跑')
+  await load()
+}
 
 async function doImport() {
   if (!importUrl.value.trim()) return
@@ -156,6 +277,7 @@ async function openDetail(id: number) {
   detail.value = data
   drawer.value = true
   await loadComments(id)
+  await loadProcess(id)
 }
 
 async function loadComments(assetId: number, reset = true) {
@@ -207,4 +329,14 @@ onMounted(load)
 .c-body { margin-top: 4px; font-size: 13px; }
 .comment-total { color: #606266; font-size: 12px; margin: 0 0 4px; }
 .comment-hint { color: #909399; font-size: 12px; }
+.tier-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tier-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+.understand { background: #fafafa; border: 1px solid #f0f0f0; border-radius: 6px; padding: 10px; font-size: 13px; }
+.dims { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.dim { display: flex; gap: 8px; }
+.dim-k { color: #909399; min-width: 88px; }
+.dim-v { flex: 1; }
+.err { color: #f56c6c; font-size: 12px; }
+.frame-wall { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.frame-wall img { width: 96px; height: 64px; object-fit: cover; border-radius: 4px; border: 1px solid #f0f0f0; }
 </style>
