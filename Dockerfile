@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml ./
 COPY app/ app/
-RUN uv pip install --system . && uv pip install --system playwright && playwright install --with-deps chromium
+RUN uv pip install --system ".[postgres]" && uv pip install --system playwright && playwright install --with-deps chromium
 COPY --from=web /build/dist app/static
 ENV PLATFORM_HOST=0.0.0.0 PLATFORM_PORT=9100 PLATFORM_DATA_DIR=/data
 VOLUME /data

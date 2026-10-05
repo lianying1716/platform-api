@@ -11,6 +11,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:9100/api/auth/status").status == 200 else 1)
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
     restart: unless-stopped
 
   platform-worker:
@@ -22,6 +32,8 @@ services:
       - platform-data:/data
     depends_on:
       db:
+        condition: service_healthy
+      platform-api:
         condition: service_healthy
     restart: unless-stopped
 
