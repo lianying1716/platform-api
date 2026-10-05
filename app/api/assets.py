@@ -11,7 +11,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import security
@@ -20,6 +20,7 @@ from app.core.storage import resolve_asset_dir
 from app.db import get_db
 from app.models import (
     AnalysisResult,
+    Comment,
     ContentItem,
     ContentMetricSnapshot,
     MediaAsset,
@@ -153,6 +154,33 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
         }
         if analysis
         else None,
+    }
+
+
+@router.get("/assets/{asset_id}/comments")
+def list_comments(asset_id: int, limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    base = select(Comment).where(Comment.content_id == asset.content_id)
+    total = db.scalar(select(func.count()).select_from(base.subquery()))
+    rows = db.scalars(
+        base.order_by(Comment.like_count.desc(), Comment.id).limit(min(limit, 200)).offset(offset)
+    ).all()
+    return {
+        "total": int(total or 0),
+        "comments": [
+            {
+                "comment_id": c.comment_id,
+                "nickname": c.nickname,
+                "avatar": c.avatar,
+                "content": c.content,
+                "like_count": c.like_count,
+                "ip_location": c.ip_location,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in rows
+        ],
     }
 
 
