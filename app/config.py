@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -9,6 +10,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path(__file__).resolve().parent.parent / "data"
     # 默认连本地开发用 PostgreSQL（容器映射 5433，与生产同构）；生产由 PLATFORM_DATABASE_URL 覆盖
     database_url: str = "postgresql+psycopg2://platform:platform@127.0.0.1:5433/platform"
+    # 启动时是否用 SQLAlchemy create_all 自动建表。开发默认 True；
+    # 生产（compose）置 false，建表完全交给 Alembic（docker-entrypoint.sh）。
+    auto_create_tables: bool = True
     host: str = "0.0.0.0"
     port: int = 9100
     # 凭证加密密钥来源（优先级见 core/crypto.py）：
@@ -35,7 +39,16 @@ class Settings(BaseSettings):
     mediacrawler_dir: str = ""
     crawl_timeout_seconds: int = 600
 
-    model_config = {"env_prefix": "PLATFORM_"}
+    model_config = {"env_prefix": "PLATFORM_", "env_file": ".env"}
+
+    @field_validator("credential_key_file", mode="before")
+    @classmethod
+    def _empty_key_file_is_none(cls, value: object) -> object:
+        # .env 里 PLATFORM_CREDENTIAL_KEY_FILE=（空值）会被解析成 Path('.')，
+        # 进而在 crypto._load_key 触发 IsADirectoryError；统一按“未配置”处理。
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def resolved_database_url(self) -> str:

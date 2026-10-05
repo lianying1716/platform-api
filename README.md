@@ -33,6 +33,12 @@ uv run uvicorn app.main:app --port 9100        # 启动后端，首次自动建�
 uv sync --extra browser && uv run playwright install chromium   # 抖音/小红书浏览器扫码
 ```
 
+生产用 Alembic 迁移（开发期 `init_db()` 仍会自动建表作为兜底）：
+
+```bash
+uv run alembic upgrade head
+```
+
 测试：
 
 ```bash
@@ -47,6 +53,8 @@ npm run build                              # 产物输出到 ../app/static
 ```
 
 ## 配置
+
+复制 `.env.example` 为 `.env` 后按需修改（`.env` 已被 git 忽略）。**凭证加密密钥丢失即全部凭证作废，迁移机器必须随行。**
 
 环境变量前缀 `PLATFORM_`：
 

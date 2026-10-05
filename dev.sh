@@ -15,16 +15,19 @@ case "${1:-serve}" in
   serve)
     uv run uvicorn app.main:app --host "${PLATFORM_HOST:-127.0.0.1}" --port "${PLATFORM_PORT:-9100}"
     ;;
+  worker)
+    uv run python -m app.workers.runner
+    ;;
   web)
     # 前端在本机磁盘构建，产物拷回 app/static
     rsync -a --delete --exclude node_modules --exclude dist web/ /tmp/pweb/
     (cd /tmp/pweb && npm install --no-audit --no-fund && npx vite build --outDir /tmp/pweb-dist --emptyOutDir)
     rm -rf app/static && mkdir -p app/static
     cp -R /tmp/pweb-dist/* app/static/
-    echo "前端已构建并部署到 app/static/"
+    test -f app/static/index.html && echo "前端已构建并部署到 app/static/（index.html OK）"
     ;;
   *)
-    echo "用法: ./dev.sh [sync|serve|web]"
+    echo "用法: ./dev.sh [sync|serve|worker|web]"
     exit 1
     ;;
 esac

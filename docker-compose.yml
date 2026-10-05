@@ -5,11 +5,39 @@ services:
       - "9100:9100"
     environment:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
+      PLATFORM_AUTO_CREATE_TABLES: "false"
+      PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
       PLATFORM_ACCOUNT_CHECK_INTERVAL: "15"
     volumes:
       - platform-data:/data        # secret.key 与本地文件；备份必须包含此卷
     depends_on:
       db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:9100/api/auth/status").status == 200 else 1)
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  platform-worker:
+    build: .
+    command: ["python", "-m", "app.workers.runner"]
+    environment:
+      PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
+      PLATFORM_AUTO_CREATE_TABLES: "false"
+      PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
+    volumes:
+      - platform-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      platform-api:
         condition: service_healthy
     restart: unless-stopped
 

@@ -23,6 +23,9 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
+    # 生产由 Alembic 负责建表（见 docker-entrypoint.sh）；关闭自动建表时直接跳过。
+    if not settings.auto_create_tables:
+        return
     from app import models  # noqa: F401  确保模型注册
 
     Base.metadata.create_all(engine)
