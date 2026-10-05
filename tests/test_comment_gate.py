@@ -172,3 +172,12 @@ def test_enqueue_reports_only_new_jobs_on_dedup(_engine):
     assert enqueue_comment_jobs(db, cs, platform="douyin", settings=settings) == 0
     assert db.query(JobQueue).filter_by(job_type="fetch_comments").count() == 3
     db.close()
+
+
+def test_comment_settings_api(client):
+    r = client.get("/api/system/comment-settings")
+    assert r.status_code == 200
+    assert r.json()["budget"] == 10
+    r2 = client.put("/api/system/comment-settings", json={"budget": 4, "top_pct": 0.3})
+    assert r2.status_code == 200
+    assert client.get("/api/system/comment-settings").json()["budget"] == 4

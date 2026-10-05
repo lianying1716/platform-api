@@ -86,6 +86,42 @@ def update_settings(body: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# ---------- 评论抓取配置（抖音评论富集门控/抓取参数） ----------
+_COMMENT_KEYS = {
+    "top_pct": "comment_gate_top_pct",
+    "budget": "comment_gate_budget",
+    "min_comments": "comment_gate_min_comments",
+    "min_likes": "comment_gate_min_likes",
+    "weight": "comment_gate_weight",
+    "pages": "comment_fetch_pages",
+    "per_page": "comment_fetch_per_page",
+    "top_n": "comment_fetch_top_n",
+    "interval": "comment_fetch_interval_sec",
+}
+
+
+@router.get("/comment-settings")
+def get_comment_settings_api(db: Session = Depends(get_db)):
+    from app.core.comment_settings import get_comment_settings
+
+    return get_comment_settings(db)
+
+
+@router.put("/comment-settings")
+def update_comment_settings_api(body: dict, db: Session = Depends(get_db)):
+    for short, value in (body or {}).items():
+        key = _COMMENT_KEYS.get(short)
+        if key is None:
+            continue
+        row = db.get(SystemSetting, key)
+        if row is None:
+            row = SystemSetting(key=key)
+            db.add(row)
+        row.value = str(value)
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/diagnostics")
 def diagnostics(db: Session = Depends(get_db)):
     checks: list[dict] = []
