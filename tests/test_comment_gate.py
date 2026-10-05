@@ -124,3 +124,19 @@ def test_gate_skips_already_fetched_and_other_platform(_engine):
                                      "min_likes": 100, "weight": 20})
     assert [p.external_id for p in picks] == ["fresh"]
     db.close()
+
+
+def test_enqueue_comment_jobs(_engine):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.comment_gate import enqueue_comment_jobs
+
+    db = sessionmaker(bind=_engine)()
+    cs = [_mk(db, f"b{i}", like=2000, comment=200) for i in range(3)]
+    settings = {"top_pct": 1.0, "budget": 10, "min_comments": 20, "min_likes": 100, "weight": 20}
+    n = enqueue_comment_jobs(db, cs, platform="douyin", settings=settings)
+    assert n == 3
+    jobs = db.query(JobQueue).filter_by(job_type="fetch_comments").all()
+    assert len(jobs) == 3 and all(j.priority == 150 for j in jobs)
+    db.close()

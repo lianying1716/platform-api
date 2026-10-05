@@ -54,9 +54,11 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
         return _finish(db, run, "error", error=f"拉取失败: {exc}")
 
     added = 0
+    touched: list[ContentItem] = []
     for item in items:
         content, is_new = _upsert_content(db, subscription, item)
         _record_metric(db, content, item)
+        touched.append(content)
         if is_new:
             added += 1
             if subscription.auto_download and content.content_type == "video":
@@ -64,6 +66,11 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     subscription.last_sync_at = datetime.utcnow()
     db.commit()
     events.publish("sync_done", {"subscription_id": subscription.id, "added": added})
+    # 评论富集：动态门控后入队（不阻塞，worker 抓）。指标快照已在上方 commit，门控才读得到。
+    from app.core.comment_settings import get_comment_settings
+    from app.services.comment_gate import enqueue_comment_jobs
+
+    enqueue_comment_jobs(db, touched, platform=subscription.platform, settings=get_comment_settings(db))
     return _finish(db, run, "success", fetched=len(items), added=added)
 
 

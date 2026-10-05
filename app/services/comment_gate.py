@@ -47,3 +47,17 @@ def select_targets(db: Session, contents: list[ContentItem], *, platform: str, s
     take = n if n < 5 else max(1, int(round(n * float(settings["top_pct"]))))
     take = min(take, int(settings["budget"]))
     return [c for _, c in scored[:take]]
+
+
+def enqueue_comment_jobs(db: Session, contents: list[ContentItem], *, platform: str, settings: dict) -> int:
+    """选出目标并入队 fetch_comments，返回入队条数。
+
+    低优先级(150)，让下载/转录/分析先跑；不阻塞 API。调用方需保证指标快照已落库。
+    """
+    from app.core.queue import enqueue
+
+    targets = select_targets(db, contents, platform=platform, settings=settings)
+    for c in targets:
+        enqueue(db, "fetch_comments", {"content_id": c.id}, priority=150, commit=False)
+    db.commit()
+    return len(targets)
