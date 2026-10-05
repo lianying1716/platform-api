@@ -947,6 +947,7 @@ name = "platform-api"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "alembic" },
     { name = "apscheduler" },
     { name = "cryptography" },
     { name = "fastapi" },
@@ -965,7 +966,6 @@ browser = [
     { name = "playwright" },
 ]
 dev = [
-    { name = "alembic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -978,7 +978,7 @@ transcribe = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.13" },
+    { name = "alembic", specifier = ">=1.13" },
     { name = "apscheduler", specifier = ">=3.10" },
     { name = "cryptography", specifier = ">=43.0" },
     { name = "fastapi", specifier = ">=0.115" },

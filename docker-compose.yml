@@ -5,6 +5,7 @@ services:
       - "9100:9100"
     environment:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
+      PLATFORM_AUTO_CREATE_TABLES: "false"
       PLATFORM_ACCOUNT_CHECK_INTERVAL: "15"
     volumes:
       - platform-data:/data
@@ -28,6 +29,7 @@ services:
     command: ["python", "-m", "app.workers.runner"]
     environment:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
+      PLATFORM_AUTO_CREATE_TABLES: "false"
     volumes:
       - platform-data:/data
     depends_on:
