@@ -14,15 +14,15 @@ _DEFAULTS: dict[str, tuple[object, type]] = {
     "comment_gate_budget": (10, int),
     "comment_gate_min_comments": (20, int),
     "comment_gate_min_likes": (100, int),
-    "comment_gate_weight": (20.0, float),
+    "comment_gate_weight": (20, float),
     "comment_fetch_pages": (2, int),
     "comment_fetch_per_page": (20, int),
     "comment_fetch_top_n": (20, int),
     "comment_fetch_interval_sec": (1.0, float),
 }
 
-# 对外短名 -> system_setting key
-_KEYS = {
+# 对外短名 -> system_setting key（单一事实来源：app/api/system.py 复用此映射）
+COMMENT_KEYS = {
     "top_pct": "comment_gate_top_pct",
     "budget": "comment_gate_budget",
     "min_comments": "comment_gate_min_comments",
@@ -38,14 +38,14 @@ _KEYS = {
 def get_comment_settings(db: Session) -> dict:
     rows = {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
     out: dict = {}
-    for short, key in _KEYS.items():
+    for short, key in COMMENT_KEYS.items():
         default, typ = _DEFAULTS[key]
         raw = rows.get(key)
         if raw is None or raw == "":
-            out[short] = default
+            out[short] = typ(default)  # 默认值也按声明类型归一（如 weight 20 -> 20.0）
             continue
         try:
             out[short] = typ(raw)
         except (TypeError, ValueError):
-            out[short] = default
+            out[short] = typ(default)
     return out

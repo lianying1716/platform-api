@@ -87,19 +87,6 @@ def update_settings(body: dict, db: Session = Depends(get_db)):
 
 
 # ---------- 评论抓取配置（抖音评论富集门控/抓取参数） ----------
-_COMMENT_KEYS = {
-    "top_pct": "comment_gate_top_pct",
-    "budget": "comment_gate_budget",
-    "min_comments": "comment_gate_min_comments",
-    "min_likes": "comment_gate_min_likes",
-    "weight": "comment_gate_weight",
-    "pages": "comment_fetch_pages",
-    "per_page": "comment_fetch_per_page",
-    "top_n": "comment_fetch_top_n",
-    "interval": "comment_fetch_interval_sec",
-}
-
-
 def _as_int(value, *, lo: int) -> int:
     """数字 -> int；拒绝 bool / 非整数 / < lo。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -151,13 +138,15 @@ def get_comment_settings_api(db: Session = Depends(get_db)):
 @router.put("/comment-settings")
 def update_comment_settings_api(body: dict, db: Session = Depends(get_db)):
     """写入评论抓取配置。先全量校验再落库：任一越界值返回 422，不做部分写入。"""
+    from app.core.comment_settings import COMMENT_KEYS
+
     normalized: dict[str, str] = {}
     for short, value in (body or {}).items():
         spec = _COMMENT_SPECS.get(short)
         if spec is None:
             continue  # 未知键忽略（与既有 /settings 行为一致）
         try:
-            normalized[_COMMENT_KEYS[short]] = str(spec(value))
+            normalized[COMMENT_KEYS[short]] = str(spec(value))
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"非法评论配置 {short}={value!r}: {exc}") from exc
 
