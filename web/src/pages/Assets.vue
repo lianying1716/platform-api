@@ -176,6 +176,9 @@ const understandError = ref('')
 const taxonomy = ref<Record<string, string>>({})
 const commonDimensions = ref<any[]>([])
 const dimensionNames = ref<Record<string, string>>({})
+// 「判类默认用封面」全局默认值（来自设置页 process_use_cover），
+// 抽屉打开时用它初始化勾选框，否则设置页开关没有消费方（回归修复）。
+const globalUseCover = ref(false)
 const procBusy = ref(false)
 
 let procTimer: number | undefined
@@ -231,13 +234,14 @@ async function loadConfig(force = false) {
     taxonomy.value = data.taxonomy || {}
     commonDimensions.value = data.common_dimensions || []
     buildDimensionNames(commonDimensions.value, data.type_prompts || {})
+    globalUseCover.value = !!data.use_cover
   } catch { /* 设置不可用不阻塞详情 */ }
 }
 
 async function loadProcess(assetId: number, opts: { resetInputs?: boolean } = {}) {
   await loadConfig(opts.resetInputs)
   if (opts.resetInputs) {
-    proc.use_cover = false
+    proc.use_cover = globalUseCover.value
     proc.force_category = ''
   }
   revokeFrameUrls()
