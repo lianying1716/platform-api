@@ -20,11 +20,13 @@ from app.core.storage import resolve_asset_dir
 from app.db import get_db
 from app.models import (
     AnalysisResult,
+    AssetFrame,
     Comment,
     ContentItem,
     ContentMetricSnapshot,
     MediaAsset,
     Transcript,
+    VideoUnderstanding,
 )
 
 router = APIRouter(prefix="/api", tags=["assets"], dependencies=[Depends(security.require_admin)])
@@ -33,6 +35,12 @@ router = APIRouter(prefix="/api", tags=["assets"], dependencies=[Depends(securit
 class ExportRequest(BaseModel):
     asset_ids: list[int]
     format: str = "md"  # md / json
+
+
+class ProcessRequest(BaseModel):
+    tier: str  # l2（抽帧）/ l3（视频理解）
+    force_category: str | None = None
+    use_cover: bool | None = None
 
 
 def _latest_metric(db: Session, content_id: int) -> ContentMetricSnapshot | None:
@@ -215,6 +223,121 @@ def enqueue_download(asset_id: int, db: Session = Depends(get_db)):
     asset.download_status = "pending"
     db.commit()
     job = enqueue(db, "download", {"asset_id": asset_id, "url": content.url if content else ""})
+    return {"job_id": job.id}
+
+
+@router.get("/assets/{asset_id}/frames")
+def list_frames(asset_id: int, db: Session = Depends(get_db)):
+    """L2 抽帧结果：帧列表（相对 storage_root 的路径）+ 抽帧档位/状态。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    rows = db.scalars(
+        select(AssetFrame).where(AssetFrame.asset_id == asset_id).order_by(AssetFrame.scene_index)
+    ).all()
+    return {
+        "asset_id": asset_id,
+        "process_tier": asset.process_tier,
+        "frames_status": asset.frames_status,
+        "frames": [
+            {
+                "scene_index": f.scene_index,
+                "timestamp_sec": f.timestamp_sec,
+                "path": f.path,
+                "is_keyframe": f.is_keyframe,
+            }
+            for f in rows
+        ],
+    }
+
+
+@router.get("/assets/{asset_id}/understanding")
+def get_understanding(asset_id: int, db: Session = Depends(get_db)):
+    """L3 视频理解结果；尚未生成时返回 status=pending（含素材当前状态）。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    row = db.scalar(select(VideoUnderstanding).where(VideoUnderstanding.asset_id == asset_id))
+    if row is None:
+        return {
+            "asset_id": asset_id,
+            "status": "pending",
+            "process_tier": asset.process_tier,
+            "understand_status": asset.understand_status,
+            "error": asset.error or "",
+        }
+    return {
+        "asset_id": asset_id,
+        "status": row.status,
+        "process_tier": asset.process_tier,
+        "understand_status": asset.understand_status,
+        "category": row.category,
+        "category_confidence": row.category_confidence,
+        "category_reason": row.category_reason,
+        "low_confidence": row.low_confidence,
+        "dimensions": row.dimensions,
+        "summary": row.summary,
+        "timeline": row.timeline,
+        "model": row.model,
+        "prompt_version": row.prompt_version,
+        "usage": row.usage,
+        "error": row.error or asset.error or "",
+    }
+
+
+def _known_categories(db: Session) -> set[str]:
+    from app.core.process_settings import get_taxonomy
+
+    return set(get_taxonomy(db).keys())
+
+
+@router.post("/assets/{asset_id}/process")
+def enqueue_process(asset_id: int, body: ProcessRequest, db: Session = Depends(get_db)):
+    """手动分档加工：l2 → 抽帧；l3 → 视频理解（可 force_category / use_cover 覆盖）。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    tier = (body.tier or "").strip().lower()
+    if tier not in ("l2", "l3"):
+        raise HTTPException(status_code=422, detail="tier 仅支持 l2 / l3")
+
+    if tier == "l2":
+        asset.frames_status = "pending"
+        db.commit()
+        job = enqueue(db, "extract_frames", {"asset_id": asset_id})
+        return {"job_id": job.id, "tier": tier}
+
+    payload: dict = {"asset_id": asset_id}
+    if body.force_category:
+        if body.force_category not in _known_categories(db):
+            raise HTTPException(status_code=422, detail=f"未知视频类型: {body.force_category}")
+        payload["force_category"] = body.force_category
+    if body.use_cover is not None:
+        payload["use_cover"] = body.use_cover
+    asset.understand_status = "pending"
+    db.commit()
+    job = enqueue(db, "understand_video", payload)
+    return {"job_id": job.id, "tier": tier}
+
+
+@router.post("/assets/{asset_id}/reclassify")
+def enqueue_reclassify(asset_id: int, body: dict | None = None, db: Session = Depends(get_db)):
+    """按当前设置重跑判类与视频理解（忽略已有结果）。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    body = body or {}
+    payload: dict = {"asset_id": asset_id}
+    force = body.get("force_category")
+    if force:
+        if force not in _known_categories(db):
+            raise HTTPException(status_code=422, detail=f"未知视频类型: {force}")
+        payload["force_category"] = force
+    if body.get("use_cover") is not None:
+        payload["use_cover"] = bool(body["use_cover"])
+    asset.understand_status = "pending"
+    db.commit()
+    job = enqueue(db, "understand_video", payload)
     return {"job_id": job.id}
 
 
