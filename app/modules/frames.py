@@ -4,7 +4,8 @@
 1. `ffprobe` 取视频时长；
 2. `ffmpeg` 用 `select='gt(scene,THRESHOLD)'` 做场景切分，解析 `showinfo` 的
    `pts_time` 得到场景切换时间点；
-3. 场景帧不足时，按 `per_min`（每分钟帧数）时间间隔均匀补帧；
+3. 场景帧不足时，按 `per_min`（每分钟帧数）时间间隔均匀补帧：从均匀候选点中
+    等距抽样到剩余预算，保证补帧覆盖整段时长（而非集中于前半段）；
 4. 合并去重、按上限 `max_frames` 截断，逐帧导出 JPEG（`-q:v 3`，`frame_%03d.jpg`）。
 
 依赖：ffmpeg / ffprobe（PATH），不引入新的 Python 依赖。保持纯同步实现，
@@ -51,8 +52,11 @@ def _probe_duration(video_path: str) -> float:
         return 0.0
 
 
-def _scene_timestamps(video_path: str, tmp_dir: Path, scene_threshold: float) -> list[float]:
-    """场景切分，返回按出现顺序的时间戳（秒）。ffmpeg 失败则抛 RuntimeError。"""
+def _scene_timestamps(video_path: str, scene_threshold: float) -> list[float]:
+    """场景切分，返回按出现顺序的时间戳（秒）。ffmpeg 失败则抛 RuntimeError。
+
+    用 `-f null -` 丢弃画面、只借 `showinfo` 输出时间戳，避免无谓的 JPEG 编码 I/O。
+    """
     proc = _run(
         [
             "ffmpeg",
@@ -62,11 +66,11 @@ def _scene_timestamps(video_path: str, tmp_dir: Path, scene_threshold: float) ->
             video_path,
             "-vf",
             f"select='gt(scene,{scene_threshold})',showinfo",
-            "-vsync",
+            "-fps_mode",
             "vfr",
-            "-q:v",
-            "3",
-            str(tmp_dir / "scene_%04d.jpg"),
+            "-f",
+            "null",
+            "-",
         ]
     )
     if proc.returncode != 0:
@@ -87,6 +91,24 @@ def _uniform_timestamps(duration: float, per_min: float) -> list[float]:
     return [round(i * interval, 3) for i in range(n + 1) if i * interval < duration]
 
 
+def _uniform_pick(candidates: list[float], k: int) -> list[float]:
+    """从候选时间点中等距抽取 k 个（含首尾），去重且升序。
+
+    用于「剩余预算不足铺满全部候选点」时按时间等距抽样，避免截头导致
+    只覆盖视频前半段。k 不小于候选数时返回全部候选。
+    """
+    uniq = sorted(set(candidates))
+    if k <= 0 or not uniq:
+        return []
+    if k >= len(uniq):
+        return uniq
+    if k == 1:
+        return [uniq[len(uniq) // 2]]
+    step = (len(uniq) - 1) / (k - 1)
+    picked = [uniq[round(i * step)] for i in range(k)]
+    return sorted(set(picked))
+
+
 def _merge_timestamps(
     scene_ts: list[float], duration: float, max_frames: int, per_min: float
 ) -> list[tuple[float, bool]]:
@@ -95,6 +117,8 @@ def _merge_timestamps(
     返回 `[(timestamp_sec, is_keyframe), ...]`，按时间升序。场景帧优先保留：
     场景数超过上限时按等距抽样，保证 is_keyframe 均为 True。
     """
+    if max_frames <= 0:
+        return []
     # 场景时间点也需严格落在时长内，避免越界取不到画面
     scene_sorted = sorted(t for t in set(scene_ts) if duration <= 0 or t < duration)
     interval = 60.0 / per_min if per_min > 0 else 0.0
@@ -110,13 +134,16 @@ def _merge_timestamps(
         return [(t, True) for t in sorted(set(picked))]
 
     merged: list[tuple[float, bool]] = [(t, True) for t in scene_sorted]
-    # 补帧：跳过与已选帧时间过近的点
-    for t in _uniform_timestamps(duration, per_min):
-        if len(merged) >= max_frames:
-            break
-        if any(abs(t - existing) <= tol for existing, _ in merged):
-            continue
-        merged.append((t, False))
+    # 补帧：先剔除与已选帧时间过近的均匀候选点，再按剩余预算等距抽样，
+    # 使补帧覆盖整段时长而非在前半段耗尽预算（截头会漏掉尾部）。
+    remaining = max_frames - len(merged)
+    if remaining > 0:
+        candidates = [
+            t
+            for t in _uniform_timestamps(duration, per_min)
+            if not any(abs(t - existing) <= tol for existing, _ in merged)
+        ]
+        merged.extend((t, False) for t in _uniform_pick(candidates, remaining))
     return sorted(merged, key=lambda item: item[0])[:max_frames]
 
 
@@ -150,11 +177,16 @@ def extract(
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    tmp = out / "_scenes"
-    tmp.mkdir(parents=True, exist_ok=True)
+
+    # 清掉上一次抽帧的残留，避免更少帧的重跑（或 Task 7 按 scene_index upsert）留下孤儿文件
+    for stale in out.glob("frame_*.jpg"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
     duration = _probe_duration(video_path)
-    scene_ts = _scene_timestamps(video_path, tmp, scene_threshold)
+    scene_ts = _scene_timestamps(video_path, scene_threshold)
     selected = _merge_timestamps(scene_ts, duration, max_frames, per_min)
 
     frames: list[dict] = []
@@ -188,17 +220,6 @@ def extract(
                 "is_keyframe": is_keyframe,
             }
         )
-
-    # 清理场景切分的中间产物
-    for leftover in tmp.glob("*"):
-        try:
-            leftover.unlink()
-        except OSError:
-            pass
-    try:
-        tmp.rmdir()
-    except OSError:
-        pass
 
     logger.info(
         "抽帧完成 video=%s duration=%.1fs scene=%d final=%d",
