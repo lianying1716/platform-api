@@ -1,4 +1,6 @@
 """单篇公众号文章导入：URL 校验、解析、入库 API。"""
+import asyncio
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -104,3 +106,67 @@ def test_import_endpoint_rejects_bad_url(client, monkeypatch):
     r = client.post("/api/imports/wechat-article", json={"url": "https://evil.example.com/s/x"})
     assert r.status_code == 422
     assert "微信" in r.text
+
+
+def test_fetch_rejects_redirect_without_following(monkeypatch):
+    """安全回归：302 必须被拒绝，且不跟随跳转（只发一次请求）。"""
+    import httpx
+
+    from app.modules.article_import import ArticleImportError, fetch_article
+
+    calls = []
+
+    async def fake_get(self, url, **kwargs):
+        calls.append(str(url))
+        return httpx.Response(
+            302,
+            headers={"location": "https://evil.example.com/steal"},
+            request=httpx.Request("GET", str(url)),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    with pytest.raises(ArticleImportError):
+        asyncio.run(fetch_article("https://mp.weixin.qq.com/s/AbCdEf123456"))
+    assert len(calls) == 1
+
+
+def test_fetch_wraps_non_2xx_as_article_import_error(monkeypatch):
+    """4xx/5xx 归一为 ArticleImportError，端点才能返回 422 而不是 500。"""
+    import httpx
+
+    from app.modules.article_import import ArticleImportError, fetch_article
+
+    async def fake_get(self, url, **kwargs):
+        return httpx.Response(404, request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    with pytest.raises(ArticleImportError):
+        asyncio.run(fetch_article("https://mp.weixin.qq.com/s/AbCdEf123456"))
+
+
+def test_fetch_wraps_network_error_as_article_import_error(monkeypatch):
+    """超时/连接错误同样归一，避免冒泡成 500。"""
+    import httpx
+
+    from app.modules.article_import import ArticleImportError, fetch_article
+
+    async def fake_get(self, url, **kwargs):
+        raise httpx.ConnectError("boom", request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    with pytest.raises(ArticleImportError):
+        asyncio.run(fetch_article("https://mp.weixin.qq.com/s/AbCdEf123456"))
+
+
+def test_parse_time_normalizes_iso_offset_to_utc():
+    """ISO published_at 带时区偏移时应换算为 UTC 再丢弃 tzinfo。"""
+    from bs4 import BeautifulSoup
+
+    from app.modules.article_import import _parse_time
+
+    html = '<meta property="article:published_time" content="2026-06-01T10:00:00+08:00">'
+    soup = BeautifulSoup(html, "html.parser")
+    assert _parse_time(html, soup) == datetime(2026, 6, 1, 2, 0, 0)
