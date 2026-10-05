@@ -108,7 +108,7 @@ def test_full_pipeline_download_transcribe_analyze(session, monkeypatch):
     content = ContentItem(platform="bilibili", external_id="BV9", title="测试视频", author_name="UP", url="https://b/BV9")
     session.add(content)
     session.flush()
-    asset = MediaAsset(content_id=content.id, download_status="pending")
+    asset = MediaAsset(content_id=content.id, download_status="pending", understand_status="")
     session.add(asset)
     session.commit()
 
@@ -273,3 +273,152 @@ def test_crawl_gate_failure_does_not_flip_run(session, monkeypatch):
     monkeypatch.setattr(comment_gate, "enqueue_comment_jobs", boom)
     run = asyncio.run(crawl_service.run_crawl_task(session, task.id))
     assert run.status == "success" and run.added == 1
+
+
+# ---------------------------------------------------------------------------
+# B1：动态分档门控接线（下载完成 → 门控 → L2/L3 入队）
+# ---------------------------------------------------------------------------
+
+
+def test_download_completion_triggers_auto_process_gate(session, monkeypatch):
+    """下载完成后，按动态热度门控自动入队分档加工（设计 §6.1 的自动闭环）。"""
+    from app.models import ContentItem, ContentMetricSnapshot, JobQueue, MediaAsset
+    from app.workers import handlers
+
+    content = ContentItem(
+        platform="douyin", external_id="hot1", title="爆款", url="https://d/hot1"
+    )
+    session.add(content)
+    session.flush()
+    session.add(ContentMetricSnapshot(content_id=content.id, like=5000, comment=100))
+    asset = MediaAsset(content_id=content.id, download_status="pending")
+    session.add(asset)
+    session.commit()
+
+    async def fake_download(url, target_dir, **kw):
+        return {"video_file": "video.mp4", "audio_file": "audio.wav"}
+
+    monkeypatch.setattr("app.modules.media_download.download", fake_download)
+    asyncio.run(handlers.handle_download(session, {"asset_id": asset.id}))
+    session.refresh(asset)
+    assert asset.download_status == "done"
+
+    # 爆款（like=5000 ≥ L3 阈值 1000）应被自动判定为 L3 并入队 understand_video。
+    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "understand_video")).all()
+    assert len(jobs) == 1
+    assert jobs[0].payload["asset_id"] == asset.id and jobs[0].priority == 120
+    session.refresh(asset)
+    assert asset.understand_status == "pending"
+
+
+def test_download_gate_failure_does_not_flip_download(session, monkeypatch):
+    """分档门控入队抛错不得把已完成的下载翻转为失败。"""
+    from app.models import ContentItem, ContentMetricSnapshot, MediaAsset
+    from app.services import process_gate
+    from app.workers import handlers
+
+    content = ContentItem(platform="douyin", external_id="hot2", url="https://d/hot2")
+    session.add(content)
+    session.flush()
+    session.add(ContentMetricSnapshot(content_id=content.id, like=5000))
+    asset = MediaAsset(content_id=content.id, download_status="pending")
+    session.add(asset)
+    session.commit()
+
+    async def fake_download(url, target_dir, **kw):
+        return {"video_file": "video.mp4", "audio_file": "audio.wav"}
+
+    monkeypatch.setattr("app.modules.media_download.download", fake_download)
+
+    def boom(*a, **k):
+        raise RuntimeError("process gate boom")
+
+    monkeypatch.setattr(process_gate, "enqueue_process_jobs", boom)
+    asyncio.run(handlers.handle_download(session, {"asset_id": asset.id}))
+    session.refresh(asset)
+    assert asset.download_status == "done"
+
+
+def test_crawl_process_gate_failure_does_not_flip_run(session, monkeypatch):
+    """I1：分档门控入队抛错不得把已成功的采集翻转成 error。"""
+    from app.models import CrawlTask
+    from app.services import crawl_service, process_gate
+
+    task = CrawlTask(platform="douyin", keyword="k", limit_per_run=10)
+    session.add(task)
+    session.commit()
+
+    async def fake_search(**kw):
+        return [{"external_id": "aw2", "content_type": "video", "url": "u",
+                 "metrics": {"like": 500, "comment": 50}}]
+
+    monkeypatch.setattr("app.modules.crawler.search", fake_search)
+
+    def boom(*a, **k):
+        raise RuntimeError("process gate boom")
+
+    monkeypatch.setattr(process_gate, "enqueue_process_jobs", boom)
+    run = asyncio.run(crawl_service.run_crawl_task(session, task.id))
+    assert run.status == "success" and run.added == 1
+
+
+def test_sync_process_gate_failure_does_not_flip_run(session, monkeypatch):
+    """I1：分档门控入队抛错不得把已成功的同步翻转成 error。"""
+    from app.services import process_gate, sync_service
+
+    _, sub = _seed_account_and_subscription(session)
+
+    async def fake_fetch(self, credential, source_type, remote_id, limit):
+        return [{"external_id": "BV200", "title": "t", "url": "u", "content_type": "video",
+                 "metrics": {"like": 500, "comment": 50}}]
+
+    monkeypatch.setattr("app.modules.bilibili.BilibiliAdapter.fetch_source", fake_fetch, raising=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("process gate boom")
+
+    monkeypatch.setattr(process_gate, "enqueue_process_jobs", boom)
+    run = asyncio.run(sync_service.run_subscription_sync(session, sub))
+    assert run.status == "success" and run.added == 1
+
+
+def test_crawl_enqueues_process_for_already_downloaded_hot_video(session, monkeypatch):
+    """采集再次触及一条已下载的爆款：门控应自动入队 L3 加工（而非仅手动 API 才能触发）。"""
+    from app.models import (
+        ContentItem,
+        ContentMetricSnapshot,
+        CrawlTask,
+        JobQueue,
+        MediaAsset,
+    )
+    from app.services import crawl_service
+
+    # 已存在内容 + 已下载素材（首次采集/下载已发生过）
+    content = ContentItem(platform="douyin", external_id="awX", content_type="video",
+                          title="爆款", url="https://d/awX", source_kind="crawl")
+    session.add(content)
+    session.flush()
+    asset = MediaAsset(content_id=content.id, video_file="v.mp4", download_status="done",
+                       understand_status="")
+    session.add(asset)
+    session.commit()
+
+    task = CrawlTask(platform="douyin", keyword="k", limit_per_run=10)
+    session.add(task)
+    session.commit()
+
+    async def fake_search(**kw):
+        return [{"external_id": "awX", "content_type": "video", "url": "https://d/awX",
+                 "metrics": {"like": 5000, "comment": 300}}]
+
+    monkeypatch.setattr("app.modules.crawler.search", fake_search)
+    run = asyncio.run(crawl_service.run_crawl_task(session, task.id))
+    assert run.status == "success"
+
+    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "understand_video")).all()
+    assert len(jobs) == 1 and jobs[0].payload["asset_id"] == asset.id
+
+    # 再采一次：队列里已有未完成的同 asset job → 不重复入队。
+    asyncio.run(crawl_service.run_crawl_task(session, task.id))
+    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "understand_video")).all()
+    assert len(jobs) == 1

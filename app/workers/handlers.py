@@ -57,6 +57,16 @@ async def handle_download(db: Session, payload: dict) -> None:
     asset.error = ""
     db.commit()
     events.publish("asset_status", {"asset_id": asset_id, "download": "done"})
+    # 下载完成后按动态热度门控自动决定是否升级到 l2/l3（设计 §6.1）。采集/同步时素材尚未
+    # 下载完，门控只对已下载素材生效，故真正的自动分档在此触发。失败不得翻转下载成功状态。
+    from app.core.process_settings import get_process_settings
+    from app.services.process_gate import enqueue_process_jobs
+
+    try:
+        enqueue_process_jobs(db, [content], settings=get_process_settings(db))
+    except Exception:  # noqa: BLE001 分档加工是增强项，失败不得翻转已完成的下载
+        db.rollback()
+        logger.exception("素材 #%s 下载后分档入队失败，已忽略", asset_id)
 
 
 async def handle_transcribe(db: Session, payload: dict) -> None:

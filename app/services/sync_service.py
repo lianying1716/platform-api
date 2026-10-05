@@ -76,6 +76,16 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     except Exception:  # noqa: BLE001 评论富集是增强项，失败不得翻转本次同步的成功状态
         db.rollback()
         logging.getLogger("platform.sync").exception("评论入队失败，已忽略（不影响本次同步）")
+    # 动态分档加工：热度门控决定 l2/l3 后自动入队（设计 §6.1）。只对**已下载完成**的素材入队，
+    # 新同步内容的视频尚未下载，将在下载完成后由 handle_download 再走一次门控。
+    from app.core.process_settings import get_process_settings
+    from app.services.process_gate import enqueue_process_jobs
+
+    try:
+        enqueue_process_jobs(db, touched, settings=get_process_settings(db))
+    except Exception:  # noqa: BLE001 分档加工是增强项，失败不得翻转本次同步的成功状态
+        db.rollback()
+        logging.getLogger("platform.sync").exception("分档入队失败，已忽略（不影响本次同步）")
     return _finish(db, run, "success", fetched=len(items), added=added)
 
 

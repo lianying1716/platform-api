@@ -183,3 +183,139 @@ def test_gate_percentile_limits_upgrades():
     out = {r["content_id"]: r["tier"] for r in select_tier(cands, s)}
     assert out[0] == "l3" and out[1] == "l3"
     assert out[2] == "l1" and out[3] == "l1"
+
+
+# ---------------------------------------------------------------------------
+# Task 3 接线（B1）：select_targets / enqueue_process_jobs 把门控接到采集链路
+# ---------------------------------------------------------------------------
+
+
+def _mk_ready(db, ext, like, comment, *, platform="douyin", content_type="video",
+              category="", tier="", download_status="done"):
+    """造「内容 + 指标快照 + 已下载素材」，作为自动分档的候选。"""
+    from app.models import ContentItem, ContentMetricSnapshot, MediaAsset
+
+    c = ContentItem(
+        platform=platform, external_id=ext, content_type=content_type, source_kind="crawl"
+    )
+    db.add(c)
+    db.flush()
+    db.add(ContentMetricSnapshot(content_id=c.id, like=like, comment=comment))
+    asset = MediaAsset(
+        content_id=c.id, video_file="v.mp4", download_status=download_status, process_tier=tier
+    )
+    db.add(asset)
+    db.commit()
+    return c, asset
+
+
+def test_select_targets_picks_l2_l3_only_for_ready_video(_engine):
+    """门控候选：只收已下载完成的视频，按档位给出 (asset, tier, reason)。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services.process_gate import select_targets
+
+    db = sessionmaker(bind=_engine)()
+    hot, hot_asset = _mk_ready(db, "hot", like=5000, comment=0)
+    warm, warm_asset = _mk_ready(db, "warm", like=800, comment=0)
+    cold, _ = _mk_ready(db, "cold", like=10, comment=0)          # 不过下限
+    pending, _ = _mk_ready(db, "pending", like=9000, comment=0,
+                           download_status="downloading")         # 未下载完
+    article, _ = _mk_ready(db, "art", like=9000, comment=0, content_type="article")
+
+    picks = select_targets(
+        db, [hot, warm, cold, pending, article], settings=dict(_GATE, top_pct=1.0)
+    )
+    got = {a.id: t for a, t, _ in picks}
+    assert got == {hot_asset.id: "l3", warm_asset.id: "l2"}
+    db.close()
+
+
+def test_enqueue_process_jobs_creates_jobs_and_sets_status(_engine):
+    """自动门控入队：l2→extract_frames、l3→understand_video，并即时置 pending 状态。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.process_gate import enqueue_process_jobs
+
+    db = sessionmaker(bind=_engine)()
+    hot, hot_asset = _mk_ready(db, "hot", like=5000, comment=0)
+    warm, warm_asset = _mk_ready(db, "warm", like=800, comment=0)
+    _mk_ready(db, "cold", like=5, comment=0)
+
+    n = enqueue_process_jobs(db, [hot, warm], settings=dict(_GATE, top_pct=1.0))
+    assert n == 2
+
+    jobs = {j.job_type: j for j in db.query(JobQueue).all()}
+    assert set(jobs) == {"extract_frames", "understand_video"}
+    assert jobs["extract_frames"].payload["asset_id"] == warm_asset.id
+    assert jobs["understand_video"].payload["asset_id"] == hot_asset.id
+    assert all(j.priority == 120 for j in jobs.values())
+
+    db.refresh(warm_asset)
+    db.refresh(hot_asset)
+    assert warm_asset.frames_status == "pending"
+    assert hot_asset.understand_status == "pending"
+    db.close()
+
+
+def test_enqueue_process_jobs_dedup_and_already_processed(_engine):
+    """重复调用只新建一次；已达目标档位的素材不再入队。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.process_gate import enqueue_process_jobs
+
+    db = sessionmaker(bind=_engine)()
+    hot, hot_asset = _mk_ready(db, "hot", like=5000, comment=0)
+    done, done_asset = _mk_ready(db, "done", like=6000, comment=0, tier="l3")
+    settings = dict(_GATE, top_pct=1.0)
+
+    assert enqueue_process_jobs(db, [hot, done], settings=settings) == 1
+    # 同一批再来一次：hot 的 job 仍在队列（dedup 吸收），done 已 l3 → 返回值 0。
+    assert enqueue_process_jobs(db, [hot, done], settings=settings) == 0
+    assert db.query(JobQueue).filter_by(job_type="understand_video").count() == 1
+    assert db.query(JobQueue).filter_by(job_type="understand_video").one().payload[
+        "asset_id"
+    ] == hot_asset.id
+    db.close()
+
+
+def test_enqueue_process_jobs_empty_or_cold_returns_zero(_engine):
+    """没有够格候选（全冷/无素材/无指标）时不建 job。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.process_gate import enqueue_process_jobs
+
+    db = sessionmaker(bind=_engine)()
+    cold, _ = _mk_ready(db, "cold", like=1, comment=0)
+    assert enqueue_process_jobs(db, [], settings=dict(_GATE, top_pct=1.0)) == 0
+    assert enqueue_process_jobs(db, [cold], settings=dict(_GATE, top_pct=1.0)) == 0
+    assert db.query(JobQueue).count() == 0
+    db.close()
+
+
+def test_select_targets_uses_latest_metric_snapshot(_engine):
+    """候选指标取最新快照：旧快照高、新快照低时按新值判（不误升级）。"""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import ContentMetricSnapshot
+    from app.services.process_gate import select_targets
+
+    db = sessionmaker(bind=_engine)()
+    c, asset = _mk_ready(db, "trend", like=5000, comment=0)
+    # 再落一条更晚、更冷的快照，应按它判为 l1。
+    db.add(
+        ContentMetricSnapshot(
+            content_id=c.id, like=5, comment=0,
+            captured_at=datetime.utcnow() + timedelta(seconds=5),
+        )
+    )
+    db.commit()
+
+    picks = select_targets(db, [c], settings=dict(_GATE, top_pct=1.0))
+    assert picks == []
+    db.close()
