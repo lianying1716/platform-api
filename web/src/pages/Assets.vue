@@ -75,6 +75,22 @@
           <el-tag v-for="tag in detail.analysis.tags" :key="tag" style="margin-right: 6px">{{ tag }}</el-tag>
         </div>
         <el-empty v-else description="尚无分析" :image-size="60" />
+
+        <el-divider>评论（按点赞排序）</el-divider>
+        <p class="comment-total">评论总数 {{ detail?.metrics?.comment ?? '—' }}</p>
+        <div v-if="comments.length">
+          <div v-for="c in comments" :key="c.comment_id" class="comment">
+            <div class="c-head">
+              <b>{{ c.nickname || '匿名' }}</b>
+              <span class="c-meta">{{ c.ip_location }} · 赞 {{ c.like_count }}<template v-if="fmtTime(c.created_at)"> · {{ fmtTime(c.created_at) }}</template></span>
+            </div>
+            <div class="c-body">{{ c.content }}</div>
+          </div>
+          <el-button v-if="comments.length < commentTotal" text @click="loadMoreComments">加载更多</el-button>
+        </div>
+        <p v-else class="comment-hint">
+          该作品评论数或点赞数未达抓取门槛，仅显示数量。
+        </p>
       </div>
     </el-drawer>
   </div>
@@ -96,6 +112,10 @@ const importDialog = ref(false)
 const importUrl = ref('')
 const importing = ref(false)
 
+const comments = ref<any[]>([])
+const commentTotal = ref(0)
+const commentOffset = ref(0)
+
 async function doImport() {
   if (!importUrl.value.trim()) return
   importing.value = true
@@ -115,6 +135,11 @@ const statusText: Record<string, string> = {
 }
 function s(v: string) { return statusText[v] ?? v }
 function t(v: string) { return ({ done: 'success', error: 'danger' } as Record<string, string>)[v] ?? 'info' }
+// 评论时间：后端为 UTC naive ISO（无 Z），补 'Z' 再按本地时区显示。
+function fmtTime(v: string | null) {
+  if (!v) return ''
+  return new Date(v.endsWith('Z') ? v : v + 'Z').toLocaleString('zh-CN', { hour12: false })
+}
 
 async function load() {
   loading.value = true
@@ -130,6 +155,24 @@ async function openDetail(id: number) {
   const { data } = await api.get(`/api/assets/${id}`)
   detail.value = data
   drawer.value = true
+  await loadComments(id)
+}
+
+async function loadComments(assetId: number, reset = true) {
+  if (reset) {
+    comments.value = []
+    commentOffset.value = 0
+  }
+  const { data } = await api.get(`/api/assets/${assetId}/comments`, {
+    params: { limit: 50, offset: commentOffset.value },
+  })
+  comments.value = reset ? data.comments : [...comments.value, ...data.comments]
+  commentTotal.value = data.total
+  commentOffset.value = comments.value.length
+}
+
+async function loadMoreComments() {
+  if (detail.value) await loadComments(detail.value.asset_id, false)
 }
 
 async function act(id: number, kind: string) {
@@ -158,4 +201,10 @@ onMounted(load)
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
 .meta { color: #909399; margin: 4px 0 12px; }
 .hint { color: #909399; font-size: 12px; margin: 8px 0 0; }
+.comment { padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+.c-head { display: flex; justify-content: space-between; }
+.c-meta { color: #909399; font-size: 12px; }
+.c-body { margin-top: 4px; font-size: 13px; }
+.comment-total { color: #606266; font-size: 12px; margin: 0 0 4px; }
+.comment-hint { color: #909399; font-size: 12px; }
 </style>

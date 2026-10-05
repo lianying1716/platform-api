@@ -6,6 +6,7 @@
 没有可用账号或被风控时，crawl_run 记 error，不影响平台其他部分。
 """
 
+import logging
 from datetime import datetime
 
 from sqlalchemy import select
@@ -67,11 +68,13 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
         return _finish(db, run, "error", error=f"抓取失败: {exc}")
 
     added = 0
+    touched: list[ContentItem] = []
     for item in items:
         if task.min_play and item.get("metrics", {}).get("play", 0) < task.min_play:
             continue
         content, is_new = _upsert(db, task, item)
         _record_metric(db, content, item)
+        touched.append(content)
         if is_new:
             added += 1
             if task.to_candidate and content.content_type == "video":
@@ -79,6 +82,15 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
     task.last_run_at = datetime.utcnow()
     db.commit()
     events.publish("crawl_done", {"task_id": task.id, "added": added})
+    # 评论富集：动态门控后入队（不阻塞，worker 抓）。指标快照已在上方 commit，门控才读得到。
+    from app.core.comment_settings import get_comment_settings
+    from app.services.comment_gate import enqueue_comment_jobs
+
+    try:
+        enqueue_comment_jobs(db, touched, platform=task.platform, settings=get_comment_settings(db))
+    except Exception:  # noqa: BLE001 评论富集是增强项，失败不得翻转本次采集的成功状态
+        db.rollback()
+        logging.getLogger("platform.crawl").exception("评论入队失败，已忽略（不影响本次采集）")
     return _finish(db, run, "success", fetched=len(items), added=added)
 
 

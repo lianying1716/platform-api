@@ -86,6 +86,80 @@ def update_settings(body: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# ---------- 评论抓取配置（抖音评论富集门控/抓取参数） ----------
+def _as_int(value, *, lo: int) -> int:
+    """数字 -> int；拒绝 bool / 非整数 / < lo。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("需要数字")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("需要整数")
+    iv = int(value)
+    if iv < lo:
+        raise ValueError(f"需 >= {lo}")
+    return iv
+
+
+def _as_float(value, *, lo: float, hi: float | None = None) -> float:
+    """数字 -> float；拒绝 bool / NaN / Inf / 越界。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("需要数字")
+    fv = float(value)
+    if fv != fv or fv in (float("inf"), float("-inf")):
+        raise ValueError("需要有限数")
+    if fv < lo:
+        raise ValueError(f"需 >= {lo}")
+    if hi is not None and fv > hi:
+        raise ValueError(f"需 <= {hi}")
+    return fv
+
+
+# 短名 -> 校验器（越界即 422）。范围来源：C-Task 3/4 review 的 Task 8 carry-forward。
+# 不校验会让门控退化：budget=-1 时 take=min(n-1, -1) 变成 n-1（off-by-one）。
+_COMMENT_SPECS = {
+    "top_pct": lambda v: _as_float(v, lo=0.0, hi=1.0),
+    "budget": lambda v: _as_int(v, lo=0),
+    "min_comments": lambda v: _as_int(v, lo=0),
+    "min_likes": lambda v: _as_int(v, lo=0),
+    "weight": lambda v: _as_float(v, lo=0.0),
+    "pages": lambda v: _as_int(v, lo=1),
+    "per_page": lambda v: _as_int(v, lo=1),
+    "top_n": lambda v: _as_int(v, lo=1),
+    "interval": lambda v: _as_float(v, lo=0.0),
+}
+
+
+@router.get("/comment-settings")
+def get_comment_settings_api(db: Session = Depends(get_db)):
+    from app.core.comment_settings import get_comment_settings
+
+    return get_comment_settings(db)
+
+
+@router.put("/comment-settings")
+def update_comment_settings_api(body: dict, db: Session = Depends(get_db)):
+    """写入评论抓取配置。先全量校验再落库：任一越界值返回 422，不做部分写入。"""
+    from app.core.comment_settings import COMMENT_KEYS
+
+    normalized: dict[str, str] = {}
+    for short, value in (body or {}).items():
+        spec = _COMMENT_SPECS.get(short)
+        if spec is None:
+            continue  # 未知键忽略（与既有 /settings 行为一致）
+        try:
+            normalized[COMMENT_KEYS[short]] = str(spec(value))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"非法评论配置 {short}={value!r}: {exc}") from exc
+
+    for key, value in normalized.items():
+        row = db.get(SystemSetting, key)
+        if row is None:
+            row = SystemSetting(key=key)
+            db.add(row)
+        row.value = value
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/diagnostics")
 def diagnostics(db: Session = Depends(get_db)):
     checks: list[dict] = []

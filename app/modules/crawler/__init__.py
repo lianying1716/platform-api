@@ -37,6 +37,15 @@ async def search(
     return await _search_via_subprocess(platform=platform, keyword=keyword, limit=limit)
 
 
+async def fetch_comments(*, aweme_id: str, cookie: str, pages: int = 2, per_page: int = 20,
+                         top_n: int = 20, interval: float = 1.0) -> list[dict]:
+    """当前仅抖音支持评论抓取。"""
+    return await _client.fetch_comments(
+        aweme_id=aweme_id, cookie=cookie, pages=pages, per_page=per_page,
+        top_n=top_n, interval=interval,
+    )
+
+
 async def _search_via_subprocess(*, platform: str, keyword: str, limit: int) -> list[dict]:
     """对未抽离平台的兼容回退：CLI 子进程调 MediaCrawler。"""
     import asyncio

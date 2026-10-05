@@ -217,3 +217,46 @@ def test_dashboard_summary_aggregates(session, monkeypatch):
     assert summary["accounts"]["abnormal"] == 1
     assert summary["assets_total"] == 1
     assert summary["hot"] and summary["hot"][0]["play"] == 99999
+
+
+def test_sync_gate_failure_does_not_flip_run(session, monkeypatch):
+    """I1：评论门控入队抛错不得把已成功的同步翻转成 error。"""
+    from app.services import comment_gate, sync_service
+
+    _, sub = _seed_account_and_subscription(session)
+
+    async def fake_fetch(self, credential, source_type, remote_id, limit):
+        return [{"external_id": "BV100", "title": "t", "url": "u", "content_type": "video",
+                 "metrics": {"like": 500, "comment": 50}}]
+
+    monkeypatch.setattr("app.modules.bilibili.BilibiliAdapter.fetch_source", fake_fetch, raising=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("gate boom")
+
+    monkeypatch.setattr(comment_gate, "enqueue_comment_jobs", boom)
+    run = asyncio.run(sync_service.run_subscription_sync(session, sub))
+    assert run.status == "success" and run.added == 1
+
+
+def test_crawl_gate_failure_does_not_flip_run(session, monkeypatch):
+    """I1：评论门控入队抛错不得把已成功的采集翻转成 error。"""
+    from app.models import CrawlTask
+    from app.services import comment_gate, crawl_service
+
+    task = CrawlTask(platform="douyin", keyword="k", limit_per_run=10)
+    session.add(task)
+    session.commit()
+
+    async def fake_search(**kw):
+        return [{"external_id": "aw1", "content_type": "video", "url": "u",
+                 "metrics": {"like": 500, "comment": 50}}]
+
+    monkeypatch.setattr("app.modules.crawler.search", fake_search)
+
+    def boom(*a, **k):
+        raise RuntimeError("gate boom")
+
+    monkeypatch.setattr(comment_gate, "enqueue_comment_jobs", boom)
+    run = asyncio.run(crawl_service.run_crawl_task(session, task.id))
+    assert run.status == "success" and run.added == 1
