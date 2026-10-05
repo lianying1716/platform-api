@@ -72,9 +72,13 @@ def _parse_time(html: str, soup: BeautifulSoup) -> datetime | None:
     iso = _meta(soup, "article:published_time")
     if iso:
         try:
-            return datetime.fromisoformat(iso).replace(tzinfo=None)
+            parsed = datetime.fromisoformat(iso)
         except ValueError:
             return None
+        # 带时区偏移的 ISO 时间先归一到 UTC，再按项目约定丢弃 tzinfo（naive-UTC）
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
     return None
 
 
@@ -127,11 +131,18 @@ async def fetch_article(url: str, *, cookie: str = "") -> dict:
     }
     if cookie:
         headers["Cookie"] = cookie
-    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
-        resp = await client.get(url, headers=headers)
-    if 300 <= resp.status_code < 400:
-        raise ArticleImportError("目标链接发生重定向，已拒绝")
-    resp.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+            resp = await client.get(url, headers=headers)
+        if 300 <= resp.status_code < 400:
+            raise ArticleImportError("目标链接发生重定向，已拒绝")
+        resp.raise_for_status()
+    except ArticleImportError:
+        # 重定向等主动拒绝：原样抛出，保持既有语义
+        raise
+    except httpx.HTTPError as exc:
+        # 网络错误 / 超时 / 非 2xx 一律归一为业务异常，避免端点返回 500
+        raise ArticleImportError(f"文章抓取失败: {exc}") from exc
     item = parse_article_html(resp.text, url)
     logger.info("解析文章成功: %s", item["title"])
     return item
