@@ -8,6 +8,7 @@
 - `classify(...) -> {"type","confidence","reason","signals"}`：异步调用 LLM。
   - 返回类型不在 `taxonomy` 枚举内 → `type="other"`, `confidence=0`。
   - 网络/解析失败 → 抛异常（调用方回退通用模板）。
+  - `use_cover=True` 但封面缺失/不可读/为空 → 抛异常（用户显式选了封面，不静默降级）。
 
 测试注入点：内部 `_post_json(url, headers, body, timeout)` 用 `httpx.AsyncClient`；
 `classify` 只经它发请求，测试 monkeypatch `_post_json`，不要 patch httpx。
@@ -15,13 +16,10 @@
 
 import base64
 import json
-import logging
 import mimetypes
 from pathlib import Path
 
 import httpx
-
-logger = logging.getLogger("platform.classify")
 
 # 转录送入分类器的最大字符数（设计 §4「前 ~600 字」）。
 _TRANSCRIPT_LIMIT = 600
@@ -64,15 +62,24 @@ def build_messages(
     return system, user
 
 
-def _cover_data_uri(cover_path: str) -> str | None:
-    """把封面图读为 data URI；读不到或空文件返回 None（判类退化为纯文本）。"""
+def _cover_data_uri(cover_path: str) -> str:
+    """把封面图读为 data URI；读不到则抛异常（用户显式选择了封面，不能静默丢弃）。
+
+    Raises:
+        FileNotFoundError: 路径不存在。
+        OSError: 其他读取失败（权限/IO）。
+        ValueError: 文件为空，无法作为图片输入。
+    """
     try:
         raw = Path(cover_path).read_bytes()
-    except OSError:
-        logger.warning("判类封面读取失败，退化为纯文本: %s", cover_path)
-        return None
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"判类封面文件不存在，无法使用封面: {cover_path}"
+        ) from exc
+    except OSError as exc:
+        raise OSError(f"判类封面读取失败，无法使用封面: {cover_path}") from exc
     if not raw:
-        return None
+        raise ValueError(f"判类封面文件为空，无法使用封面: {cover_path}")
     mime = mimetypes.guess_type(cover_path)[0] or "image/jpeg"
     if not mime.startswith("image/"):
         mime = "image/jpeg"
@@ -125,7 +132,7 @@ async def classify(
     Args:
         title/author/duration_sec/transcript: 文本信号（缺失用空跳过）。
         taxonomy: 枚举 -> 中文；不在其中的类型统一归 ``other``。
-        cover_path: 可选封面路径；仅当 ``use_cover=True`` 且可读时随文本一并送入。
+        cover_path: 可选封面路径；``use_cover=True`` 时随文本一并送入。
         base_url/api_key/model: OpenAI 兼容端点配置（服务层从 DB/设置解析后注入）。
         timeout: 单次请求超时秒数。
 
@@ -133,6 +140,7 @@ async def classify(
         ``{"type": str, "confidence": float, "reason": str, "signals": list[str]}``
 
     Raises:
+        FileNotFoundError/OSError/ValueError: 启用封面但封面缺失/不可读/为空。
         httpx.HTTPError: 网络/HTTP 失败。
         KeyError/ValueError/json.JSONDecodeError: 响应结构或内容无法解析。
     """
@@ -142,11 +150,10 @@ async def classify(
     content: object = user_text
     if use_cover and cover_path:
         data_uri = _cover_data_uri(cover_path)
-        if data_uri:
-            content = [
-                {"type": "text", "text": user_text},
-                {"type": "image_url", "image_url": {"url": data_uri}},
-            ]
+        content = [
+            {"type": "text", "text": user_text},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ]
 
     body = {
         "model": model,

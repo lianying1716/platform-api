@@ -1,7 +1,7 @@
 """判类 Pass 0 测试（纯文本分类；注入 _post_json，不联网）。
 
 覆盖：正常解析、非法枚举回退 other、字段容错、网络/解析失败抛异常、
-封面图（use_cover）开关对 payload 的影响、提示词含类型目录。
+封面图（use_cover）开关对 payload 的影响、封面缺失/为空抛异常、提示词含类型目录。
 """
 
 import asyncio
@@ -176,6 +176,41 @@ def test_classify_cover_not_injected_by_default(monkeypatch, tmp_path):
     )
     content = cap["body"]["messages"][-1]["content"]
     assert isinstance(content, str)
+
+
+def test_classify_cover_missing_raises(monkeypatch):
+    # 用户显式要求用封面（use_cover=True）但文件不存在 -> 抛 FileNotFoundError，不静默降级纯文本。
+    called = False
+
+    async def fake_post(url, headers, body, timeout):
+        nonlocal called
+        called = True
+        return {"choices": [{"message": {"content": '{"type":"commerce"}'}}]}
+
+    monkeypatch.setattr(c, "_post_json", fake_post)
+    missing = "/nonexistent/definitely-not-here/cover.jpg"
+    with pytest.raises(FileNotFoundError) as ei:
+        asyncio.run(
+            c.classify("t", "a", 10, "tr", TAXONOMY, cover_path=missing,
+                       base_url="http://x", api_key="k", model="m", use_cover=True)
+        )
+    assert missing in str(ei.value)
+    assert called is False  # 封面读取失败时不应发起 LLM 调用
+
+
+def test_classify_cover_empty_raises(monkeypatch, tmp_path):
+    # 空封面文件无法作为图片输入 -> ValueError，不静默降级纯文本。
+    async def fake_post(url, headers, body, timeout):
+        raise AssertionError("封面读取失败时不应发起 LLM 调用")
+
+    monkeypatch.setattr(c, "_post_json", fake_post)
+    empty = tmp_path / "empty.jpg"
+    empty.write_bytes(b"")
+    with pytest.raises(ValueError):
+        asyncio.run(
+            c.classify("t", "a", 10, "tr", TAXONOMY, cover_path=str(empty),
+                       base_url="http://x", api_key="k", model="m", use_cover=True)
+        )
 
 
 def test_classify_custom_timeout(monkeypatch):
