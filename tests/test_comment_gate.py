@@ -29,3 +29,35 @@ def test_comment_unique_constraint(_engine):
         db.rollback()
     finally:
         db.close()
+
+
+def test_comment_settings_defaults(_engine):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.comment_settings import get_comment_settings
+
+    db = sessionmaker(bind=_engine)()
+    s = get_comment_settings(db)
+    assert s["top_pct"] == 0.2
+    assert s["budget"] == 10
+    assert s["min_comments"] == 20
+    assert s["min_likes"] == 100
+    assert s["weight"] == 20
+    assert s["pages"] == 2 and s["per_page"] == 20 and s["top_n"] == 20
+    assert s["interval"] == 1.0
+    db.close()
+
+
+def test_comment_settings_override(_engine):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.comment_settings import get_comment_settings
+    from app.models import SystemSetting
+
+    db = sessionmaker(bind=_engine)()
+    db.add(SystemSetting(key="comment_gate_budget", value="3"))
+    db.add(SystemSetting(key="comment_gate_top_pct", value="0.5"))
+    db.commit()
+    s = get_comment_settings(db)
+    assert s["budget"] == 3 and s["top_pct"] == 0.5
+    db.close()
