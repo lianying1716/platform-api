@@ -18,6 +18,10 @@
   - 体积超 `max_mb` -> `ValueError`（由服务层先压缩，不在此隐式降质）。
   - 文件缺失 -> `FileNotFoundError`；网络/结构失败 -> 抛异常（由 worker 重试）。
 
+**base_url 约定**：遵循 **OpenAI 兼容约定、包含 `/v1`**（如 `https://api.xsai5.xyz/v1`），
+与 `classify` / `analysis` 一致。qwen 用 `{base_url}/chat/completions`；gemini 的原生端点自带
+`/v1beta`，由 `_join_provider_url` 归一拼到站点根（去掉末尾 `/v1`），避免 `.../v1/v1beta/...`。
+
 测试注入点：内部 `_post_json(url, headers, body, timeout)` 用 `httpx.AsyncClient`；
 `understand` 只经它发请求，测试 monkeypatch `_post_json`，不要 patch httpx。
 """
@@ -45,6 +49,9 @@ _PROVIDER_ALIASES = {
 # 去掉 ```json ... ``` / ``` ... ``` 代码围栏，并抓取最外层 JSON 对象。
 _FENCE_RE = re.compile(r"^```[a-zA-Z0-9_-]*\s*|\s*```$")
 
+# base_url 末尾的 `/v1`（OpenAI 兼容约定，可能带尾斜杠）——用于 gemini 原生端点归一。
+_V1_SUFFIX_RE = re.compile(r"/v1/?$")
+
 
 def _normalize_provider(provider: str) -> str:
     key = (provider or "").strip().lower()
@@ -62,6 +69,26 @@ def _resolve_mime(video_path: str, mime: str | None) -> str:
     if guessed and guessed.startswith("video/"):
         return guessed
     return "video/mp4"
+
+
+def _join_provider_url(base_url: str, path: str) -> str:
+    """按 provider 端点语义拼接最终 URL。
+
+    `base_url` 遵循 **OpenAI 兼容约定、包含 `/v1`**（如 `https://api.xsai5.xyz/v1`），
+    与 classify/analysis 一致。但两 provider 的端点前缀不同：
+
+    - qwen 走 OpenAI 兼容端点（`/chat/completions`）→ 直接用 `base_url` 拼接。
+    - gemini 走 Google **原生**端点（`/v1beta/models/{model}:generateContent`）→ 端点
+      自带 `/v1beta`，必须拼到**站点根**上；否则会出现错误的 `.../v1/v1beta/...`。
+
+    站点根 = `base_url` 去掉末尾的 `/v1`（兼容 `.../v1` 与 `.../v1/`）；若 base 不含
+    `/v1` 则原样作为根（不重复追加、不误删）。
+    """
+    base = (base_url or "").rstrip("/")
+    if path.startswith("/v1beta"):
+        root = _V1_SUFFIX_RE.sub("", base)
+        return f"{root}{path}"
+    return f"{base}{path}"
 
 
 def build_payload(
@@ -220,13 +247,12 @@ async def understand(
     video_b64 = base64.b64encode(raw).decode("ascii")
     path, headers, body = build_payload(name, model, video_b64, prompt, mime=mime_type)
 
-    base = (base_url or "").rstrip("/")
     if name == "qwen":
         headers = {**headers, "Authorization": f"Bearer {api_key}"}
     else:
         headers = {**headers, "x-goog-api-key": api_key}
 
-    data = await _post_json(f"{base}{path}", headers, body, timeout)
+    data = await _post_json(_join_provider_url(base_url, path), headers, body, timeout)
 
     if name == "qwen":
         text = _extract_qwen_text(data)

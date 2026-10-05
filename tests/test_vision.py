@@ -75,6 +75,34 @@ def test_build_payload_provider_case_insensitive():
     assert v.build_payload("Qwen", "m", "A", "p")[0] == "/chat/completions"
 
 
+# --------------------------------------------------------------------------- _join_provider_url
+
+
+def test_join_provider_url_strips_v1_only_for_v1beta():
+    # OpenAI 兼容端点：base 原样保留（含 /v1）
+    assert (
+        v._join_provider_url("https://api.xsai5.xyz/v1", "/chat/completions")
+        == "https://api.xsai5.xyz/v1/chat/completions"
+    )
+    # gemini 原生端点：去掉末尾 /v1，拼到站点根
+    assert (
+        v._join_provider_url(
+            "https://api.xsai5.xyz/v1", "/v1beta/models/g:generateContent"
+        )
+        == "https://api.xsai5.xyz/v1beta/models/g:generateContent"
+    )
+    # base 无 /v1：不误删
+    assert (
+        v._join_provider_url("https://api.xsai5.xyz", "/v1beta/models/g:generateContent")
+        == "https://api.xsai5.xyz/v1beta/models/g:generateContent"
+    )
+    # 支持尾斜杠
+    assert (
+        v._join_provider_url("https://api.xsai5.xyz/v1/", "/v1beta/models/g:generateContent")
+        == "https://api.xsai5.xyz/v1beta/models/g:generateContent"
+    )
+
+
 # --------------------------------------------------------------------------- parse_structured
 
 
@@ -166,7 +194,7 @@ def test_understand_gemini(monkeypatch, tmp_path):
             str(vid),
             "分析",
             provider="gemini",
-            base_url="https://api.xsai5.xyz",
+            base_url="https://api.xsai5.xyz/v1",
             api_key="g-key",
             model="gemini-3.8-flash",
         )
@@ -174,8 +202,53 @@ def test_understand_gemini(monkeypatch, tmp_path):
     assert out["text"] == '{"summary":"g"}'
     assert out["usage"] == {"promptTokenCount": 5}
     assert out["provider"] == "gemini"
+    # base 含 /v1（OpenAI 兼容约定）时，gemini 原生端点须拼到站点根，不能出现 /v1/v1beta
     assert cap["url"] == "https://api.xsai5.xyz/v1beta/models/gemini-3.8-flash:generateContent"
     assert cap["headers"]["x-goog-api-key"] == "g-key"
+
+
+def test_understand_gemini_base_without_v1(monkeypatch, tmp_path):
+    # base 不含 /v1 时仍应得到正确的原生端点（不重复追加、不误删）
+    vid = tmp_path / "clip.mp4"
+    vid.write_bytes(b"DATA")
+    cap: dict = {}
+    monkeypatch.setattr(
+        v,
+        "_post_json",
+        _fake(
+            {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
+            capture=cap,
+        ),
+    )
+    asyncio.run(
+        v.understand(
+            str(vid), "p", provider="gemini", base_url="https://api.xsai5.xyz",
+            api_key="g-key", model="gemini-3.8-flash"
+        )
+    )
+    assert cap["url"] == "https://api.xsai5.xyz/v1beta/models/gemini-3.8-flash:generateContent"
+
+
+def test_understand_gemini_base_with_v1_trailing_slash(monkeypatch, tmp_path):
+    # base 形如 .../v1/ 时同样归一到站点根
+    vid = tmp_path / "clip.mp4"
+    vid.write_bytes(b"DATA")
+    cap: dict = {}
+    monkeypatch.setattr(
+        v,
+        "_post_json",
+        _fake(
+            {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
+            capture=cap,
+        ),
+    )
+    asyncio.run(
+        v.understand(
+            str(vid), "p", provider="gemini", base_url="https://api.xsai5.xyz/v1/",
+            api_key="g-key", model="gemini-3.8-flash"
+        )
+    )
+    assert cap["url"] == "https://api.xsai5.xyz/v1beta/models/gemini-3.8-flash:generateContent"
 
 
 def test_understand_defaults_mime_from_extension(monkeypatch, tmp_path):
