@@ -48,6 +48,8 @@ npm run build                              # 产物输出到 ../app/static
 
 ## 配置
 
+复制 `.env.example` 为 `.env` 后按需修改（`.env` 已被 git 忽略）。**凭证加密密钥丢失即全部凭证作废，迁移机器必须随行。**
+
 环境变量前缀 `PLATFORM_`：
 
 | 变量 | 默认 | 说明 |
