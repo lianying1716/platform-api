@@ -50,3 +50,55 @@ def test_parse_falls_back_title_to_og_when_activity_name_missing():
     html = FIXTURE.read_text(encoding="utf-8").replace('id="activity-name"', 'id="x"')
     out = parse_article_html(html, "https://mp.weixin.qq.com/s/AbCdEf123456")
     assert out["title"] == "测试文章标题"
+
+
+def test_import_endpoint_creates_asset_and_transcript(client, monkeypatch):
+    html = FIXTURE.read_text(encoding="utf-8")
+
+    async def fake_fetch(url, cookie=""):
+        from app.modules.article_import import parse_article_html
+
+        return parse_article_html(html, "https://mp.weixin.qq.com/s/AbCdEf123456")
+
+    monkeypatch.setattr("app.services.import_service.article_import.fetch_article", fake_fetch)
+
+    r = client.post(
+        "/api/imports/wechat-article",
+        json={"url": "https://mp.weixin.qq.com/s/AbCdEf123456"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["title"] == "测试文章标题"
+    assert body["already_existed"] is False
+
+    detail = client.get(f"/api/assets/{body['asset_id']}").json()
+    assert detail["content"]["platform"] == "wechat_mp"
+    assert "第一段正文" in detail["transcript"]["full_text"]
+
+
+def test_import_endpoint_is_idempotent(client, monkeypatch):
+    html = FIXTURE.read_text(encoding="utf-8")
+
+    async def fake_fetch(url, cookie=""):
+        from app.modules.article_import import parse_article_html
+
+        return parse_article_html(html, "https://mp.weixin.qq.com/s/AbCdEf123456")
+
+    monkeypatch.setattr("app.services.import_service.article_import.fetch_article", fake_fetch)
+    url = "https://mp.weixin.qq.com/s/AbCdEf123456"
+    first = client.post("/api/imports/wechat-article", json={"url": url}).json()
+    second = client.post("/api/imports/wechat-article", json={"url": url}).json()
+    assert second["already_existed"] is True
+    assert second["asset_id"] == first["asset_id"]
+
+
+def test_import_endpoint_rejects_bad_url(client, monkeypatch):
+    async def fake_fetch(url, cookie=""):
+        from app.modules.article_import import fetch_article as real
+
+        return await real(url, cookie=cookie)
+
+    monkeypatch.setattr("app.services.import_service.article_import.fetch_article", fake_fetch)
+    r = client.post("/api/imports/wechat-article", json={"url": "https://evil.example.com/s/x"})
+    assert r.status_code == 422
+    assert "微信" in r.text

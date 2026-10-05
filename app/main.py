@@ -14,6 +14,7 @@ from app.api import (
     assets,
     auth,
     crawl_tasks,
+    imports,
     pipeline,
     skills,
     subscriptions,
@@ -51,6 +52,7 @@ app.include_router(accounts.router)
 app.include_router(subscriptions.router)
 app.include_router(assets.router)
 app.include_router(crawl_tasks.router)
+app.include_router(imports.router)
 app.include_router(pipeline.router)
 app.include_router(analytics.router)
 app.include_router(ai_access.router)
