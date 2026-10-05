@@ -216,6 +216,31 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
     db.commit()
 
 
+async def handle_extract_frames(db: Session, payload: dict) -> None:
+    """L2 抽帧：ffmpeg 场景切分 + 关键帧抽取，幂等写 AssetFrame。"""
+    from app.services.understand_service import run_extract_frames
+
+    asset_id = payload["asset_id"]
+    if db.get(MediaAsset, asset_id) is None:
+        return
+    await run_extract_frames(db, asset_id)
+
+
+async def handle_understand_video(db: Session, payload: dict) -> None:
+    """L3 视频理解：判类 → 类型专属提示词 → 调 vision → 写 VideoUnderstanding。"""
+    from app.services.understand_service import run_understand
+
+    asset_id = payload["asset_id"]
+    if db.get(MediaAsset, asset_id) is None:
+        return
+    await run_understand(
+        db,
+        asset_id,
+        force_category=payload.get("force_category") or None,
+        use_cover=payload.get("use_cover"),
+    )
+
+
 HANDLERS = {
     "download": handle_download,
     "transcribe": handle_transcribe,
@@ -223,4 +248,6 @@ HANDLERS = {
     "sync": handle_sync,
     "crawl": handle_crawl,
     "fetch_comments": handle_fetch_comments,
+    "extract_frames": handle_extract_frames,
+    "understand_video": handle_understand_video,
 }
