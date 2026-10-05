@@ -138,3 +138,28 @@ def test_handler_dedups_duplicate_cids_in_one_batch(_engine, monkeypatch):
     asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))  # must not raise
     assert db.query(Comment).filter_by(content_id=c.id).count() == 1
     db.close()
+
+
+def test_handler_skips_non_douyin_content(_engine, monkeypatch):
+    """I2：非抖音 content 直接跳过，不取 cookie 也不抓取（不抛错）。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Comment, ContentItem
+    from app.workers.handlers import handle_fetch_comments
+
+    db = sessionmaker(bind=_engine)()
+    c = ContentItem(platform="bilibili", external_id="BV1", content_type="video")
+    db.add(c)
+    db.commit()
+
+    called = {"fetch": False}
+
+    async def fake_fetch(**kw):
+        called["fetch"] = True
+        return []
+
+    monkeypatch.setattr("app.modules.crawler.fetch_comments", fake_fetch)
+    asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))  # must not raise
+    assert called["fetch"] is False
+    assert db.query(Comment).filter_by(content_id=c.id).count() == 0
+    db.close()

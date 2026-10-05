@@ -9,6 +9,7 @@ list_sources / fetch_source）。这里只做编排：取凭证 -> 调适配器 
 sync_run 记 error，不影响平台其他部分。
 """
 
+import logging
 from datetime import datetime
 
 from sqlalchemy import select
@@ -70,7 +71,11 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     from app.core.comment_settings import get_comment_settings
     from app.services.comment_gate import enqueue_comment_jobs
 
-    enqueue_comment_jobs(db, touched, platform=subscription.platform, settings=get_comment_settings(db))
+    try:
+        enqueue_comment_jobs(db, touched, platform=subscription.platform, settings=get_comment_settings(db))
+    except Exception:  # noqa: BLE001 评论富集是增强项，失败不得翻转本次同步的成功状态
+        db.rollback()
+        logging.getLogger("platform.sync").exception("评论入队失败，已忽略（不影响本次同步）")
     return _finish(db, run, "success", fetched=len(items), added=added)
 
 

@@ -6,6 +6,7 @@
 没有可用账号或被风控时，crawl_run 记 error，不影响平台其他部分。
 """
 
+import logging
 from datetime import datetime
 
 from sqlalchemy import select
@@ -85,7 +86,11 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
     from app.core.comment_settings import get_comment_settings
     from app.services.comment_gate import enqueue_comment_jobs
 
-    enqueue_comment_jobs(db, touched, platform=task.platform, settings=get_comment_settings(db))
+    try:
+        enqueue_comment_jobs(db, touched, platform=task.platform, settings=get_comment_settings(db))
+    except Exception:  # noqa: BLE001 评论富集是增强项，失败不得翻转本次采集的成功状态
+        db.rollback()
+        logging.getLogger("platform.crawl").exception("评论入队失败，已忽略（不影响本次采集）")
     return _finish(db, run, "success", fetched=len(items), added=added)
 
 

@@ -140,3 +140,35 @@ def test_enqueue_comment_jobs(_engine):
     jobs = db.query(JobQueue).filter_by(job_type="fetch_comments").all()
     assert len(jobs) == 3 and all(j.priority == 150 for j in jobs)
     db.close()
+
+
+def test_enqueue_skips_non_douyin_platform(_engine):
+    """I2：本版仅抖音有评论适配器，其他平台不得入队（否则 worker 反复失败重试）。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.comment_gate import enqueue_comment_jobs
+
+    db = sessionmaker(bind=_engine)()
+    cs = [_mk(db, "bv1", like=5000, comment=300, platform="bilibili")]
+    settings = {"top_pct": 1.0, "budget": 10, "min_comments": 20, "min_likes": 100, "weight": 20}
+    n = enqueue_comment_jobs(db, cs, platform="bilibili", settings=settings)
+    assert n == 0
+    assert db.query(JobQueue).filter_by(job_type="fetch_comments").count() == 0
+    db.close()
+
+
+def test_enqueue_reports_only_new_jobs_on_dedup(_engine):
+    """M1：重复目标被 queue 去重吸收时，返回值只计本次新建的 job。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.comment_gate import enqueue_comment_jobs
+
+    db = sessionmaker(bind=_engine)()
+    cs = [_mk(db, f"d{i}", like=2000, comment=200) for i in range(3)]
+    settings = {"top_pct": 1.0, "budget": 10, "min_comments": 20, "min_likes": 100, "weight": 20}
+    assert enqueue_comment_jobs(db, cs, platform="douyin", settings=settings) == 3
+    assert enqueue_comment_jobs(db, cs, platform="douyin", settings=settings) == 0
+    assert db.query(JobQueue).filter_by(job_type="fetch_comments").count() == 3
+    db.close()

@@ -169,6 +169,12 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
     content = db.get(ContentItem, content_id)
     if content is None:
         return
+    # 仅抖音有评论适配器（本版范围）。非抖音 content 直接跳过，避免无适配器时抛错重试。
+    from app.services.comment_gate import COMMENT_PLATFORMS
+
+    if content.platform not in COMMENT_PLATFORMS:
+        logger.info("跳过非评论平台的内容 %s（platform=%s）", content_id, content.platform)
+        return
 
     cookie = _comment_cookie(db, content.platform)
     if not cookie:
