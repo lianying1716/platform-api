@@ -4,65 +4,6 @@
 不发真实平台请求。覆盖：鉴权、未知平台、CRUD、脱敏、体检、扫码闭环。
 """
 
-import base64
-import os
-
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-
-@pytest.fixture()
-def client(monkeypatch):
-    # 密钥走环境变量，避免落盘
-    monkeypatch.setenv("PLATFORM_CREDENTIAL_ENC_KEY", base64.b64encode(os.urandom(32)).decode())
-
-    import app.config as config
-
-    config.settings.credential_enc_key = base64.b64encode(os.urandom(32)).decode()
-    import app.core.crypto as crypto
-
-    crypto._key = None
-
-    # 独立内存库
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
-    TestSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-
-    import app.db as db
-    from app.db import Base
-
-    Base.metadata.create_all(engine)
-
-    def override_get_db():
-        s = TestSession()
-        try:
-            yield s
-        finally:
-            s.close()
-
-    # 调度器在测试里不启动
-    monkeypatch.setattr("app.core.scheduler.start_scheduler", lambda: None)
-    monkeypatch.setattr("app.core.scheduler.stop_scheduler", lambda: None)
-    monkeypatch.setattr(db, "init_db", lambda: None)
-
-    from app.main import app
-
-    app.dependency_overrides[db.get_db] = override_get_db
-
-    with TestClient(app) as c:
-        # 初始化管理员并带上 token
-        r = c.post("/api/auth/setup", json={"password": "test1234"})
-        token = r.json()["token"]
-        c.headers.update({"Authorization": f"Bearer {token}"})
-        yield c
-
-    app.dependency_overrides.clear()
-
-
 def _mock_check(monkeypatch, ok=True, message="在线", external_id="123", display_name="昵称"):
     from app.modules.base import CheckResult
 
@@ -72,12 +13,9 @@ def _mock_check(monkeypatch, ok=True, message="在线", external_id="123", displ
     monkeypatch.setattr("app.modules.bilibili.BilibiliAdapter.check", fake_check)
 
 
-def test_requires_auth():
+def test_requires_auth(anon_client):
     """不带 token 必须 401。"""
-    from app.main import app
-
-    with TestClient(app) as c:
-        assert c.get("/api/accounts").status_code == 401
+    assert anon_client.get("/api/accounts").status_code == 401
 
 
 def test_unknown_platform_returns_422(client):
