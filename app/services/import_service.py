@@ -11,24 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.core.storage import render_subdir
 from app.models import ContentItem, MediaAsset, Transcript
-from app.modules import article_import as _article_import
+from app.modules import article_import
 
 logger = logging.getLogger("platform.import_service")
-
-
-class _ArticleImportProxy:
-    """真实 article_import 模块的轻量代理（测试注入缝）。
-
-    直接以模块名暴露会让 monkeypatch 落到 app.modules.article_import 本身；
-    测试里"包装真实 fetch_article 再调用"的写法就会拿到被替换后的函数而无限递归。
-    代理对象属性写入只影响自身，真实模块保持可调用。
-    """
-
-    def __getattr__(self, name):
-        return getattr(_article_import, name)
-
-
-article_import = _ArticleImportProxy()
 
 
 async def import_wechat_article(db: Session, url: str) -> tuple[MediaAsset, bool]:

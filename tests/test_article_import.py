@@ -93,12 +93,14 @@ def test_import_endpoint_is_idempotent(client, monkeypatch):
 
 
 def test_import_endpoint_rejects_bad_url(client, monkeypatch):
-    async def fake_fetch(url, cookie=""):
-        from app.modules.article_import import fetch_article as real
+    from app.modules import article_import as real_mod
 
+    real = real_mod.fetch_article  # capture BEFORE patching
+
+    async def fake_fetch(url, cookie=""):
         return await real(url, cookie=cookie)
 
-    monkeypatch.setattr("app.services.import_service.article_import.fetch_article", fake_fetch)
+    monkeypatch.setattr(real_mod, "fetch_article", fake_fetch)
     r = client.post("/api/imports/wechat-article", json={"url": "https://evil.example.com/s/x"})
     assert r.status_code == 422
     assert "微信" in r.text
