@@ -61,3 +61,66 @@ def test_comment_settings_override(_engine):
     s = get_comment_settings(db)
     assert s["budget"] == 3 and s["top_pct"] == 0.5
     db.close()
+
+
+def _mk(db, ext, like, comment, platform="douyin"):
+    from app.models import ContentItem, ContentMetricSnapshot
+
+    c = ContentItem(platform=platform, external_id=ext, content_type="video", source_kind="crawl")
+    db.add(c)
+    db.flush()
+    db.add(ContentMetricSnapshot(content_id=c.id, like=like, comment=comment))
+    db.commit()
+    return c
+
+
+def test_gate_percentile_min_and_budget(_engine):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services.comment_gate import select_targets
+
+    db = sessionmaker(bind=_engine)()
+    # 10 条，全部过下限(评论>=20,赞>=100)，分位0.2=2条，预算10不设限
+    cs = [_mk(db, f"a{i}", like=1000 - i * 10, comment=100 - i) for i in range(10)]
+    picks = select_targets(db, cs, platform="douyin",
+                           settings={"top_pct": 0.2, "budget": 10, "min_comments": 20,
+                                     "min_likes": 100, "weight": 20})
+    assert len(picks) == 2
+    assert [p.external_id for p in picks] == ["a0", "a1"]  # 分最高两条
+    db.close()
+
+
+def test_gate_min_filters_out_cold(_engine):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services.comment_gate import select_targets
+
+    db = sessionmaker(bind=_engine)()
+    hot = _mk(db, "hot", like=5000, comment=300)
+    cold = _mk(db, "cold", like=10, comment=1)  # 不过下限
+    picks = select_targets(db, [hot, cold], platform="douyin",
+                           settings={"top_pct": 1.0, "budget": 10, "min_comments": 20,
+                                     "min_likes": 100, "weight": 20})
+    assert [p.external_id for p in picks] == ["hot"]
+    db.close()
+
+
+def test_gate_skips_already_fetched_and_other_platform(_engine):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import CommentFetchState
+    from app.services.comment_gate import select_targets
+
+    db = sessionmaker(bind=_engine)()
+    a = _mk(db, "done", like=900, comment=200)
+    b = _mk(db, "fresh", like=800, comment=150)
+    _mk(db, "bili", like=9000, comment=900, platform="bilibili")
+    db.add(CommentFetchState(content_id=a.id, fetched_count=5))
+    db.commit()
+    from app.models import ContentItem
+
+    picks = select_targets(db, db.query(ContentItem).all(), platform="douyin",
+                           settings={"top_pct": 1.0, "budget": 10, "min_comments": 20,
+                                     "min_likes": 100, "weight": 20})
+    assert [p.external_id for p in picks] == ["fresh"]
+    db.close()
