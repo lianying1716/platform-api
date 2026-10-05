@@ -66,3 +66,37 @@ def test_handle_understand_video_missing_asset_is_noop(session):
 
 def test_handle_extract_frames_missing_asset_is_noop(session):
     asyncio.run(handlers.handle_extract_frames(session, {"asset_id": 999999}))  # 不抛
+
+
+def test_handle_understand_video_input_error_is_non_retryable(monkeypatch, session):
+    """数据问题（UnderstandInputError）→ 包成 NonRetryableJobError，让 worker 不再重试。"""
+    from app.core.queue import NonRetryableJobError
+
+    a = _seed(session)
+
+    async def boom(db, asset_id, **kw):
+        raise svc.UnderstandInputError("素材未关联内容")
+
+    monkeypatch.setattr(svc, "run_understand", boom)
+    try:
+        asyncio.run(handlers.handle_understand_video(session, {"asset_id": a.id}))
+    except NonRetryableJobError as exc:
+        assert "未关联内容" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("应抛出 NonRetryableJobError")
+
+
+def test_handle_understand_video_generic_error_propagates(monkeypatch, session):
+    """普通异常原样抛出（worker 正常重试）。"""
+    a = _seed(session)
+
+    async def boom(db, asset_id, **kw):
+        raise RuntimeError("网络炸了")
+
+    monkeypatch.setattr(svc, "run_understand", boom)
+    try:
+        asyncio.run(handlers.handle_understand_video(session, {"asset_id": a.id}))
+    except RuntimeError as exc:
+        assert "网络炸了" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("应抛出 RuntimeError")

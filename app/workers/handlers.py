@@ -15,7 +15,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.core import events
+from app.core import events, queue
 from app.core.storage import get_default_root, render_subdir, resolve_asset_dir
 from app.models import AnalysisResult, ContentItem, MediaAsset, Transcript
 from app.modules import media_download
@@ -228,17 +228,21 @@ async def handle_extract_frames(db: Session, payload: dict) -> None:
 
 async def handle_understand_video(db: Session, payload: dict) -> None:
     """L3 视频理解：判类 → 类型专属提示词 → 调 vision → 写 VideoUnderstanding。"""
-    from app.services.understand_service import run_understand
+    from app.services.understand_service import UnderstandInputError, run_understand
 
     asset_id = payload["asset_id"]
     if db.get(MediaAsset, asset_id) is None:
         return
-    await run_understand(
-        db,
-        asset_id,
-        force_category=payload.get("force_category") or None,
-        use_cover=payload.get("use_cover"),
-    )
+    try:
+        await run_understand(
+            db,
+            asset_id,
+            force_category=payload.get("force_category") or None,
+            use_cover=payload.get("use_cover"),
+        )
+    except UnderstandInputError as exc:
+        # 数据问题（素材/内容缺失）不可重试，直接置 error，避免无谓重试。
+        raise queue.NonRetryableJobError(str(exc)) from exc
 
 
 HANDLERS = {

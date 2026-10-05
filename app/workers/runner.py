@@ -35,6 +35,9 @@ async def _run_one() -> bool:
         logger.info("处理任务 #%s %s (第 %s 次)", job.id, job.job_type, job.attempts)
         try:
             await handler(db, job.payload)
+        except queue.NonRetryableJobError as exc:
+            logger.warning("任务 #%s 不可重试失败: %s", job.id, exc)
+            queue.fail(db, job, str(exc), retry=False)
         except Exception as exc:  # noqa: BLE001 任务失败不应让 worker 崩
             logger.exception("任务 #%s 失败", job.id)
             queue.fail(db, job, str(exc))

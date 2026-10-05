@@ -32,6 +32,8 @@ PROCESS_KEYS: dict[str, str] = {
     "video_max_mb": "process_video_max_mb",
     "classify_enabled": "process_classify_enabled",
     "use_cover": "process_use_cover",
+    "cover_max_mb": "process_cover_max_mb",
+    "low_confidence_threshold": "process_low_confidence_threshold",
     "provider": "process_provider",
     "vision_model": "process_vision_model",
     "classify_model": "process_classify_model",
@@ -52,6 +54,9 @@ _DEFAULTS: dict[str, tuple[object, str]] = {
     "process_video_max_mb": (15.0, _FLOAT),
     "process_classify_enabled": (True, _BOOL),
     "process_use_cover": (False, _BOOL),
+    "process_cover_max_mb": (5.0, _FLOAT),
+    # 判类置信度低于此值 → 标 low_confidence 供人工复核（设计 §4 默认 0.6）。
+    "process_low_confidence_threshold": (0.6, _FLOAT),
     "process_provider": ("qwen", _STR),
     "process_vision_model": ("qwen3.8-flash", _STR),
     "process_classify_model": ("qwen3.8-flash", _STR),

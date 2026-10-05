@@ -197,6 +197,19 @@ def test_queue_claim_complete_and_retry(session):
     assert job.status == "queued" and job.attempts == 0
 
 
+def test_queue_fail_retry_false_marks_error(session):
+    """不可重试失败（retry=False）直接置 error，不重新排队。"""
+    from app.core import queue
+
+    queue.enqueue(session, "understand_video", {"asset_id": 7})
+    job = queue.claim(session, ["understand_video"])
+    assert job is not None and job.status == "running"
+
+    queue.fail(session, job, "数据缺失", retry=False)
+    session.refresh(job)
+    assert job.status == "error"
+
+
 def test_dashboard_summary_aggregates(session, monkeypatch):
     """看板汇总：账号异常数 / 素材总数 / 热门 Top 聚合正确。"""
     from app.models import ContentItem, ContentMetricSnapshot, MediaAsset, PlatformAccount

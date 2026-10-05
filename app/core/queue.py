@@ -12,6 +12,10 @@ from sqlalchemy.orm import Session
 from app.models import JobQueue
 
 
+class NonRetryableJobError(Exception):
+    """不可重试的任务失败（输入/数据问题）。worker 直接置 error，不重新排队。"""
+
+
 def enqueue(
     db: Session,
     job_type: str,
@@ -91,10 +95,20 @@ def complete(db: Session, job: JobQueue) -> None:
     db.commit()
 
 
-def fail(db: Session, job: JobQueue, error: str, *, retry_delay_seconds: int = 60) -> None:
-    """失败处理：未超重试上限则重新排队（延后 run_after），否则置 error。"""
+def fail(
+    db: Session,
+    job: JobQueue,
+    error: str,
+    *,
+    retry_delay_seconds: int = 60,
+    retry: bool = True,
+) -> None:
+    """失败处理：未超重试上限则重新排队（延后 run_after），否则置 error。
+
+    `retry=False` 表示不可重试的失败（如输入/数据问题），直接置 error，不占用重试额度。
+    """
     job.error = error[:2000]
-    if job.attempts >= job.max_attempts:
+    if not retry or job.attempts >= job.max_attempts:
         job.status = "error"
     else:
         job.status = "queued"

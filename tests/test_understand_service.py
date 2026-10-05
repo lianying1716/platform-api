@@ -27,7 +27,14 @@ def _chdir_tmp(tmp_path, monkeypatch):
     yield
 
 
-def _seed(db, *, video_file: str = "", relative_path: str = "douyin/a/1", duration: int = 30):
+def _seed(
+    db,
+    *,
+    video_file: str = "",
+    relative_path: str = "douyin/a/1",
+    duration: int = 30,
+    cover_url: str = "",
+):
     from app.models import ContentItem, MediaAsset, SystemSetting, Transcript
 
     # 判类/理解链路需要 LLM 端点配置（DB 设置优先）；网络调用已被 mock，仅需非空。
@@ -40,6 +47,7 @@ def _seed(db, *, video_file: str = "", relative_path: str = "douyin/a/1", durati
         title="这条裙子我回购5次",
         author_name="小红",
         duration_sec=duration,
+        cover_url=cover_url,
     )
     db.add(c)
     db.flush()
@@ -276,3 +284,186 @@ def test_run_extract_frames_fewer_frames_removes_orphans(monkeypatch, session):
 
     rows = session.query(AssetFrame).filter_by(asset_id=a.id).all()
     assert len(rows) == 1
+
+
+# --------------------------------------------------------------------------- 修复回归（Task 7 review）
+
+
+class _FakeResp:
+    def __init__(self, content: bytes, content_type: str = "image/jpeg"):
+        self.content = content
+        self.headers = {"content-type": content_type}
+
+    def raise_for_status(self):
+        return None
+
+
+class _FakeClient:
+    def __init__(self, resp):
+        self._resp = resp
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url):
+        return self._resp
+
+
+def _patch_http(monkeypatch, resp):
+    monkeypatch.setattr(svc.httpx, "AsyncClient", lambda *a, **k: _FakeClient(resp))
+
+
+def test_ensure_cover_downloads_and_writes(monkeypatch, session, tmp_path):
+    """Important#1：封面真正落盘——_ensure_cover 下载后返回本地路径。"""
+    c, a = _seed(session, cover_url="http://img.test/c.png")
+    _patch_http(monkeypatch, _FakeResp(b"\x89PNG-fake", "image/png"))
+
+    work = str(tmp_path / "_cover")
+    path = asyncio.run(svc._ensure_cover(c, work, 5))
+
+    assert path is not None and path.endswith(".png")
+    assert os.path.exists(path)
+    with open(path, "rb") as fh:
+        assert fh.read() == b"\x89PNG-fake"
+
+
+def test_ensure_cover_no_url_returns_none(session, tmp_path):
+    c, a = _seed(session, cover_url="")
+    assert asyncio.run(svc._ensure_cover(c, str(tmp_path), 5)) is None
+
+
+def test_ensure_cover_download_failure_falls_back(monkeypatch, session, tmp_path):
+    """封面下载失败 → None（回退纯文本），不抛。"""
+    c, a = _seed(session, cover_url="http://img.test/x.jpg")
+
+    class _Boom:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            raise RuntimeError("网络炸了")
+
+    monkeypatch.setattr(svc.httpx, "AsyncClient", lambda *a, **k: _Boom())
+    assert asyncio.run(svc._ensure_cover(c, str(tmp_path), 5)) is None
+
+
+def test_ensure_cover_oversize_returns_none(monkeypatch, session, tmp_path):
+    c, a = _seed(session, cover_url="http://img.test/big.jpg")
+    _patch_http(monkeypatch, _FakeResp(b"x" * 4096, "image/jpeg"))
+    assert asyncio.run(svc._ensure_cover(c, str(tmp_path), 0.0001)) is None
+
+
+def test_run_understand_use_cover_passes_downloaded_path(monkeypatch, session, tmp_path):
+    """Important#1 端到端：use_cover=True 时 classify 收到真实封面路径（不再恒为 None）。"""
+    c, a = _seed(session, cover_url="http://img.test/c.jpg")
+    _patch_http(monkeypatch, _FakeResp(b"cover-bytes", "image/jpeg"))
+
+    seen = {}
+
+    async def fake_classify(*args, **kwargs):
+        seen["cover_path"] = kwargs.get("cover_path")
+        seen["use_cover"] = kwargs.get("use_cover")
+        return {"type": "commerce", "confidence": 0.9, "reason": "x", "signals": []}
+
+    monkeypatch.setattr(svc, "classify", fake_classify)
+    monkeypatch.setattr(svc.vision, "understand", _fake_understand('{"summary":"s","dimensions":{}}'))
+
+    asyncio.run(svc.run_understand(session, a.id, use_cover=True))
+    assert seen["use_cover"] is True
+    assert seen["cover_path"] and seen["cover_path"].endswith(".jpg")
+
+
+def test_run_understand_use_cover_off_passes_none(monkeypatch, session):
+    c, a = _seed(session, cover_url="http://img.test/c.jpg")
+    seen = {}
+
+    async def fake_classify(*args, **kwargs):
+        seen["cover_path"] = kwargs.get("cover_path")
+        return {"type": "commerce", "confidence": 0.9, "reason": "x", "signals": []}
+
+    monkeypatch.setattr(svc, "classify", fake_classify)
+    monkeypatch.setattr(svc.vision, "understand", _fake_understand('{"summary":"s","dimensions":{}}'))
+
+    asyncio.run(svc.run_understand(session, a.id, use_cover=False))
+    assert seen["cover_path"] is None
+
+
+def test_run_understand_marks_low_confidence(monkeypatch, session):
+    """Minor#3（设计 §4）：置信度 < 阈值 → low_confidence=True。"""
+    c, a = _seed(session)
+    monkeypatch.setattr(
+        svc, "classify", _fake_classify({"type": "commerce", "confidence": 0.5, "reason": "x", "signals": []})
+    )
+    monkeypatch.setattr(svc.vision, "understand", _fake_understand('{"summary":"s","dimensions":{}}'))
+
+    u = asyncio.run(svc.run_understand(session, a.id))
+    assert u.category_confidence == 0.5
+    assert u.low_confidence is True
+
+
+def test_run_understand_high_confidence_not_flagged(monkeypatch, session):
+    c, a = _seed(session)
+    monkeypatch.setattr(
+        svc, "classify", _fake_classify({"type": "commerce", "confidence": 0.9, "reason": "x", "signals": []})
+    )
+    monkeypatch.setattr(svc.vision, "understand", _fake_understand('{"summary":"s","dimensions":{}}'))
+
+    u = asyncio.run(svc.run_understand(session, a.id))
+    assert u.low_confidence is False
+
+
+def test_run_understand_force_category_not_low_confidence(monkeypatch, session):
+    c, a = _seed(session)
+    monkeypatch.setattr(svc.vision, "understand", _fake_understand('{"summary":"s","dimensions":{}}'))
+    u = asyncio.run(svc.run_understand(session, a.id, force_category="drama"))
+    assert u.low_confidence is False
+
+
+def test_run_understand_missing_content_raises_input_error(monkeypatch, session):
+    """Minor#4：孤儿资产显式报错（UnderstandInputError），不靠兜底 catch 变 other。"""
+    from app.models import MediaAsset, SystemSetting
+
+    session.add(SystemSetting(key="llm_base_url", value="http://x/v1"))
+    session.add(MediaAsset(content_id=999999, relative_path="douyin/orphan", video_file=""))
+    session.commit()
+    a = session.query(MediaAsset).filter_by(relative_path="douyin/orphan").one()
+
+    monkeypatch.setattr(svc.vision, "understand", _fake_understand('{"summary":"s","dimensions":{}}'))
+
+    with pytest.raises(svc.UnderstandInputError):
+        asyncio.run(svc.run_understand(session, a.id))
+    session.refresh(a)
+    assert a.understand_status == "error"
+
+
+def test_ensure_inline_second_pass_when_still_oversize(monkeypatch, session, tmp_path):
+    """Minor#2：压一次仍超限 → 再降一档（两档），产出 <= 上限。"""
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"\x00" * 1000)
+    calls = []
+
+    def fake_run(args, capture_output=True, text=True):
+        calls.append(args[args.index("-vf") + 1])
+        out = args[-1]
+        # 第一次产出仍超限，第二次产出合规
+        size = 1000 if len(calls) == 1 else 10
+        with open(out, "wb") as fh:
+            fh.write(b"\x00" * size)
+
+        class _P:
+            returncode = 0
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(svc.subprocess, "run", fake_run)
+    out = svc._ensure_inline(str(src), 0.0001, str(tmp_path / "_inline"))
+
+    assert len(calls) == 2
+    assert os.path.getsize(out) <= 0.0001 * svc._MB

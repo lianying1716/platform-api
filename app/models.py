@@ -394,6 +394,7 @@ class VideoUnderstanding(Base):
     category: Mapped[str] = mapped_column(String(32), default="other")  # 判类枚举（或 other）
     category_confidence: Mapped[float] = mapped_column(Float, default=0)
     category_reason: Mapped[str] = mapped_column(String(512), default="")
+    low_confidence: Mapped[bool] = mapped_column(Boolean, default=False)  # 置信度低于阈值，供人工复核（设计 §4）
     dimensions: Mapped[dict] = mapped_column(JSON, default=dict)  # 类型专属维度 → 值
     summary: Mapped[str] = mapped_column(Text, default="")
     timeline: Mapped[list] = mapped_column(JSON, default=list)
