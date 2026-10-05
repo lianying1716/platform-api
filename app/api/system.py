@@ -10,6 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core import security, storage
+from app.core.process_settings import (
+    _valid_dimension_list as _valid_common_dimensions,
+    _valid_taxonomy,
+    _valid_type_prompts,
+)
 from app.core.scheduler import scheduler
 from app.db import get_db
 from app.models import StorageRoot, SystemSetting
@@ -212,37 +217,8 @@ _PROCESS_SPECS = {
 }
 
 
-def _valid_taxonomy(value) -> bool:
-    return isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items())
-
-
-def _valid_dimension(dim) -> bool:
-    return (
-        isinstance(dim, dict)
-        and isinstance(dim.get("key"), str)
-        and dim["key"].strip() != ""
-        and isinstance(dim.get("name"), str)
-        and isinstance(dim.get("ask"), str)
-    )
-
-
-def _valid_type_prompts(value) -> bool:
-    if not isinstance(value, dict):
-        return False
-    for spec in value.values():
-        if not isinstance(spec, dict) or not isinstance(spec.get("focus"), str):
-            return False
-        dims = spec.get("dimensions")
-        if not isinstance(dims, list) or not all(_valid_dimension(d) for d in dims):
-            return False
-    return True
-
-
-def _valid_common_dimensions(value) -> bool:
-    return isinstance(value, list) and all(_valid_dimension(d) for d in value)
-
-
 # 结构化配置键 -> 校验器。落库键见 _PROCESS_STRUCT_STORE。
+# 校验器复用 app.core.process_settings 的实现（读取侧同一套），避免两处定义漂移。
 _PROCESS_STRUCT_KEYS = {
     "taxonomy": _valid_taxonomy,
     "type_prompts": _valid_type_prompts,

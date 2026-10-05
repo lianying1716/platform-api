@@ -44,6 +44,12 @@ class ProcessRequest(BaseModel):
     use_cover: bool | None = None
 
 
+class ReclassifyRequest(BaseModel):
+    # 与 ProcessRequest 同样用 Pydantic 布尔归一（"false"/"0" -> False），避免裸 dict 的 bool() 误判。
+    force_category: str | None = None
+    use_cover: bool | None = None
+
+
 def _latest_metric(db: Session, content_id: int) -> ContentMetricSnapshot | None:
     return db.scalar(
         select(ContentMetricSnapshot)
@@ -354,20 +360,22 @@ def enqueue_process(asset_id: int, body: ProcessRequest, db: Session = Depends(g
 
 
 @router.post("/assets/{asset_id}/reclassify")
-def enqueue_reclassify(asset_id: int, body: dict | None = None, db: Session = Depends(get_db)):
+def enqueue_reclassify(
+    asset_id: int, body: ReclassifyRequest | None = None, db: Session = Depends(get_db)
+):
     """按当前设置重跑判类与视频理解（忽略已有结果）。"""
     asset = db.get(MediaAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")
-    body = body or {}
+    body = body or ReclassifyRequest()
     payload: dict = {"asset_id": asset_id}
-    force = body.get("force_category")
+    force = body.force_category
     if force:
         if force not in _known_categories(db):
             raise HTTPException(status_code=422, detail=f"未知视频类型: {force}")
         payload["force_category"] = force
-    if body.get("use_cover") is not None:
-        payload["use_cover"] = bool(body["use_cover"])
+    if body.use_cover is not None:
+        payload["use_cover"] = body.use_cover
     asset.understand_status = "pending"
     db.commit()
     job = enqueue(db, "understand_video", payload)

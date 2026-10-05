@@ -77,6 +77,21 @@ def test_put_process_settings_rejects_bad_structure(client):
     assert client.put("/api/system/process-settings", json={"common_dimensions": [{"key": "k"}]}).status_code == 422
 
 
+def test_put_process_settings_rejects_empty_structure(client):
+    """空容器会被读取侧当作合法值，静默退化类型化提示词——写入侧必须 422。"""
+    assert client.put("/api/system/process-settings", json={"taxonomy": {}}).status_code == 422
+    assert client.put("/api/system/process-settings", json={"type_prompts": {}}).status_code == 422
+    assert client.put("/api/system/process-settings", json={"common_dimensions": []}).status_code == 422
+    # 空 key 的维度同样非法
+    assert (
+        client.put(
+            "/api/system/process-settings",
+            json={"common_dimensions": [{"key": "  ", "name": "n", "ask": "a"}]},
+        ).status_code
+        == 422
+    )
+
+
 def test_put_process_settings_roundtrip(client):
     payload = {
         "l3_min_heat": 4242,
@@ -357,6 +372,56 @@ def test_post_reclassify_enqueues_understand(client, _engine):
     jobs = _jobs(db, "understand_video")
     assert len(jobs) == 1
     db.close()
+
+
+def test_post_reclassify_use_cover_false_string(client, _engine):
+    """字符串 "false" 必须归一为 False，而不是被裸 bool() 判成 True。"""
+    from sqlalchemy.orm import sessionmaker
+
+    Session = sessionmaker(bind=_engine)
+    db = Session()
+    _, asset_id = _seed_asset(db)
+    db.close()
+
+    r = client.post(f"/api/assets/{asset_id}/reclassify", json={"use_cover": "false"})
+    assert r.status_code == 200
+    db = Session()
+    jobs = _jobs(db, "understand_video")
+    assert jobs[0].payload["use_cover"] is False
+    db.close()
+
+
+def test_post_reclassify_use_cover_true_and_force_category(client, _engine):
+    from sqlalchemy.orm import sessionmaker
+
+    Session = sessionmaker(bind=_engine)
+    db = Session()
+    _, asset_id = _seed_asset(db)
+    db.close()
+
+    r = client.post(
+        f"/api/assets/{asset_id}/reclassify",
+        json={"use_cover": True, "force_category": "commerce"},
+    )
+    assert r.status_code == 200
+    db = Session()
+    jobs = _jobs(db, "understand_video")
+    assert jobs[0].payload["use_cover"] is True
+    assert jobs[0].payload["force_category"] == "commerce"
+    db.close()
+
+
+def test_post_reclassify_rejects_unknown_category(client, _engine):
+    from sqlalchemy.orm import sessionmaker
+
+    Session = sessionmaker(bind=_engine)
+    db = Session()
+    _, asset_id = _seed_asset(db)
+    db.close()
+    assert (
+        client.post(f"/api/assets/{asset_id}/reclassify", json={"force_category": "nope"}).status_code
+        == 422
+    )
 
 
 def test_post_reclassify_unknown_asset(client):

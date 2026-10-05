@@ -283,8 +283,11 @@ def _load_json(raw: str | None, validator):
 
 
 def _valid_taxonomy(data: object) -> bool:
-    return isinstance(data, dict) and all(
-        isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+    # 必须非空：空目录会让判类把所有类型归一为 other，静默退化类型化提示词。
+    return (
+        isinstance(data, dict)
+        and len(data) >= 1
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in data.items())
     )
 
 
@@ -292,13 +295,15 @@ def _valid_dimension(dim: object) -> bool:
     return (
         isinstance(dim, dict)
         and isinstance(dim.get("key"), str)
+        and dim["key"].strip() != ""
         and isinstance(dim.get("name"), str)
         and isinstance(dim.get("ask"), str)
     )
 
 
 def _valid_type_prompts(data: object) -> bool:
-    if not isinstance(data, dict):
+    # 必须非空：空提示词会让理解失去类型专属 Focus/维度。
+    if not isinstance(data, dict) or len(data) == 0:
         return False
     for spec in data.values():
         if not isinstance(spec, dict):
@@ -312,7 +317,8 @@ def _valid_type_prompts(data: object) -> bool:
 
 
 def _valid_dimension_list(data: object) -> bool:
-    return isinstance(data, list) and all(_valid_dimension(d) for d in data)
+    # 必须非空：空通用维度会让维度提取失去兜底清单。
+    return isinstance(data, list) and len(data) >= 1 and all(_valid_dimension(d) for d in data)
 
 
 def get_taxonomy(db: Session) -> dict[str, str]:
