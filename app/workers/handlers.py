@@ -192,6 +192,7 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
             like_count=it.get("like_count", 0), ip_location=it.get("ip_location", ""),
             created_at=_ts_to_dt(it.get("created_at")),
         ))
+        existing.add(it["comment_id"])
         added += 1
 
     # 空结果不落 state：fetch_comments 在「被风控/封禁」与「确实无评论」两种情况下都返回 []，

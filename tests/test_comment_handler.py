@@ -107,3 +107,34 @@ def test_handler_keeps_existing_state_when_all_duplicate(_engine, monkeypatch):
     assert db.query(Comment).filter_by(content_id=c.id).count() == 1
     assert db.get(CommentFetchState, c.id).fetched_count == 1  # 保留，不被清零
     db.close()
+
+
+def test_handler_dedups_duplicate_cids_in_one_batch(_engine, monkeypatch):
+    """同一批 fetch 内 cid 重复时只落一行，不触发唯一约束 IntegrityError。
+
+    crawler.fetch_comments 跨页游标可能重返回同一 cid；handler 的去重集合若不在
+    循环内同步刚插入的 id，两个相同 cid 都会被 db.add，commit 违反
+    UniqueConstraint(content_id, comment_id) -> IntegrityError -> 任务永久失败。
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Comment
+    from app.workers.handlers import handle_fetch_comments
+
+    db = sessionmaker(bind=_engine)()
+    c = _seed(db)
+
+    async def fake_fetch(**kw):
+        return [
+            {"comment_id": "dup", "parent_comment_id": "0", "user_id": "u1", "nickname": "甲",
+             "avatar": "", "content": "第一次", "like_count": 5, "ip_location": "", "created_at": None},
+            {"comment_id": "dup", "parent_comment_id": "0", "user_id": "u1", "nickname": "甲",
+             "avatar": "", "content": "第二次(重复cid)", "like_count": 5, "ip_location": "", "created_at": None},
+        ]
+
+    monkeypatch.setattr("app.modules.crawler.fetch_comments", fake_fetch)
+    monkeypatch.setattr("app.workers.handlers._comment_cookie", lambda db, platform: "cookie")
+
+    asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))  # must not raise
+    assert db.query(Comment).filter_by(content_id=c.id).count() == 1
+    db.close()
