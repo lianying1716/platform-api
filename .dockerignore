@@ -1,0 +1,10 @@
+.venv
+data
+.git
+**/__pycache__
+*.pyc
+web/node_modules
+web/dist
+app/static
+.superpowers
+.pytest_cache
