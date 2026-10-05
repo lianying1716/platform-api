@@ -6,9 +6,10 @@ services:
     environment:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
       PLATFORM_AUTO_CREATE_TABLES: "false"
+      PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
       PLATFORM_ACCOUNT_CHECK_INTERVAL: "15"
     volumes:
-      - platform-data:/data
+      - platform-data:/data        # secret.key 与本地文件；备份必须包含此卷
     depends_on:
       db:
         condition: service_healthy
@@ -30,6 +31,7 @@ services:
     environment:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
       PLATFORM_AUTO_CREATE_TABLES: "false"
+      PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
     volumes:
       - platform-data:/data
     depends_on:
