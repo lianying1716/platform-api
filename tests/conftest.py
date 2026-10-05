@@ -46,14 +46,23 @@ def _memory_engine():
 
 
 @pytest.fixture()
-def session(_db_env):
-    """独立内存 SQLite 会话，已建全部表。"""
+def _engine(_db_env):
+    """单个内存 SQLite 引擎：session 与 client 共享，才能跨两者断言。"""
     engine = _memory_engine()
-    TestSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     import app.models  # noqa: F401  注册全部模型
     from app.db import Base
 
     Base.metadata.create_all(engine)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture()
+def session(_engine):
+    """已建全部表的内存 SQLite 会话（与 client 同一库）。"""
+    TestSession = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     db = TestSession()
     try:
         yield db
@@ -62,14 +71,9 @@ def session(_db_env):
 
 
 @pytest.fixture()
-def _app_with_overrides(_db_env, monkeypatch):
+def _app_with_overrides(_db_env, _engine, monkeypatch):
     """把 app 的 get_db 覆盖到独立内存库；关闭调度器与 init_db 连库。"""
-    engine = _memory_engine()
-    TestSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-    import app.models  # noqa: F401
-    from app.db import Base
-
-    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
 
     import app.db as db_mod
     import app.main as main_mod

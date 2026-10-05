@@ -132,5 +132,11 @@ def export_assets(asset_ids: list[int], format: str = "md") -> dict:
     return _post("/api/skills/assets/export", {"asset_ids": asset_ids, "format": format})
 
 
+@mcp.tool()
+def import_article(url: str) -> dict:
+    """导入单篇微信公众号文章到素材库（mp.weixin.qq.com/s... 链接）。"""
+    return _post("/api/skills/import-article", {"url": url})
+
+
 if __name__ == "__main__":
     mcp.run()

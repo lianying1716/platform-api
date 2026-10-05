@@ -196,3 +196,25 @@ async def skill_start_qr_login(
         "qr_image_base64": start.qr_image_b64,
         "expires_in": settings.qr_session_ttl,
     }
+
+
+@router.post("/import-article")
+async def skill_import_article(
+    request: Request,
+    body: dict,
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("operate", "admin")),
+):
+    """导入单篇公众号文章（API Key 通道，与前端能力对等）。"""
+    from app.modules.article_import import ArticleImportError
+    from app.services.import_service import import_wechat_article
+
+    t0 = time.time()
+    url = (body or {}).get("url", "")
+    try:
+        asset, _created = await import_wechat_article(db, url)
+        _log(db, key.id, "import_article", url[:200], "ok", int((time.time() - t0) * 1000))
+        return {"asset_id": asset.id, "content_id": asset.content_id}
+    except ArticleImportError as exc:
+        _log(db, key.id, "import_article", url[:200], "error", int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=422, detail=str(exc))

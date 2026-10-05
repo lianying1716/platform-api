@@ -14,6 +14,7 @@
         <el-option label="失败" value="error" />
       </el-select>
       <el-button @click="load">刷新</el-button>
+      <el-button @click="importDialog = true">导入文章</el-button>
       <el-button type="primary" :disabled="!selected.length" @click="exportSel('md')">导出 Markdown</el-button>
       <el-button type="primary" plain :disabled="!selected.length" @click="exportSel('json')">导出 JSON</el-button>
     </div>
@@ -40,6 +41,19 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <el-dialog v-model="importDialog" title="导入微信公众号文章" width="520px">
+      <el-input
+        v-model="importUrl"
+        placeholder="https://mp.weixin.qq.com/s/..."
+        clearable
+      />
+      <p class="hint">仅支持单篇文章链接。批量历史文章列表接口微信已关闭，无法导入整号历史。</p>
+      <template #footer>
+        <el-button @click="importDialog = false">取消</el-button>
+        <el-button type="primary" :loading="importing" @click="doImport">导入</el-button>
+      </template>
+    </el-dialog>
 
     <el-drawer v-model="drawer" title="素材详情" size="50%">
       <div v-if="detail">
@@ -77,6 +91,24 @@ const loading = ref(false)
 const drawer = ref(false)
 const detail = ref<any>(null)
 const filters = reactive({ platform: '', transcribe_status: '' })
+
+const importDialog = ref(false)
+const importUrl = ref('')
+const importing = ref(false)
+
+async function doImport() {
+  if (!importUrl.value.trim()) return
+  importing.value = true
+  try {
+    await api.post('/api/imports/wechat-article', { url: importUrl.value.trim() })
+    ElMessage.success('导入成功')
+    importDialog.value = false
+    importUrl.value = ''
+    await load()
+  } finally {
+    importing.value = false
+  }
+}
 
 const statusText: Record<string, string> = {
   pending: '待处理', downloading: '下载中', transcribing: '转录中', analyzing: '分析中', done: '完成', error: '失败',
@@ -125,4 +157,5 @@ onMounted(load)
 <style scoped>
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
 .meta { color: #909399; margin: 4px 0 12px; }
+.hint { color: #909399; font-size: 12px; margin: 8px 0 0; }
 </style>
