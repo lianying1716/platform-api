@@ -17,4 +17,6 @@ COPY --from=web /build/dist app/static
 ENV PLATFORM_HOST=0.0.0.0 PLATFORM_PORT=9100 PLATFORM_DATA_DIR=/data
 VOLUME /data
 EXPOSE 9100
+# 同一镜像两种角色：默认起 API；worker 由 compose 用 command 覆盖为
+# ["python", "-m", "app.workers.runner"]（一个 API 进程 + 一个 worker 进程）。
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9100"]

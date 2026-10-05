@@ -7,7 +7,19 @@ services:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
       PLATFORM_ACCOUNT_CHECK_INTERVAL: "15"
     volumes:
-      - platform-data:/data        # secret.key 与本地文件；备份必须包含此卷
+      - platform-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  platform-worker:
+    build: .
+    command: ["python", "-m", "app.workers.runner"]
+    environment:
+      PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
+    volumes:
+      - platform-data:/data
     depends_on:
       db:
         condition: service_healthy
