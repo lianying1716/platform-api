@@ -11,6 +11,7 @@
 """
 
 import logging
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -144,10 +145,69 @@ async def handle_crawl(db: Session, payload: dict) -> None:
     await run_crawl_task(db, payload["task_id"])
 
 
+def _comment_cookie(db: Session, platform: str) -> str:
+    """取该平台一个在线账号的 cookie（复用 crawl_service 的逻辑）。"""
+    from app.services.crawl_service import _platform_cookie
+
+    return _platform_cookie(db, platform)
+
+
+def _ts_to_dt(ts) -> datetime | None:
+    try:
+        return datetime.utcfromtimestamp(int(ts)) if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def handle_fetch_comments(db: Session, payload: dict) -> None:
+    """抓抖音作品一级评论：复用账号 cookie，按配置抓 K 页取 Top-N，幂等写库 + state。"""
+    from app.core.comment_settings import get_comment_settings
+    from app.models import Comment, CommentFetchState, ContentItem
+    from app.modules import crawler
+
+    content_id = payload["content_id"]
+    content = db.get(ContentItem, content_id)
+    if content is None:
+        return
+
+    cookie = _comment_cookie(db, content.platform)
+    if not cookie:
+        raise ValueError(f"{content.platform} 无在线账号，无法抓评论")
+
+    s = get_comment_settings(db)
+    comments = await crawler.fetch_comments(
+        aweme_id=content.external_id, cookie=cookie,
+        pages=s["pages"], per_page=s["per_page"], top_n=s["top_n"], interval=s["interval"],
+    )
+
+    existing = {c.comment_id for c in db.query(Comment).filter(Comment.content_id == content_id).all()}
+    added = 0
+    for it in comments:
+        if it["comment_id"] in existing:
+            continue
+        db.add(Comment(
+            content_id=content_id, platform=content.platform, comment_id=it["comment_id"],
+            parent_comment_id=it.get("parent_comment_id", "0"), user_id=it.get("user_id", ""),
+            nickname=it.get("nickname", ""), avatar=it.get("avatar", ""), content=it.get("content", ""),
+            like_count=it.get("like_count", 0), ip_location=it.get("ip_location", ""),
+            created_at=_ts_to_dt(it.get("created_at")),
+        ))
+        added += 1
+
+    st = db.get(CommentFetchState, content_id)
+    if st is None:
+        st = CommentFetchState(content_id=content_id)
+        db.add(st)
+    st.last_fetched_at = datetime.utcnow()
+    st.fetched_count = added
+    db.commit()
+
+
 HANDLERS = {
     "download": handle_download,
     "transcribe": handle_transcribe,
     "analyze": handle_analyze,
     "sync": handle_sync,
     "crawl": handle_crawl,
+    "fetch_comments": handle_fetch_comments,
 }
