@@ -9,6 +9,7 @@ item 为归一化 dict（与 services/crawl_service 约定一致）。
 不依赖活浏览器（B站 WBI / 抖音 a_bogus / 小红书 xhshow 均纯算法/JS）。
 """
 
+import asyncio
 import time
 from urllib.parse import urlencode
 
@@ -165,6 +166,52 @@ _SEARCHERS = {
     "douyin": search_douyin,
     "xhs": search_xhs,
 }
+
+
+# ---------------- 抖音评论 ----------------
+async def fetch_comments(
+    *, aweme_id: str, cookie: str, pages: int = 2, per_page: int = 20,
+    top_n: int = 20, interval: float = 1.0,
+) -> list[dict]:
+    """抓抖音作品一级评论：默认排序抓 pages 页，本地按点赞降序取 top_n。"""
+    from app.modules.douyin import BASE_PARAMS
+    from app.modules.crawler import douyin_sign
+
+    base = "https://www.douyin.com/aweme/v1/web/comment/list/"
+    headers = {"User-Agent": _UA, "Referer": "https://www.douyin.com/", "Cookie": cookie}
+    collected: list[dict] = []
+    cursor = "0"
+    async with httpx.AsyncClient(headers=headers, timeout=20) as c:
+        for _ in range(max(1, pages)):
+            query = dict(BASE_PARAMS, aweme_id=aweme_id, cursor=cursor, count=str(per_page), item_type="0")
+            qs = urlencode(query)
+            a_bogus = douyin_sign.get_a_bogus(base, qs, _UA)
+            resp = await c.get(f"{base}?{qs}&a_bogus={a_bogus}")
+            try:
+                data = resp.json()
+            except ValueError:
+                raise RuntimeError("抖音评论抓取失败：Cookie 可能失效或被风控")
+            for it in data.get("comments") or []:
+                user = it.get("user") or {}
+                avatar = (((user.get("avatar_thumb") or {}).get("url_list") or [""])[0])
+                collected.append({
+                    "comment_id": str(it.get("cid", "")),
+                    "parent_comment_id": "0",
+                    "user_id": str(user.get("uid", "")),
+                    "nickname": user.get("nickname", ""),
+                    "avatar": avatar,
+                    "content": it.get("text", ""),
+                    "like_count": int(it.get("digg_count") or 0),
+                    "ip_location": it.get("ip_label", ""),
+                    "created_at": it.get("create_time"),
+                })
+            if not data.get("has_more"):
+                break
+            cursor = str(data.get("cursor", "0"))
+            if interval:
+                await asyncio.sleep(interval)
+    collected.sort(key=lambda x: x["like_count"], reverse=True)
+    return collected[:top_n]
 
 
 async def search(*, platform: str, keyword: str, cookie: str, limit: int = 50, sort: str = "popular") -> list[dict]:
