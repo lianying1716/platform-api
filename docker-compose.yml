@@ -1,0 +1,32 @@
+services:
+  platform-api:
+    build: .
+    ports:
+      - "9100:9100"
+    environment:
+      PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
+      PLATFORM_ACCOUNT_CHECK_INTERVAL: "15"
+    volumes:
+      - platform-data:/data        # secret.key 与本地文件；备份必须包含此卷
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform
+      POSTGRES_DB: platform
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  platform-data:
+  pg-data:

@@ -1,0 +1,153 @@
+"""任务处理器：按 job_type 分发。
+
+- download：yt-dlp 下载视频到 storage_root + relative_path，抽音频备转录。
+- transcribe：faster-whisper 转录音频/视频，写 transcript。
+- analyze：调外部大模型对转录全文做摘要/标签，写 analysis_result。
+- sync：执行一次订阅同步（也可由调度器直接调）。
+- crawl：执行一次关键词采集。
+
+每个 handler 形如 async def(db, payload) -> None，抛异常即视为失败（runner 负责重试）。
+真实下载/转录需要有效凭证与本地依赖（ffmpeg/whisper 模型），缺失时抛出可读错误。
+"""
+
+import logging
+
+from sqlalchemy.orm import Session
+
+from app.core import events
+from app.core.storage import get_default_root, render_subdir, resolve_asset_dir
+from app.models import AnalysisResult, ContentItem, MediaAsset, Transcript
+from app.modules import media_download
+
+logger = logging.getLogger("platform.worker.handlers")
+
+
+async def handle_download(db: Session, payload: dict) -> None:
+    asset_id = payload["asset_id"]
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        return
+    content = db.get(ContentItem, asset.content_id)
+    if content is None or not content.url:
+        raise ValueError("内容缺少可下载 URL")
+
+    asset.download_status = "downloading"
+    db.commit()
+    events.publish("asset_status", {"asset_id": asset_id, "download": "downloading"})
+
+    # 计算保存目录
+    root = get_default_root(db)
+    if asset.storage_root_id is None and root is not None:
+        asset.storage_root_id = root.id
+    rel = asset.relative_path or render_subdir(
+        "{platform}/{creator}/{date}/{content_id}",
+        platform=content.platform,
+        creator=content.author_name,
+        date=content.published_at or content.created_at,
+        content_id=content.external_id,
+    )
+    asset.relative_path = rel
+    target_dir = resolve_asset_dir(db, asset)
+
+    result = await media_download.download(content.url, target_dir)
+    asset.video_file = result.get("video_file", "")
+    asset.audio_file = result.get("audio_file", "")
+    asset.download_status = "done"
+    asset.error = ""
+    db.commit()
+    events.publish("asset_status", {"asset_id": asset_id, "download": "done"})
+
+
+async def handle_transcribe(db: Session, payload: dict) -> None:
+    from app.modules import transcription
+
+    asset_id = payload["asset_id"]
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        return
+    if asset.download_status != "done":
+        raise ValueError("素材尚未下载完成，无法转录")
+
+    asset.transcribe_status = "transcribing"
+    db.commit()
+    events.publish("asset_status", {"asset_id": asset_id, "transcribe": "transcribing"})
+
+    media_path = resolve_asset_dir(db, asset)
+    audio = asset.audio_file or asset.video_file
+    if not audio:
+        raise ValueError("素材没有可转录的音视频文件")
+    full_media = f"{media_path}/{audio}"
+
+    result = await transcription.transcribe(full_media, payload.get("options", {}))
+
+    existing = db.query(Transcript).filter(Transcript.asset_id == asset_id).first()
+    if existing is None:
+        existing = Transcript(asset_id=asset_id)
+        db.add(existing)
+    existing.language = result["language"]
+    existing.model = result["model"]
+    existing.segments = result["segments"]
+    existing.full_text = result["full_text"]
+    asset.transcribe_status = "done"
+    asset.error = ""
+    db.commit()
+    events.publish("asset_status", {"asset_id": asset_id, "transcribe": "done"})
+
+
+async def handle_analyze(db: Session, payload: dict) -> None:
+    from app.modules import analysis
+
+    asset_id = payload["asset_id"]
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        return
+    transcript = db.query(Transcript).filter(Transcript.asset_id == asset_id).first()
+    if transcript is None or not transcript.full_text:
+        raise ValueError("素材尚无转录文本，无法分析")
+
+    asset.analyze_status = "analyzing"
+    db.commit()
+
+    content = db.get(ContentItem, asset.content_id)
+    result = await analysis.analyze(
+        title=content.title if content else "",
+        full_text=transcript.full_text,
+    )
+
+    existing = db.query(AnalysisResult).filter(AnalysisResult.asset_id == asset_id).first()
+    if existing is None:
+        existing = AnalysisResult(asset_id=asset_id)
+        db.add(existing)
+    existing.summary = result["summary"]
+    existing.tags = result["tags"]
+    existing.structured = result.get("structured", {})
+    existing.model = result["model"]
+    asset.analyze_status = "done"
+    asset.error = ""
+    db.commit()
+    events.publish("asset_status", {"asset_id": asset_id, "analyze": "done"})
+
+
+async def handle_sync(db: Session, payload: dict) -> None:
+    from app.models import Subscription
+    from app.services.sync_service import run_subscription_sync
+
+    sub = db.get(Subscription, payload["subscription_id"])
+    if sub is None:
+        return
+    await run_subscription_sync(db, sub)
+
+
+async def handle_crawl(db: Session, payload: dict) -> None:
+    from app.services.crawl_service import run_crawl_task
+
+    await run_crawl_task(db, payload["task_id"])
+
+
+HANDLERS = {
+    "download": handle_download,
+    "transcribe": handle_transcribe,
+    "analyze": handle_analyze,
+    "sync": handle_sync,
+    "crawl": handle_crawl,
+}

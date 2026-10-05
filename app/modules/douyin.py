@@ -1,0 +1,172 @@
+"""抖音适配器。协议来源：dysync.net service/DouyinHttpClientService.cs +
+utils/DouyinRequestParamManager.cs（MIT，纯 HTTP + Cookie，无签名依赖）。
+
+凭证 JSON: { cookie, sec_user_id, my_user_id }
+体检逻辑与 dysync CheckCookie 一致：
+- 有 sec_user_id：调关注列表接口，StatusCode==0 即在线
+- 无 sec_user_id：调收藏列表接口判断
+扫码：抖音无公开扫码 API，走浏览器方案（browser_qr，需安装 playwright），
+手动粘 Cookie 是兜底。
+"""
+
+import httpx
+
+from app.modules.base import CheckResult, QrPoll, QrStart, register
+
+_HOST = "https://www.douyin.com"
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+
+# 对应 dysync DouyinRequestParamManager._baseParamTemplate
+BASE_PARAMS = {
+    "device_platform": "webapp",
+    "aid": "6383",
+    "channel": "channel_pc_web",
+    "pc_client_type": "1",
+    "pc_libra_divert": "Windows",
+    "cookie_enabled": "true",
+    "browser_language": "zh-CN",
+    "browser_platform": "Win32",
+    "browser_name": "Chrome",
+    "browser_online": "true",
+    "engine_name": "Blink",
+    "os_name": "Windows",
+    "os_version": "10",
+    "device_memory": "8",
+    "platform": "PC",
+    "downlink": "10",
+    "effective_type": "4g",
+    "round_trip_time": "0",
+    "update_version_code": "170400",
+    "whale_cut_token": "",
+}
+
+
+def _client(cookie: str, referer: str) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        base_url=_HOST,
+        headers={"User-Agent": _UA, "Referer": referer, "Cookie": cookie},
+        timeout=15,
+    )
+
+
+async def list_collection(cookie: str, cursor: str = "0", count: str = "10") -> dict | None:
+    """收藏列表（dysync SyncCollectVideos）。"""
+    params = dict(BASE_PARAMS, version_code="290100", version_name="29.1.0", cursor=cursor, count=count)
+    async with _client(cookie, _HOST) as client:
+        resp = await client.post("/aweme/v1/web/aweme/listcollection", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            # Cookie 无效时抖音常返回空体或 HTML
+            return None
+
+
+async def following_list(cookie: str, sec_user_id: str, offset: str = "1", count: str = "10") -> dict | None:
+    """关注列表（dysync SyncMyFollows）。"""
+    params = dict(
+        BASE_PARAMS,
+        user_id="",
+        sec_user_id=sec_user_id,
+        offset=offset,
+        count=count,
+        source_type="1",
+        gps_access="0",
+        address_book_access="0",
+    )
+    referer = "https://www.douyin.com/user/self?showTab=like"
+    async with _client(cookie, referer) as client:
+        resp = await client.get("/aweme/v1/web/user/following/list", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+
+class DouyinAdapter:
+    platform = "douyin"
+    label = "抖音"
+    credential_kind = "cookie"
+    supports_qr = True  # 经 browser_qr（Playwright），未装浏览器时 API 会返回明确报错
+    credential_fields = [
+        {"key": "cookie", "label": "Cookie 字符串（整段粘贴）", "required": True},
+        {"key": "sec_user_id", "label": "SecUserId（主页地址 /user/ 后面那串）", "required": False},
+        {"key": "my_user_id", "label": "MyUserId", "required": False},
+    ]
+
+    def parse_manual_input(self, raw: dict) -> dict:
+        cookie = (raw.get("cookie") or "").strip()
+        if not cookie:
+            raise ValueError("抖音凭证需要整段 Cookie 字符串")
+        return {
+            "cookie": cookie,
+            "sec_user_id": (raw.get("sec_user_id") or "").strip(),
+            "my_user_id": (raw.get("my_user_id") or "").strip(),
+        }
+
+    async def check(self, credential: dict) -> CheckResult:
+        cookie = credential.get("cookie", "")
+        sec_user_id = credential.get("sec_user_id", "")
+        try:
+            if sec_user_id:
+                data = await following_list(cookie, sec_user_id)
+            else:
+                data = await list_collection(cookie)
+        except httpx.HTTPError as exc:
+            return CheckResult(ok=False, message=f"请求失败: {exc}")
+        if data is not None and data.get("status_code") == 0:
+            return CheckResult(ok=True, message="在线")
+        return CheckResult(ok=False, message="Cookie 已失效或被风控")
+
+    async def qr_start(self) -> QrStart:
+        from app.modules.browser_qr import browser_qr_start
+
+        return await browser_qr_start("douyin")
+
+    async def qr_poll(self, session_data: dict) -> QrPoll:
+        from app.modules.browser_qr import browser_qr_poll
+
+        return await browser_qr_poll("douyin", session_data)
+
+    async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
+        """拉取收藏（source_type=favorite）。抖音收藏接口分页用 cursor。"""
+        cookie = credential.get("cookie", "")
+        if source_type not in ("favorite", "collection"):
+            return []
+        items: list[dict] = []
+        cursor = "0"
+        while len(items) < limit:
+            data = await list_collection(cookie, cursor=cursor, count="20")
+            if not data or data.get("status_code") != 0:
+                break
+            for aw in data.get("aweme_list") or []:
+                stats = aw.get("statistics") or {}
+                author = aw.get("author") or {}
+                items.append(
+                    {
+                        "external_id": str(aw.get("aweme_id", "")),
+                        "content_type": "video",
+                        "title": aw.get("desc", ""),
+                        "author_name": author.get("nickname", ""),
+                        "author_id": author.get("sec_uid", ""),
+                        "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
+                        "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
+                        "metrics": {
+                            "play": stats.get("play_count", 0),
+                            "like": stats.get("digg_count", 0),
+                            "comment": stats.get("comment_count", 0),
+                            "favorite": stats.get("collect_count", 0),
+                            "share": stats.get("share_count", 0),
+                        },
+                    }
+                )
+            if not data.get("has_more"):
+                break
+            cursor = str(data.get("cursor", "0"))
+        return items[:limit]
+
+
+register(DouyinAdapter())
