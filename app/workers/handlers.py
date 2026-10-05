@@ -194,6 +194,12 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
         ))
         added += 1
 
+    # 空结果不落 state：fetch_comments 在「被风控/封禁」与「确实无评论」两种情况下都返回 []，
+    # 二者无法区分。若此时新落 CommentFetchState，门控 D4「已有 state 即跳过」会让该作品
+    # 永久不再重抓。仅在确有新评论入库时写 state，空结果留待下次重试。
+    if added == 0:
+        return
+
     st = db.get(CommentFetchState, content_id)
     if st is None:
         st = CommentFetchState(content_id=content_id)
