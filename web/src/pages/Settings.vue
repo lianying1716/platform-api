@@ -56,6 +56,47 @@
         </el-form>
       </el-tab-pane>
 
+      <!-- 评论抓取 -->
+      <el-tab-pane label="评论抓取" name="comments">
+        <p class="tip">抖音评论富集门控与抓取参数。仅对“够热”的作品抓评论，走 worker 队列，可随时调整。</p>
+        <el-form label-width="200px" style="max-width: 640px">
+          <el-form-item label="热门分位 top_pct">
+            <el-input-number v-model="commentSettings.top_pct" :min="0" :max="1" :step="0.05" :precision="2" />
+            <span class="detail">批内按互动分取前该比例的作品（0~1）</span>
+          </el-form-item>
+          <el-form-item label="单批预算 budget">
+            <el-input-number v-model="commentSettings.budget" :min="0" :precision="0" />
+            <span class="detail">每批最多入队多少个作品</span>
+          </el-form-item>
+          <el-form-item label="最低评论数 min_comments">
+            <el-input-number v-model="commentSettings.min_comments" :min="0" :precision="0" />
+          </el-form-item>
+          <el-form-item label="最低点赞数 min_likes">
+            <el-input-number v-model="commentSettings.min_likes" :min="0" :precision="0" />
+          </el-form-item>
+          <el-form-item label="评论互动权重 weight">
+            <el-input-number v-model="commentSettings.weight" :min="0" :step="1" :precision="1" />
+            <span class="detail">互动分 = 点赞 + 评论数 × weight</span>
+          </el-form-item>
+          <el-form-item label="抓取页数 pages">
+            <el-input-number v-model="commentSettings.pages" :min="1" :precision="0" />
+          </el-form-item>
+          <el-form-item label="每页条数 per_page">
+            <el-input-number v-model="commentSettings.per_page" :min="1" :precision="0" />
+          </el-form-item>
+          <el-form-item label="取 Top-N top_n">
+            <el-input-number v-model="commentSettings.top_n" :min="1" :precision="0" />
+            <span class="detail">本地按点赞排序后保留的条数</span>
+          </el-form-item>
+          <el-form-item label="翻页间隔（秒）interval">
+            <el-input-number v-model="commentSettings.interval" :min="0" :step="0.5" :precision="2" />
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="saveCommentSettings">保存</el-button>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
       <!-- 诊断 -->
       <el-tab-pane label="依赖诊断" name="diag">
         <el-button @click="loadDiag">重新检测</el-button>
@@ -125,6 +166,17 @@ const storageDialog = ref(false)
 const rootForm = reactive({ name: '', path: '', is_default: false })
 const settings = reactive<any>({ llm_base_url: '', llm_model: '', llm_api_key: '', proxy_url: '', llm_api_key_set: false })
 const pwd = reactive({ old_password: '', new_password: '' })
+const commentSettings = reactive({
+  top_pct: 0.2,
+  budget: 10,
+  min_comments: 20,
+  min_likes: 100,
+  weight: 20,
+  pages: 2,
+  per_page: 20,
+  top_n: 20,
+  interval: 1,
+})
 
 async function loadRoots() {
   loadingRoots.value = true
@@ -184,10 +236,20 @@ async function changePwd() {
   pwd.new_password = ''
 }
 
+async function loadCommentSettings() {
+  Object.assign(commentSettings, (await api.get('/api/system/comment-settings')).data)
+}
+
+async function saveCommentSettings() {
+  await api.put('/api/system/comment-settings', commentSettings)
+  ElMessage.success('已保存')
+}
+
 onMounted(() => {
   loadRoots()
   loadSettings()
   loadDiag()
+  loadCommentSettings()
 })
 </script>
 
