@@ -1,6 +1,17 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -306,3 +317,40 @@ class ApiCallLog(Base):
     status: Mapped[str] = mapped_column(String(16), default="")  # ok / error / denied
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+# ============================================================
+# P5+：评论富集
+# ============================================================
+
+
+class Comment(Base):
+    """平台评论（一级）。本版仅抖音；comment_id 与 content_id 联合唯一保证重复抓取幂等。"""
+
+    __tablename__ = "comment"
+    __table_args__ = (UniqueConstraint("content_id", "comment_id", name="uq_comment_content_cid"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    content_id: Mapped[int] = mapped_column(ForeignKey("content_item.id", ondelete="CASCADE"), index=True)
+    platform: Mapped[str] = mapped_column(String(32), index=True)
+    comment_id: Mapped[str] = mapped_column(String(64), index=True)
+    parent_comment_id: Mapped[str] = mapped_column(String(64), default="0")
+    user_id: Mapped[str] = mapped_column(String(64), default="")
+    nickname: Mapped[str] = mapped_column(String(128), default="")
+    avatar: Mapped[str] = mapped_column(String(512), default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    like_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    ip_location: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CommentFetchState(Base):
+    """评论抓取状态：一作品一行；用于「不重抓」，last_score 供未来增量刷新。"""
+
+    __tablename__ = "comment_fetch_state"
+
+    content_id: Mapped[int] = mapped_column(ForeignKey("content_item.id", ondelete="CASCADE"), primary_key=True)
+    last_fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_score: Mapped[float] = mapped_column(Float, default=0)
+    fetched_count: Mapped[int] = mapped_column(Integer, default=0)
