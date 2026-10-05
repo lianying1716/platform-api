@@ -90,3 +90,96 @@ def test_video_understanding_unique_asset(_engine):
         db.rollback()
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 3: 动态门控 select_tier（纯函数，不碰 DB）
+# ---------------------------------------------------------------------------
+
+_GATE = {
+    "weight_like": 1,
+    "weight_comment": 2,
+    "weight_play": 0,
+    "min_likes_floor": 100,
+    "l2_min_heat": 200,
+    "l3_min_heat": 1000,
+    "top_pct": 0.5,
+    "budget": 2,
+}
+
+
+def _cand(cid, like=0, comment=0, play=0, existing_tier=""):
+    return {
+        "content_id": cid,
+        "like": like,
+        "comment": comment,
+        "play": play,
+        "existing_tier": existing_tier,
+    }
+
+
+def test_gate_tiers_and_budget():
+    from app.services.process_gate import select_tier
+    s = {"weight_like":1,"weight_comment":2,"weight_play":0,"min_likes_floor":100,
+         "l2_min_heat":200,"l3_min_heat":1000,"top_pct":0.5,"budget":2}
+    cands=[{"content_id":i,"like":l,"comment":0,"play":0,"existing_tier":""}
+           for i,l in enumerate([5000,800,50,10])]
+    out={r["content_id"]:r["tier"] for r in select_tier(cands,s)}
+    assert out[0]=="l3" and out[1]=="l2" and out[2]=="l1" and out[3]=="l1"
+    assert sum(1 for r in select_tier(cands,s) if r["tier"] in ("l2","l3")) <= s["budget"]
+
+
+def test_gate_empty_input():
+    from app.services.process_gate import select_tier
+    assert select_tier([], _GATE) == []
+
+
+def test_gate_floor_caps_to_l1():
+    """like < min_likes_floor → 不高于 l1，即便 score 达到 l3 门槛。"""
+    from app.services.process_gate import select_tier
+    # play 权重为 0，用极大 comment 把分数顶到 l3 门槛，但 like 低于下限。
+    s = dict(_GATE, weight_comment=10.0, top_pct=1.0)
+    out = {r["content_id"]: r["tier"] for r in select_tier([_cand(1, like=10, comment=500)], s)}
+    assert out[1] == "l1"
+
+
+def test_gate_score_formula():
+    """score = w_like*like + w_comment*comment + w_play*play。"""
+    from app.services.process_gate import select_tier
+    s = dict(_GATE, weight_like=1.0, weight_comment=2.0, weight_play=0.5, top_pct=1.0)
+    # 100*1 + 50*2 + 400*0.5 = 100 + 100 + 200 = 400 → l2（>=200 且 <1000）
+    rows = select_tier([_cand(1, like=100, comment=50, play=400)], s)
+    assert rows[0]["tier"] == "l2"
+    assert rows[0]["score"] == 400
+
+
+def test_gate_budget_demotes_lowest_scores():
+    """超预算时按分数从低到高降级，保留分数最高者。"""
+    from app.services.process_gate import select_tier
+    s = dict(_GATE, top_pct=1.0, budget=1)
+    cands = [_cand(1, like=5000), _cand(2, like=3000), _cand(3, like=800)]
+    out = {r["content_id"]: r["tier"] for r in select_tier(cands, s)}
+    assert out[1] == "l3"
+    assert out[2] == "l1"  # 次高分也超出 budget，被降级
+    assert out[3] == "l1"  # 唯一预算名额之外的最低分被降级
+    assert sum(1 for t in out.values() if t in ("l2","l3")) <= s["budget"]
+
+
+def test_gate_no_downgrade_existing_l3():
+    """已 l3 的不降级：分数再低也保持 l3。"""
+    from app.services.process_gate import select_tier
+    s = dict(_GATE, top_pct=0.1, budget=0)
+    cands = [_cand(1, like=5000), _cand(2, like=1, existing_tier="l3")]
+    out = {r["content_id"]: r["tier"] for r in select_tier(cands, s)}
+    assert out[2] == "l3"
+
+
+def test_gate_percentile_limits_upgrades():
+    """分位：只有分数最高的 top_pct 份额可能高于 l1。"""
+    from app.services.process_gate import select_tier
+    s = dict(_GATE, top_pct=0.5, budget=10)
+    # 4 条仅取前 2；第 3、4 名即便过下限也压回 l1。
+    cands = [_cand(i, like=l) for i, l in enumerate([5000, 3000, 800, 500])]
+    out = {r["content_id"]: r["tier"] for r in select_tier(cands, s)}
+    assert out[0] == "l3" and out[1] == "l3"
+    assert out[2] == "l1" and out[3] == "l1"
