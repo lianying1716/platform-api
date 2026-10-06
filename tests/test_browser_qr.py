@@ -11,6 +11,7 @@ def test_platform_config_covers_kuaishou_zhihu():
     ks = browser_qr._PLATFORM_CONF["kuaishou"]
     assert ks["needs_display"] is True
     assert ks["login_button"] and ks["qr_selector"]
+    assert "passport.kuaishou.com" in ks["url"]
     zh = browser_qr._PLATFORM_CONF["zhihu"]
     assert zh["needs_display"] is False
     assert zh["qr_kind"] == "canvas"

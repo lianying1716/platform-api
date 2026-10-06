@@ -1,6 +1,6 @@
 """浏览器扫码登录（抖音 / 小红书 / 快手 / 知乎）。
 
-这两个平台没有公开扫码 API，方案是：后端起一个无头 Chromium 打开官方登录页，
+这些平台没有公开扫码 API，方案是：后端起一个 Chromium 打开官方登录页，
 截取二维码图片返回给前端/AI 展示，用户手机扫码后从浏览器上下文自动提取全部
 Cookie（无需用户手动复制任何东西），随后关闭浏览器。
 
@@ -8,8 +8,8 @@ Cookie（无需用户手动复制任何东西），随后关闭浏览器。
 - 抖音：登录面板 #login-panel-new，二维码 #animate_qrcode_container//img，
   成功标志 Cookie LOGIN_STATUS == "1"
 - 小红书：二维码 img.qrcode-img（首页自动弹登录框），成功标志出现 web_session
-- 快手：首页点「登录」→ .qrcode-img img（data URI），成功标志出现 passToken。
-  **无头必触验证码**，需真实显示：无 DISPLAY 时进程内起 Xvfb 以有头模式运行。
+- 快手：passport.kuaishou.com 登录页点「扫码」→ img[src^='data:image']（180×180），
+  成功标志出现 passToken。**无头必触验证码**，需真实显示：无 DISPLAY 时进程内起 Xvfb 以有头模式运行。
 - 知乎：https://www.zhihu.com/signin 的 canvas.Qrcode-qrcode（canvas → 截图），
   成功标志出现 z_c0。无头可用。
 
@@ -57,10 +57,15 @@ _PLATFORM_CONF = {
         "needs_display": False,
     },
     "kuaishou": {
-        "url": "https://www.kuaishou.com/?isHome=1",
-        "qr_selector": "xpath=//div[@class='qrcode-img']//img",
-        "panel_selector": "xpath=//div[contains(@class,'login-modal')]",
-        "login_button": "xpath=//p[text()='登录']",
+        # 专用 passport 登录页比首页弹窗稳定：首页反复访问会触发 captcha iframe。
+        "url": (
+            "https://passport.kuaishou.com/pc/account/login/"
+            "?sid=kuaishou.web.cp.api&callback=https%3A%2F%2Fwww.kuaishou.com%2F"
+        ),
+        "qr_selector": "img[src^='data:image']",
+        "panel_selector": "",
+        # 默认可能是手机号/验证码登录，需切到「扫码」标签页。
+        "login_button": "text=扫码",
         "cookie_domain": "kuaishou.com",
         "login_cookie": "passToken",
         "login_value": None,
@@ -241,23 +246,29 @@ async def browser_qr_start(platform: str) -> QrStart:
         page = await context.new_page()
         await page.goto(conf["url"], wait_until="domcontentloaded", timeout=30_000)
 
+        # 抖音：登录面板若已自动弹出则无需点击；否则点一次「登录」按钮。
+        # 快手：passport 页默认非扫码标签，需点「扫码」切过去（无 panel_selector，必定点击）。
+        panel_ready = False
         if conf["panel_selector"]:
-            # 抖音：登录面板不自动弹出时点一次登录按钮
             try:
                 await page.wait_for_selector(conf["panel_selector"], timeout=6_000)
+                panel_ready = True
             except Exception:
+                panel_ready = False
+        if conf["login_button"] and not panel_ready:
+            try:
+                # 类人行为：先移动鼠标/滚动，降低触发风控验证码的概率（快手等）。
                 try:
-                    # 类人行为：先移动鼠标/滚动，降低触发风控验证码的概率（快手等）。
-                    try:
-                        await page.mouse.move(400, 300)
-                        await page.mouse.move(700, 420, steps=12)
-                        await page.evaluate("window.scrollBy(0, 180)")
-                        await page.wait_for_timeout(800)
-                    except Exception:
-                        pass
-                    await page.locator(conf["login_button"]).first.click(force=True, timeout=8_000)
+                    await page.mouse.move(400, 300)
+                    await page.mouse.move(700, 420, steps=12)
+                    await page.evaluate("window.scrollBy(0, 180)")
+                    await page.wait_for_timeout(800)
                 except Exception:
                     pass
+                await page.locator(conf["login_button"]).first.click(force=True, timeout=8_000)
+                await page.wait_for_timeout(1_500)
+            except Exception:
+                pass
 
         qr_b64 = await _qr_image_b64(page, conf["qr_selector"])
         session_id = uuid.uuid4().hex
