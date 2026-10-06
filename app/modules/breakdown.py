@@ -157,7 +157,7 @@ async def run_llm(
     model: str,
     timeout: float = 90,
 ) -> dict:
-    """调 OpenAI 兼容 `chat/completions`，返回解析后的严格 JSON dict。
+    """调 OpenAI 兼容 `chat/completions`，返回 ``{"data", "usage", "model"}``。
 
     Args:
         system/user: `build_breakdown_prompt` 产出的提示词。
@@ -166,7 +166,10 @@ async def run_llm(
         timeout: 单次请求超时秒数（拆解为长文本，默认 90s）。
 
     Returns:
-        模型返回的 JSON 对象（dict）。
+        dict，字段：
+        - ``data``：解析后的严格 JSON 对象（报告本体）。
+        - ``usage``：接口返回的 token 用量（缺省为空 dict）。
+        - ``model``：实际使用的模型名（响应未回带时取入参 ``model``）。
 
     Raises:
         httpx.HTTPError: 网络 / HTTP 失败。
@@ -185,4 +188,6 @@ async def run_llm(
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     data = await _post_json(f"{base}/chat/completions", headers, body, timeout)
     raw = data["choices"][0]["message"]["content"]
-    return parse_structured(raw)
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    used_model = data.get("model") or model
+    return {"data": parse_structured(raw), "usage": usage, "model": used_model}

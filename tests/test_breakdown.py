@@ -172,7 +172,11 @@ def test_run_llm_parses_json(monkeypatch):
     out = asyncio.run(
         b.run_llm("sys", "usr", base_url="http://x/v1/", api_key="k", model="m")
     )
-    assert out["verdict"] == "火" and out["score"] == 88
+    # 返回契约：{"data","usage","model"}（服务层据此落库 usage / model）。
+    assert isinstance(out, dict)
+    assert out["data"]["verdict"] == "火" and out["data"]["score"] == 88
+    assert out["usage"] == {"total_tokens": 7}
+    assert out["model"] == "m"
     # 端点、鉴权头、body 结构
     assert cap["url"] == "http://x/v1/chat/completions"
     assert cap["headers"]["Authorization"] == "Bearer k"
@@ -187,7 +191,7 @@ def test_run_llm_strips_code_fence(monkeypatch):
 
     monkeypatch.setattr(b, "_post_json", _fake_llm("```json\n{\"verdict\":\"x\"}\n```"))
     out = asyncio.run(b.run_llm("s", "u", base_url="http://x/v1", api_key="k", model="m"))
-    assert out["verdict"] == "x"
+    assert out["data"]["verdict"] == "x"
 
 
 def test_run_llm_invalid_json_raises(monkeypatch):
