@@ -24,6 +24,9 @@ logger = logging.getLogger("platform.foundation")
 # raw_payload 单条留存上限（序列化字节）。超过则截断存预览，避免 JSON 列被原始响应撑爆。
 DEFAULT_MAX_BYTES = 64 * 1024
 
+# 字符串列宽（与 models.py 对齐），用于写前截断，避免 PG StringDataRightTruncation。
+_COL_WIDTH = {"author_name": 128, "avatar": 512, "bio": 0, "homepage_url": 512}
+
 
 def upsert_creator(
     db: Session,
@@ -67,7 +70,10 @@ def upsert_creator(
             ("homepage_url", homepage_url),
         ):
             if value:
-                setattr(profile, attr, str(value))
+                # 按列宽截断，避免 PG 下超长触发 StringDataRightTruncation，
+                # 导致整行（连同已 flush 的字段）被 savepoint 回滚而静默丢失。
+                limit = _COL_WIDTH.get(attr, 0)
+                setattr(profile, attr, str(value)[:limit] if limit else str(value))
         if follower_count:
             profile.follower_count = _as_int(follower_count)
         if following_count:
@@ -113,7 +119,7 @@ def record_raw(
             RawPayload(
                 platform=platform,
                 source=source,
-                external_id=str(external_id),
+                external_id=str(external_id)[:128],
                 payload=_fit_payload(payload, limit),
                 content_id=content_id,
             )

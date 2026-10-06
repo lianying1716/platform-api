@@ -9,6 +9,7 @@
 - 隔离：地基 helper 抛异常**不翻转** crawl/sync/任务的成功态。
 """
 
+import pytest
 import asyncio
 
 from sqlalchemy import select
@@ -448,3 +449,41 @@ def test_runner_survives_task_log_failure(_engine, monkeypatch):
     db = _runner_sessionmaker(_engine)()
     assert db.scalar(select(JobQueue)).status == "done"
     db.close()
+
+
+def test_in_savepoint_isolates_real_flush_error(session):
+    """核心风险点：地基写入触发**真实 DB 级 flush 错误**时，savepoint 必须隔离。
+
+    若把 `_in_savepoint` 换成直接 `op()`（去掉 savepoint），则 op 内 flush 抛错会让 session
+    进入 INACTIVE，后续 commit 抛 PendingRollbackError、外层已 flush 的 content_item 丢失；
+    有 savepoint 时则只回滚保存点，外层事务完好。
+    """
+    from app.models import ContentItem, TaskLog
+    from app.services import foundation
+
+    session.add(ContentItem(platform="douyin", external_id="outer1", url="u1"))
+    session.flush()  # 外层已写入，等价于采集循环中已入库的 item
+
+    def bad_op():
+        # job_type 为 NOT NULL；赋 None 会在 flush 时触发 DB IntegrityError。
+        session.add(TaskLog(job_type=None, level="info"))
+        session.flush()
+
+    with pytest.raises(Exception):
+        foundation._in_savepoint(session, bad_op)
+
+    assert session.is_active  # savepoint 回滚后 session 仍可用
+    session.commit()  # 若能提交，说明外层事务没被整段回滚
+    assert session.scalar(select(ContentItem).where(ContentItem.external_id == "outer1")) is not None
+
+
+def test_foundation_clamps_long_fields(session):
+    """超长字符串按列宽截断，PG 下不会因 StringDataRightTruncation 丢掉整行。"""
+    from app.services import foundation
+
+    p = foundation.upsert_creator(
+        session, "douyin", "long1", author_name="名" * 300, avatar="a" * 900, homepage_url="h" * 900
+    )
+    assert p is not None
+    session.commit()
+    assert len(p.author_name) <= 128 and len(p.avatar) <= 512 and len(p.homepage_url) <= 512
