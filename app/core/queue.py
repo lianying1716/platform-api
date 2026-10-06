@@ -32,15 +32,19 @@ def enqueue(
     commit=False 时只 flush 不提交，便于调用方在一个事务里批量投递后统一 commit。
     """
     if dedup:
-        existing = db.scalar(
+        # 不能用 `JobQueue.payload == payload` 做等值比较：PG 上 JSON 列映射为 `json`
+        # 类型，而 `json` 没有 `=` 运算符（只有 `jsonb` 有），该比较会抛
+        # `operator does not exist: json = json`（SQLite 的 JSON 支持 `=`，会掩盖此差异）。
+        # 改为先取同类型的未完成任务，再在 Python 端比较 payload。
+        rows = db.scalars(
             select(JobQueue).where(
                 JobQueue.job_type == job_type,
                 JobQueue.status.in_(("queued", "running")),
-                JobQueue.payload == payload,
             )
-        )
-        if existing is not None:
-            return existing
+        ).all()
+        for existing in rows:
+            if (existing.payload or {}) == payload:
+                return existing
     job = JobQueue(
         job_type=job_type,
         payload=payload,
