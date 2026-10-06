@@ -20,8 +20,68 @@ def test_cookie_adapters_parse_manual_input():
         assert adapter.parse_manual_input({"cookie": "A=1; B=2"}) == {"cookie": "A=1; B=2"}
         with pytest.raises(ValueError):
             adapter.parse_manual_input({"cookie": "   "})
-        assert adapter.supports_qr is False
         assert adapter.credential_kind == "cookie"
+
+
+def test_qr_support_only_for_kuaishou_zhihu():
+    """快手/知乎支持扫码；微博/贴吧仅手动粘 Cookie。"""
+    from app.modules import get_adapter
+
+    assert get_adapter("kuaishou").supports_qr is True
+    assert get_adapter("zhihu").supports_qr is True
+    assert get_adapter("weibo").supports_qr is False
+    assert get_adapter("tieba").supports_qr is False
+
+
+@pytest.mark.asyncio
+async def test_kuaishou_qr_delegates_to_browser_qr(monkeypatch):
+    from app.modules import browser_qr, get_adapter
+    from app.modules.base import QrPoll, QrStart
+
+    calls = {}
+
+    async def fake_start(platform):
+        calls["start"] = platform
+        return QrStart(session_data={"browser_session": "s"}, qr_image_b64="ZmFrZQ==")
+
+    async def fake_poll(platform, session_data):
+        calls["poll"] = (platform, session_data)
+        return QrPoll(status="pending", message="等待扫码")
+
+    monkeypatch.setattr(browser_qr, "browser_qr_start", fake_start)
+    monkeypatch.setattr(browser_qr, "browser_qr_poll", fake_poll)
+
+    adapter = get_adapter("kuaishou")
+    start = await adapter.qr_start()
+    assert calls["start"] == "kuaishou" and start.qr_image_b64 == "ZmFrZQ=="
+    poll = await adapter.qr_poll(start.session_data)
+    assert poll.status == "pending" and calls["poll"][0] == "kuaishou"
+
+
+@pytest.mark.asyncio
+async def test_zhihu_qr_delegates_to_browser_qr(monkeypatch):
+    from app.modules import browser_qr, get_adapter
+    from app.modules.base import QrStart
+
+    calls = {}
+
+    async def fake_start(platform):
+        calls["start"] = platform
+        return QrStart(session_data={"browser_session": "s"}, qr_image_b64="ZmFrZQ==")
+
+    monkeypatch.setattr(browser_qr, "browser_qr_start", fake_start)
+    start = await get_adapter("zhihu").qr_start()
+    assert calls["start"] == "zhihu"
+
+
+@pytest.mark.asyncio
+async def test_weibo_tieba_qr_raises():
+    """微博/贴吧不支持扫码，调用 qr_start 必须给出可读错误。"""
+    from app.modules import get_adapter
+
+    for p in ("weibo", "tieba"):
+        with pytest.raises(ValueError, match="不支持扫码登录"):
+            await get_adapter(p).qr_start()
 
 
 def _fake_httpx(monkeypatch, module, response):
