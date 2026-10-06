@@ -108,4 +108,4 @@ async def test_unsupported_platform_without_mediacrawler(monkeypatch):
 
     monkeypatch.setattr(settings, "mediacrawler_dir", "")
     with pytest.raises(RuntimeError, match="尚未抽离|子进程兜底"):
-        await crawler.search(platform="kuaishou", keyword="x", cookie="", limit=5)
+        await crawler.search(platform="weibo", keyword="x", cookie="", limit=5)

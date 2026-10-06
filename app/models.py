@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -419,4 +420,71 @@ class ViralBreakdown(Base):
     usage: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/doing/done/error
     error: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# ============================================================
+# 架构地基：创作者 / 原始数据 / 任务日志
+# ============================================================
+
+
+class CreatorProfile(Base):
+    """创作者实体：对标账号分析、涨粉追踪、作者主页信息的落点。
+
+    抓取/同步时按 `(platform, author_id)` upsert；`follower_count` 存当前值供趋势参考。
+    """
+
+    __tablename__ = "creator_profile"
+    __table_args__ = (
+        UniqueConstraint("platform", "author_id", name="uq_creator_profile_platform_author"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(String(32), index=True)  # bilibili/douyin/xhs/...
+    author_id: Mapped[str] = mapped_column(String(128))  # 平台侧作者ID
+    author_name: Mapped[str] = mapped_column(String(128), default="")
+    avatar: Mapped[str] = mapped_column(String(512), default="")
+    bio: Mapped[str] = mapped_column(Text, default="")
+    follower_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    following_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    homepage_url: Mapped[str] = mapped_column(String(512), default="")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)  # 原始作者信息快照
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class RawPayload(Base):
+    """原始数据留存：平台一改版，抓到的原始 JSON 还在，可回溯、可重解析。"""
+
+    __tablename__ = "raw_payload"
+    __table_args__ = (Index("ix_raw_payload_platform_external_id", "platform", "external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(16))  # crawl/sync/import/subscription
+    external_id: Mapped[str] = mapped_column(String(128), index=True)  # 平台侧内容ID
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    content_id: Mapped[int | None] = mapped_column(
+        ForeignKey("content_item.id", ondelete="CASCADE"), nullable=True
+    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TaskLog(Base):
+    """结构化任务事件流：为 /api/events/stream（SSE）与排障打地基。"""
+
+    __tablename__ = "task_log"
+    __table_args__ = (Index("ix_task_log_job_type_created_at", "job_type", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_queue.id", ondelete="SET NULL"), nullable=True
+    )
+    job_type: Mapped[str] = mapped_column(String(32))  # download/transcribe/analyze/sync/crawl
+    level: Mapped[str] = mapped_column(String(8), default="info")  # info/warn/error
+    message: Mapped[str] = mapped_column(String(512), default="")
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(64), default="worker")  # worker/scheduler/api
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

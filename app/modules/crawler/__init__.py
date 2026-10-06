@@ -1,10 +1,10 @@
 """关键词采集统一入口（PRD 第二阶段：抓取能力抽离进 modules/）。
 
-优先用纯 Python 签名直接 HTTP 抓取（bilibili/douyin/xhs，见 client.py），不依赖活浏览器、
-不再子进程调 MediaCrawler。对暂未抽离的平台（kuaishou/weibo/tieba/zhihu），
+优先用纯 Python 签名直接 HTTP 抓取（bilibili/douyin/xhs/kuaishou，见 client.py），不依赖活浏览器、
+不再子进程调 MediaCrawler。对暂未抽离的平台（weibo/tieba），
 若配置了 PLATFORM_MEDIACRAWLER_DIR 则回退 CLI 子进程（兼容一期）。
 
-签名/接口逻辑来源见 client.py、bili_sign.py、douyin_sign.py、xhs_sign.py 各文件头
+签名/接口逻辑来源见 client.py、bili_sign.py、douyin_sign.py、xhs_sign.py、zhihu_sign.py 各文件头
 （MediaCrawler NON-COMMERCIAL LEARNING LICENSE 1.1，仅自用学习）。
 """
 
@@ -15,7 +15,7 @@ from app.modules.crawler import client as _client
 logger = logging.getLogger("platform.crawler")
 
 # 已抽离为纯 Python 抓取的平台
-_NATIVE = {"bilibili", "douyin", "xhs"}
+_NATIVE = {"bilibili", "douyin", "xhs", "kuaishou", "zhihu"}
 
 
 async def search(
@@ -54,7 +54,7 @@ async def _search_via_subprocess(*, platform: str, keyword: str, limit: int) -> 
 
     from app.config import settings
 
-    _MAP = {"kuaishou": "ks", "weibo": "wb", "tieba": "tieba", "zhihu": "zhihu"}
+    _MAP = {"weibo": "wb", "tieba": "tieba"}
     mc_platform = _MAP.get(platform)
     if mc_platform is None:
         raise ValueError(f"不支持的采集平台: {platform}")

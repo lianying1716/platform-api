@@ -24,6 +24,7 @@ from app.models import (
     PlatformAccount,
 )
 from app.modules import crawler
+from app.services import foundation
 
 
 def _platform_cookie(db: Session, platform: str) -> str:
@@ -73,6 +74,7 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
         if task.min_play and item.get("metrics", {}).get("play", 0) < task.min_play:
             continue
         content, is_new = _upsert(db, task, item)
+        _persist_foundation(db, task.platform, "crawl", content, item)
         _record_metric(db, content, item)
         touched.append(content)
         if is_new:
@@ -129,6 +131,36 @@ def _upsert(db: Session, task: CrawlTask, item: dict) -> tuple[ContentItem, bool
     db.add(content)
     db.flush()
     return content, True
+
+
+def _persist_foundation(
+    db: Session, platform: str, source: str, content: ContentItem, item: dict
+) -> None:
+    """地基写入（creator_profile + raw_payload）。
+
+    增强项：失败只记日志，**绝不翻转本次采集的成功状态**。隔离靠 foundation 内部
+    的 SAVEPOINT + 这里兜底的 try/except（防 helper 自身异常）。
+    """
+    try:
+        foundation.upsert_creator(
+            db,
+            platform,
+            item.get("author_id", ""),
+            author_name=item.get("author_name", ""),
+            avatar=item.get("avatar", ""),
+            bio=item.get("bio", ""),
+            follower_count=item.get("follower_count", 0),
+            following_count=item.get("following_count", 0),
+            verified=item.get("verified", False),
+            homepage_url=item.get("homepage_url", ""),
+            raw=item.get("author_raw") or item.get("extra") or {},
+        )
+        foundation.record_raw(
+            db, platform, source, item.get("external_id", ""), item, content_id=content.id
+        )
+    except Exception:  # noqa: BLE001 地基写入是增强项，失败不得翻转本次采集的成功状态
+        foundation.rollback_if_broken(db)
+        logging.getLogger("platform.crawl").exception("地基写入失败，已忽略（不影响本次采集）")
 
 
 def _record_metric(db: Session, content: ContentItem, item: dict) -> None:

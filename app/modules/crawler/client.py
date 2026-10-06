@@ -16,6 +16,8 @@ from urllib.parse import urlencode
 import httpx
 
 from app.modules.crawler import bili_sign, douyin_sign, xhs_sign
+from app.modules.crawler.kuaishou import search_kuaishou
+from app.modules.crawler.zhihu import search_zhihu
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
@@ -165,6 +167,8 @@ _SEARCHERS = {
     "bilibili": search_bilibili,
     "douyin": search_douyin,
     "xhs": search_xhs,
+    "kuaishou": search_kuaishou,
+    "zhihu": search_zhihu,
 }
 
 
@@ -215,7 +219,7 @@ async def fetch_comments(
 
 
 async def search(*, platform: str, keyword: str, cookie: str, limit: int = 50, sort: str = "popular") -> list[dict]:
-    """统一抓取入口。platform 暂支持 bilibili/douyin/xhs（纯 Python 签名）。"""
+    """统一抓取入口。platform 暂支持 bilibili/douyin/xhs/kuaishou/zhihu（纯 Python）。"""
     fn = _SEARCHERS.get(platform)
     if fn is None:
         raise ValueError(f"暂不支持纯 Python 抓取的平台: {platform}（可走 browser_runtime 兜底）")
