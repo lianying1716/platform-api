@@ -33,9 +33,6 @@ _FAV_LIST_ALL = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"
 _SEASONS_SERIES = "https://api.bilibili.com/x/polymer/web-space/seasons_series_list"
 _FOLLOWINGS = "https://api.bilibili.com/x/relation/followings"
 
-# 关注列表里逐条补粉丝数的上限（超过部分留 0，避免刷新过慢）。
-_FOLLOWER_ENRICH_CAP = 60
-
 # 扫码 poll 的 data.code 含义
 _CODE_SUCCESS = 0
 _CODE_NOT_SCANNED = 86101
@@ -266,11 +263,12 @@ class BilibiliAdapter:
                     page += 1
         except (httpx.HTTPError, ValueError):
             pass
-        # 粉丝数 best-effort（逐条；失败不影响整表）。上限 _FOLLOWER_ENRICH_CAP，
-        # 避免关注几百人时逐条请求拖慢刷新；超出部分留 0（UI 显示为 —）。
-        for c in out[:_FOLLOWER_ENRICH_CAP]:
-            c["follower_count"] = await self._follower_count(c["author_id"], credential)
+        # 粉丝数不在此处逐条请求（无缓存会重复打平台）：由 API 层带 24h 缓存补全。
         return out[:limit]
+
+    async def fetch_follower_count(self, credential: dict, vmid: str) -> int:
+        """单个 UP 主的粉丝数（供 API 层带缓存调用）。失败返回 0。"""
+        return await self._follower_count(str(vmid), credential)
 
     async def _follower_count(self, vmid: str, credential: dict) -> int:
         try:

@@ -84,7 +84,8 @@ def test_refresh_reflects_updated_avatar_and_keeps_flags(client, session, monkey
                            "home_url": "u", "signature": "", "verified": False,
                            "follower_count": 2, "like_count": 0, "raw": {}}]),
     )
-    client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    # force 跳过 6h 缓存，模拟「数据变了想重拉」
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id, "force": True})
     session.refresh(fc)
     assert fc.avatar == "new.jpg"
     assert fc.sync_enabled is True and fc.full_sync is True
@@ -163,3 +164,116 @@ def test_immediate_sync_runs_subscription(client, session, monkeypatch):
     assert r.json()["status"] == "success"
     session.refresh(fc)
     assert fc.last_synced_at is not None
+
+
+# ---------------------------------------------------------------- 缓存 / 风控
+
+
+def _counting_followings(items):
+    calls = {"n": 0}
+
+    async def _list(credential, limit=200):
+        calls["n"] += 1
+        return items
+
+    return _list, calls
+
+
+_SAMPLE = [
+    {"author_id": "1001", "author_name": "老饭骨", "avatar": "a", "home_url": "u",
+     "signature": "", "verified": False, "follower_count": 0, "like_count": 0, "raw": {}},
+]
+
+
+def test_refresh_uses_cache_second_time(client, session, monkeypatch):
+    """第二次刷新命中缓存：不再次调用适配器（0 网络请求）。"""
+    from app.modules.bilibili import BilibiliAdapter
+
+    acc = _account(session)
+    lister, calls = _counting_followings(_SAMPLE)
+    monkeypatch.setattr(BilibiliAdapter, "list_followings", lister)
+
+    r1 = client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    assert r1.status_code == 200 and r1.json()["count"] == 1
+    assert calls["n"] == 1
+    assert r1.json()["cached"] is False
+
+    r2 = client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    assert r2.status_code == 200 and r2.json()["count"] == 1
+    assert calls["n"] == 1, "第二次应命中缓存，不再打平台"
+    assert r2.json()["cached"] is True
+
+
+def test_refresh_force_bypasses_cache(client, session, monkeypatch):
+    """force=true 跳过缓存强制拉取（仍受冷却限制）。"""
+    from app.modules.bilibili import BilibiliAdapter
+
+    acc = _account(session)
+    lister, calls = _counting_followings(_SAMPLE)
+    monkeypatch.setattr(BilibiliAdapter, "list_followings", lister)
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id, "force": True})
+    assert calls["n"] == 2
+
+
+def test_refresh_cooldown_serves_cache_without_request(client, session, monkeypatch):
+    """风控冷却期内：即使 force 也不打平台，返回缓存 + cooling 标记。"""
+    from app.core import fetch_cache
+    from app.modules.bilibili import BilibiliAdapter
+
+    acc = _account(session)
+    lister, calls = _counting_followings(_SAMPLE)
+    monkeypatch.setattr(BilibiliAdapter, "list_followings", lister)
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    assert calls["n"] == 1
+
+    fetch_cache.set_cooldown(session, f"cooldown:bilibili:{acc.id}:followings", seconds=600)
+    session.commit()
+
+    r = client.post("/api/followed-creators/refresh", json={"account_id": acc.id, "force": True})
+    assert r.status_code == 200
+    assert calls["n"] == 1, "冷却期内不得再打平台"
+    assert r.json()["cooling"] is True
+
+
+def test_refresh_risk_enters_cooldown(client, session, monkeypatch):
+    """适配器抛风控异常时：写冷却 + 502 可读报错。"""
+    import httpx
+
+    from app.core import fetch_cache
+    from app.modules.bilibili import BilibiliAdapter
+
+    acc = _account(session)
+
+    async def _boom(credential, limit=200):
+        raise RuntimeError("B站风控校验失败（-352），请稍后再试")
+
+    monkeypatch.setattr(BilibiliAdapter, "list_followings", _boom)
+    r = client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    assert r.status_code == 502
+    assert "风控" in r.json()["detail"]
+    assert fetch_cache.is_cooling(session, f"cooldown:bilibili:{acc.id}:followings")
+
+
+def test_stats_enrichment_uses_24h_cache(client, session, monkeypatch):
+    """粉丝数补全走 24h 缓存：第二次刷新不重复请求统计接口。"""
+    from app.modules.bilibili import BilibiliAdapter
+
+    acc = _account(session)
+    lister, lcalls = _counting_followings(_SAMPLE)
+    monkeypatch.setattr(BilibiliAdapter, "list_followings", lister)
+    stat_calls = {"n": 0}
+
+    async def _stat(self, vmid, credential):
+        stat_calls["n"] += 1
+        return 12345
+
+    monkeypatch.setattr(BilibiliAdapter, "_follower_count", _stat)
+
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    assert stat_calls["n"] == 1
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id, "force": True})
+    assert stat_calls["n"] == 1, "统计应命中 24h 缓存"
+    fc = session.query(FollowedCreator).one()
+    session.refresh(fc)
+    assert fc.follower_count == 12345
