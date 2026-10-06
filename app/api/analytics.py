@@ -267,9 +267,23 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
         "snapshot_count": len(snapshot_ids),
         "avg_play": _avg(plays),
         "median_play": median_play,
-        "avg_like": _avg([float(r["like"]) for r in rows]),
-        "avg_comment": _avg([float(r["comment"]) for r in rows]),
-        "avg_engagement_rate": _avg([float(r["engagement_rate"]) for r in rows]),
+        # 均值口径与 avg_play 一致：只统计有快照的内容，避免无快照作品以 0 拉低均值。
+        "avg_like": _avg([float(latest[cid].like or 0) for cid in snapshot_ids]),
+        "avg_comment": _avg([float(latest[cid].comment or 0) for cid in snapshot_ids]),
+        "avg_engagement_rate": _avg(
+            [
+                (
+                    float(latest[cid].like or 0)
+                    + float(latest[cid].comment or 0)
+                    + float(latest[cid].favorite or 0)
+                    + float(latest[cid].share or 0)
+                )
+                / float(latest[cid].play)
+                if latest[cid].play
+                else 0.0
+                for cid in snapshot_ids
+            ]
+        ),
         "timespan": timespan,
     }
 

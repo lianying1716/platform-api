@@ -7,6 +7,8 @@
 - `breakdown_viral_multiple`：对标账号报告里「爆款」判定阈值（播放 >= 该账号中位数 × 倍数）。
 """
 
+import math
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -61,6 +63,9 @@ def get_breakdown_settings(db: Session) -> dict:
     try:
         mult = float(str(raw_mult).strip()) if raw_mult not in (None, "") else _DEFAULT_VIRAL_MULTIPLE
     except (TypeError, ValueError):
+        mult = _DEFAULT_VIRAL_MULTIPLE
+    # 读侧兜底：手改/历史 KV 若为 nan/inf/<=0，回退默认，避免下游（对标报告 JSON 序列化）500。
+    if not math.isfinite(mult) or mult <= 0:
         mult = _DEFAULT_VIRAL_MULTIPLE
 
     return {"prompt": prompt, "viral_multiple": mult}

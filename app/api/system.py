@@ -166,6 +166,46 @@ def update_comment_settings_api(body: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# ---------- 爆款拆解配置（提示词 + 爆款判定阈值） ----------
+@router.get("/breakdown-settings")
+def get_breakdown_settings_api(db: Session = Depends(get_db)):
+    from app.core.breakdown_settings import get_breakdown_settings
+
+    return get_breakdown_settings(db)
+
+
+@router.put("/breakdown-settings")
+def update_breakdown_settings_api(body: dict, db: Session = Depends(get_db)):
+    """写入爆款拆解配置。先全量校验再落库：非法值返回 422，不做部分写入。"""
+    import math
+
+    from app.core.breakdown_settings import BREAKDOWN_KEYS
+
+    normalized: dict[str, str] = {}
+    for short, value in (body or {}).items():
+        if short == "prompt":
+            if not isinstance(value, str) or not value.strip():
+                raise HTTPException(status_code=422, detail="breakdown_prompt 必须是非空字符串")
+            normalized[BREAKDOWN_KEYS["prompt"]] = value
+        elif short == "viral_multiple":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise HTTPException(status_code=422, detail="viral_multiple 必须是数字")
+            fv = float(value)
+            if not math.isfinite(fv) or fv <= 0:
+                raise HTTPException(status_code=422, detail="viral_multiple 必须是有限正数")
+            normalized[BREAKDOWN_KEYS["viral_multiple"]] = str(fv)
+        # 未知键忽略（与既有 /settings、/comment-settings 行为一致）
+
+    for key, value in normalized.items():
+        row = db.get(SystemSetting, key)
+        if row is None:
+            row = SystemSetting(key=key)
+            db.add(row)
+        row.value = value
+    db.commit()
+    return {"ok": True}
+
+
 # ---------- 素材分档加工配置（普通/高级门控 + 类型目录 + 类型提示词） ----------
 def _as_bool(value) -> bool:
     """布尔归一：接受 true/false、1/0、"true"/"1" 等；其余非法。"""

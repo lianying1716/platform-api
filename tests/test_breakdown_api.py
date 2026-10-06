@@ -433,3 +433,63 @@ def test_breakdown_endpoint_end_to_end_done(client, _engine, monkeypatch):
     assert body["sections"]["hook"] == {"hook_type": "反常识"}
     assert body["data_context"]["play"] == 500
     assert body["model"] == "gw"
+
+
+# ---------- 拆解配置读写 API（T5 补齐：viral_multiple 写侧校验 + 读侧 NaN 兜底） ----------
+def test_breakdown_settings_get_defaults(client):
+    from app.core.breakdown_settings import DEFAULT_BREAKDOWN_PROMPT
+
+    body = client.get("/api/system/breakdown-settings").json()
+    assert body["prompt"] == DEFAULT_BREAKDOWN_PROMPT
+    assert body["viral_multiple"] == 3.0
+
+
+def test_breakdown_settings_put_roundtrip(client):
+    r = client.put("/api/system/breakdown-settings", json={"prompt": "自定义提示词", "viral_multiple": 2.5})
+    assert r.status_code == 200
+    body = client.get("/api/system/breakdown-settings").json()
+    assert body["prompt"] == "自定义提示词"
+    assert body["viral_multiple"] == 2.5
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "x", None])
+def test_breakdown_settings_put_rejects_bad_multiple(client, bad):
+    r = client.put("/api/system/breakdown-settings", json={"viral_multiple": bad})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_breakdown_settings_put_rejects_nonfinite_literal(client, literal):
+    """非有限数只能以原始 JSON 字面量送达（json=dumps 会拒绝），仍须 422。"""
+    r = client.put(
+        "/api/system/breakdown-settings",
+        content='{"viral_multiple": ' + literal + "}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("bad", ["", "   ", 123, None])
+def test_breakdown_settings_put_rejects_bad_prompt(client, bad):
+    r = client.put("/api/system/breakdown-settings", json={"prompt": bad})
+    assert r.status_code == 422
+
+
+def test_breakdown_settings_read_guards_nan_kv(client, _engine):
+    """手改 KV 成 nan/inf/<=0 时，读侧应回退默认，绝不让对标报告 500。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import SystemSetting
+
+    Session = sessionmaker(bind=_engine)
+    db = Session()
+    row = db.get(SystemSetting, "breakdown_viral_multiple")
+    if row is None:
+        row = SystemSetting(key="breakdown_viral_multiple")
+        db.add(row)
+    row.value = "nan"
+    db.commit()
+    db.close()
+
+    body = client.get("/api/system/breakdown-settings").json()
+    assert body["viral_multiple"] == 3.0
