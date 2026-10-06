@@ -188,6 +188,59 @@ class DouyinAdapter:
             return out[:limit]
         return out[:limit]
 
+    async def list_followings(self, credential: dict, limit: int = 200) -> list[dict]:
+        """关注的博主**富列表**（供「关注博主」页）：真头像/昵称/签名/认证/主页。
+
+        列表：``/aweme/v1/web/user/following/list`` 分页（offset/count）。
+        粉丝/获赞：需逐用户 ``profile/other``（要 a_bogus 签名），本函数 best-effort 留 0，
+        由「刷新」时单独补齐（避免 N 次签名调用拖慢列表）。字段缺失跳过；网络异常返回已拿到的部分。
+        """
+        sec_user_id = (credential.get("sec_user_id") or "").strip()
+        if not sec_user_id:
+            return []
+        cookie = credential.get("cookie", "")
+        out: list[dict] = []
+        offset = 1
+        count = 20
+        try:
+            while len(out) < limit:
+                data = await following_list(cookie, sec_user_id, offset=str(offset), count=str(count))
+                if not data or data.get("status_code") != 0:
+                    break
+                followings = data.get("followings") or []
+                if not followings:
+                    break
+                for f in followings:
+                    suid = f.get("sec_uid") or ""
+                    if not suid:
+                        continue
+                    avatar = ""
+                    av = f.get("avatar_larger") or f.get("avatar_thumb") or {}
+                    if isinstance(av, dict):
+                        urls = av.get("url_list") or []
+                        avatar = urls[0] if urls else ""
+                    out.append(
+                        {
+                            "author_id": suid,
+                            "author_name": f.get("nickname", ""),
+                            "avatar": avatar,
+                            "home_url": f"https://www.douyin.com/user/{suid}",
+                            "signature": f.get("signature", ""),
+                            "verified": bool(f.get("enterprise_verify_reason")),
+                            "follower_count": 0,  # best-effort，由刷新补齐
+                            "like_count": 0,
+                            "raw": f,
+                        }
+                    )
+                    if len(out) >= limit:
+                        break
+                if not data.get("has_more"):
+                    break
+                offset += count
+        except (httpx.HTTPError, ValueError):
+            pass
+        return out[:limit]
+
     async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
         """拉取收藏（source_type=favorite）。抖音收藏接口分页用 cursor。"""
         cookie = credential.get("cookie", "")
