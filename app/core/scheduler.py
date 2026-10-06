@@ -49,10 +49,25 @@ async def cleanup_browser_sessions() -> None:
     await cleanup_expired()
 
 
+async def cleanup_fetch_cache() -> None:
+    """周期清理过期的抓取缓存行。"""
+    from app.core import fetch_cache
+
+    db = SessionLocal()
+    try:
+        removed = fetch_cache.purge_expired(db)
+        db.commit()
+        if removed:
+            logger.info("清理过期抓取缓存 %s 行", removed)
+    finally:
+        db.close()
+
+
 def start_scheduler() -> None:
     if settings.account_check_interval > 0:
         scheduler.add_job(check_all_accounts, "interval", minutes=settings.account_check_interval, id="account_check")
     scheduler.add_job(cleanup_browser_sessions, "interval", minutes=2, id="browser_gc")
+    scheduler.add_job(cleanup_fetch_cache, "interval", minutes=30, id="fetch_cache_gc")
     scheduler.start()
     logger.info("调度器已启动，体检间隔 %s 分钟", settings.account_check_interval)
 

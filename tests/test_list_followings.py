@@ -78,7 +78,8 @@ async def test_bilibili_list_followings_rich(monkeypatch):
     assert c0["avatar"] == "http://i0.hdslb.com/av1.jpg"
     assert c0["signature"] == "好好吃饭"
     assert c0["home_url"] == "https://space.bilibili.com/1001"
-    assert c0["follower_count"] == 123456
+    # 粉丝数由 API 层带 24h 缓存补全（适配器只负责列表），此处不再内联请求
+    assert c0["follower_count"] == 0
     # 分页参数
     fcall = next(c for c in calls if "relation/followings" in c["url"])
     assert str(fcall["params"]["pn"]) == "1" and int(fcall["params"]["ps"]) >= 20 and fcall["params"]["mid"] == "999"

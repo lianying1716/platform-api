@@ -51,7 +51,9 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
 
     try:
         credential = decrypt_credential(account.credential.ciphertext)
-        items = await fetch(credential, subscription.source_type, subscription.remote_id, _SYNC_FETCH_LIMIT)
+        items = await _fetch_source_cached(
+            db, subscription, fetch, credential, _SYNC_FETCH_LIMIT
+        )
     except Exception as exc:  # noqa: BLE001 网络/风控异常不应让平台崩
         return _finish(db, run, "error", error=f"拉取失败: {exc}")
 
@@ -98,6 +100,46 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
         db.rollback()
         logging.getLogger("platform.sync").exception("分档入队失败，已忽略（不影响本次同步）")
     return _finish(db, run, "success", fetched=fetched_count, added=added)
+
+
+async def _fetch_source_cached(db: Session, sub: Subscription, fetch, credential, limit: int) -> list[dict]:
+    """带缓存 + 风控冷却的抓取（仅订阅同步路径用）。
+
+    - 15 分钟 TTL：频繁的手动同步不会重复打平台。
+    - 风控冷却：命中风控后冷却期内直接读缓存（无缓存则抛可读异常，不硬重试）。
+
+    只对 **creator 订阅**启用（博主投稿要签名/易风控、且是「关注博主」页高频触发路径）；
+    favorite/collection 保持直取，避免把「内容变化」也缓存住。
+    """
+    from app.core import fetch_cache
+
+    if sub.source_type != "creator":
+        return await fetch(credential, sub.source_type, sub.remote_id, limit)
+
+    cache_key = f"creator_videos:{sub.platform}:{sub.account_id}:{sub.remote_id}"
+    cooldown_key = f"cooldown:{sub.platform}:{sub.account_id}:videos"
+    cached = fetch_cache.get_cache(db, cache_key)
+    if cached is not None:
+        return cached.get("items") or []
+    if fetch_cache.is_cooling(db, cooldown_key):
+        remain = fetch_cache.cooldown_remaining(db, cooldown_key)
+        raise RuntimeError(f"平台风控冷却中，约 {max(1, remain // 60)} 分钟后重试")
+
+    async def _do():
+        return await fetch(credential, sub.source_type, sub.remote_id, limit)
+
+    try:
+        items = await fetch_cache.single_flight(cache_key, _do)
+    except Exception as exc:  # noqa: BLE001
+        if fetch_cache.looks_like_risk(str(exc)):
+            fetch_cache.set_cooldown(db, cooldown_key)
+            db.commit()
+        raise
+    fetch_cache.set_cache(
+        db, cache_key, {"items": items}, ttl_seconds=fetch_cache.TTL_CREATOR_VIDEOS
+    )
+    db.commit()
+    return items
 
 
 def _apply_sync_settings(items: list[dict], sub: Subscription) -> list[dict]:

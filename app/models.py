@@ -530,3 +530,17 @@ class FollowedCreator(Base):
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class FetchCache(Base):
+    """通用抓取缓存：把平台读操作的结果按 TTL 缓存，避免频繁拉取触发风控。
+
+    用途：关注列表 / 博主统计 / 博主投稿列表；以及 ``cooldown:*`` 键记录风控冷却。
+    """
+
+    __tablename__ = "fetch_cache"
+
+    key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

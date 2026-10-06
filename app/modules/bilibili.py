@@ -8,6 +8,7 @@
 import httpx
 
 from app.modules.base import CheckResult, QrPoll, QrStart, make_qr_png_b64, register
+from app.modules.crawler import bili_sign
 
 
 def _ts_to_iso(value) -> str | None:
@@ -31,9 +32,6 @@ _NAV = "https://api.bilibili.com/x/web-interface/nav"
 _FAV_LIST_ALL = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"
 _SEASONS_SERIES = "https://api.bilibili.com/x/polymer/web-space/seasons_series_list"
 _FOLLOWINGS = "https://api.bilibili.com/x/relation/followings"
-
-# 关注列表里逐条补粉丝数的上限（超过部分留 0，避免刷新过慢）。
-_FOLLOWER_ENRICH_CAP = 60
 
 # 扫码 poll 的 data.code 含义
 _CODE_SUCCESS = 0
@@ -218,8 +216,9 @@ class BilibiliAdapter:
         """关注的 UP 主**富列表**（供「关注博主」页）：真头像/昵称/签名/主页 + 粉丝数。
 
         - 列表：``/x/relation/followings`` 分页（pn/ps，每页 50）。
-        - 粉丝：``/x/relation/stat?vmid=``（免登录，best-effort，失败留 0）。
-        缺少 dedeuserid 返回 []；网络异常返回已拿到的部分（不抛）。
+        - 粉丝：由 API 层带 24h 缓存补全（此处不逐条请求）。
+        缺少 dedeuserid 返回 []；**认证失效/风控抛可读异常**（便于上层进入冷却），
+        其余网络异常返回已拿到的部分。
         """
         mid = str(credential.get("dedeuserid") or "").strip()
         if not mid:
@@ -235,7 +234,15 @@ class BilibiliAdapter:
                         params={"mid": mid, "pn": str(page), "ps": str(page_size)},
                         cookies=_cookies(credential),
                     )
-                    data = resp.json().get("data") or {}
+                    if resp.status_code in (403, 412):
+                        raise RuntimeError(f"B站风控校验失败（HTTP {resp.status_code}），请稍后再试")
+                    payload = resp.json()
+                    code = payload.get("code")
+                    if code in (-352, -412, -509):
+                        raise RuntimeError(f"B站风控校验失败（{payload.get('message', code)}），请稍后再试")
+                    if code == -101:
+                        raise RuntimeError("B站账号未登录或登录已过期，请重新登录该账号")
+                    data = payload.get("data") or {}
                     rows = data.get("list") or []
                     if not rows:
                         break
@@ -265,11 +272,12 @@ class BilibiliAdapter:
                     page += 1
         except (httpx.HTTPError, ValueError):
             pass
-        # 粉丝数 best-effort（逐条；失败不影响整表）。上限 _FOLLOWER_ENRICH_CAP，
-        # 避免关注几百人时逐条请求拖慢刷新；超出部分留 0（UI 显示为 —）。
-        for c in out[:_FOLLOWER_ENRICH_CAP]:
-            c["follower_count"] = await self._follower_count(c["author_id"], credential)
+        # 粉丝数不在此处逐条请求（无缓存会重复打平台）：由 API 层带 24h 缓存补全。
         return out[:limit]
+
+    async def fetch_follower_count(self, credential: dict, vmid: str) -> int:
+        """单个 UP 主的粉丝数（供 API 层带缓存调用）。失败返回 0。"""
+        return await self._follower_count(str(vmid), credential)
 
     async def _follower_count(self, vmid: str, credential: dict) -> int:
         try:
@@ -285,9 +293,18 @@ class BilibiliAdapter:
             return 0
 
     async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
-        """拉取一个收藏夹里的视频列表，规整为统一 item。"""
+        """拉取订阅源内容列表，规整为统一 item。
+
+        - favorite：收藏夹（/x/v3/fav/resource/list）
+        - creator：UP 主投稿（/x/space/wbi/arc/search，WBI 签名 + 登录 Cookie）
+        """
+        if source_type == "creator":
+            return await self._fetch_creator_videos(credential, remote_id, limit)
         if source_type != "favorite":
             return []
+        return await self._fetch_favorite_videos(credential, remote_id, limit)
+
+    async def _fetch_favorite_videos(self, credential: dict, remote_id: str, limit: int) -> list[dict]:
         items: list[dict] = []
         page = 1
         async with _client() as client:
@@ -321,6 +338,70 @@ class BilibiliAdapter:
                         }
                     )
                 if not data.get("has_more"):
+                    break
+                page += 1
+        return items[:limit]
+
+    async def _fetch_creator_videos(self, credential: dict, mid: str, limit: int) -> list[dict]:
+        """UP 主投稿列表（WBI 签名）。命中风控（-352/-412/412）抛可读异常。"""
+        from urllib.parse import urlencode
+
+        mid = str(mid or "").strip()
+        if not mid:
+            return []
+        cookies = _cookies(credential)
+        img_key, sub_key = await bili_sign.fetch_wbi_keys(cookies)
+        items: list[dict] = []
+        page = 1
+        async with _client() as client:
+            while len(items) < limit:
+                params = bili_sign.sign(
+                    {
+                        "mid": mid,
+                        "pn": page,
+                        "ps": 30,
+                        "order": "pubdate",
+                        "platform": "web",
+                        "web_location": "1550101",
+                    },
+                    img_key,
+                    sub_key,
+                )
+                url = f"https://api.bilibili.com/x/space/wbi/arc/search?{urlencode(params)}"
+                resp = await client.get(url, cookies=cookies)
+                if resp.status_code in (412, 403):
+                    raise RuntimeError("B站风控校验失败（HTTP %s），请稍后再试" % resp.status_code)
+                data = resp.json()
+                code = data.get("code")
+                if code in (-352, -412, -509):
+                    raise RuntimeError(f"B站风控校验失败（{data.get('message', code)}），请稍后再试")
+                if code != 0:
+                    raise RuntimeError(f"B站投稿拉取失败: {data.get('message', code)}")
+                vlist = ((data.get("data") or {}).get("list") or {}).get("vlist") or []
+                if not vlist:
+                    break
+                for v in vlist:
+                    items.append(
+                        {
+                            "external_id": str(v.get("bvid") or ""),
+                            "content_type": "video",
+                            "title": v.get("title", ""),
+                            "author_name": v.get("author", ""),
+                            "author_id": str(v.get("mid") or mid),
+                            "url": f"https://www.bilibili.com/video/{v.get('bvid', '')}",
+                            "cover_url": _https(v.get("pic", "")),
+                            "published_at": _ts_to_iso(v.get("created")),
+                            "metrics": {
+                                "play": v.get("play", 0),
+                                "comment": v.get("video_review", 0) or v.get("comment", 0),
+                                "favorite": v.get("favorites", 0),
+                            },
+                        }
+                    )
+                if len(items) >= limit:
+                    break
+                page_count = ((data.get("data") or {}).get("page") or {}).get("count") or 0
+                if page_count and page >= int(page_count):
                     break
                 page += 1
         return items[:limit]

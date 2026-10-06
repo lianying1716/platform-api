@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core import security
 from app.core.crypto import decrypt_credential
 from app.db import get_db
-from app.models import PlatformAccount, Subscription, SyncRun
+from app.models import FollowedCreator, PlatformAccount, Subscription, SyncRun
 from app.modules import get_adapter
 from app.services.sync_service import run_subscription_sync
 
@@ -66,6 +66,9 @@ class SubscriptionOut(BaseModel):
     download_quality: str = "best"
     with_comments: bool = False
     last_sync_at: datetime | None = None
+    # 打通「关注博主」：该订阅是否来自关注博主列表 + 其头像（供前端打标签/显示）
+    from_followed_creator: bool = False
+    creator_avatar: str = ""
 
     model_config = {"from_attributes": True}
 
@@ -91,7 +94,20 @@ async def remote_sources(account_id: int, source_type: str = "favorite", db: Ses
 
 @router.get("/subscriptions", response_model=list[SubscriptionOut])
 def list_subscriptions(db: Session = Depends(get_db)):
-    return db.scalars(select(Subscription).order_by(Subscription.id)).all()
+    subs = db.scalars(select(Subscription).order_by(Subscription.id)).all()
+    # 反查关注博主（同账号 + 同 remote_id + creator 来源）→ 打标签与头像
+    fc_map = {
+        (fc.account_id, fc.author_id): fc
+        for fc in db.scalars(select(FollowedCreator)).all()
+    }
+    for sub in subs:
+        if sub.source_type != "creator":
+            continue
+        fc = fc_map.get((sub.account_id, sub.remote_id))
+        if fc is not None:
+            sub.from_followed_creator = True
+            sub.creator_avatar = fc.avatar
+    return subs
 
 
 @router.post("/subscriptions", response_model=SubscriptionOut)
