@@ -5,6 +5,7 @@ import AiAccess from './pages/AiAccess.vue'
 import Analytics from './pages/Analytics.vue'
 import Assets from './pages/Assets.vue'
 import Crawl from './pages/Crawl.vue'
+import DesignPreview from './pages/DesignPreview.vue'
 import FollowedCreators from './pages/FollowedCreators.vue'
 import Login from './pages/Login.vue'
 import Overview from './pages/Overview.vue'
@@ -16,6 +17,8 @@ export const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: '/login', component: Login },
+    // 设计方向预览（仅样张，供敲定视觉方向；确定后移除）
+    { path: '/design-preview', component: DesignPreview },
     {
       path: '/',
       component: Layout,
@@ -37,5 +40,6 @@ export const router = createRouter({
 })
 
 router.beforeEach((to) => {
+  if (to.path === '/design-preview') return true
   if (to.path !== '/login' && !localStorage.getItem('token')) return '/login'
 })

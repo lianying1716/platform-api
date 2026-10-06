@@ -1,0 +1,163 @@
+/*
+ * 设计令牌 · 候选方向
+ * 每个方向用 [data-theme="..."] 作用域，同一套 markup 换令牌即可对比。
+ * 颜色一律 OKLCH；中性色都带极低色度（chroma 0.004~0.012）向品牌色偏移。
+ */
+
+:root {
+  /* 字体：产品 UI 用系统栈，中文优先 PingFang / 微软雅黑 */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* 字号阶（1.14 比例，产品 UI 偏紧） */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 19px;
+  --fs-2xl: 23px;
+  --fs-3xl: 28px;
+
+  /* 间距阶 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 22px;
+  --sp-6: 30px;
+  --sp-7: 40px;
+}
+
+/* ============================================================
+ * 方向 A ·「暖石 Atelier」：暖中性纸感 + 赭石强调
+ * 场景：白天办公室，长时间看内容列表，希望界面安静、素材本身出彩
+ * ============================================================ */
+[data-theme='atelier'] {
+  --bg: oklch(0.968 0.008 78);
+  --surface: oklch(0.995 0.004 80);
+  --surface-2: oklch(0.956 0.009 78);
+  --ink: oklch(0.27 0.014 62);
+  --ink-2: oklch(0.44 0.012 64);
+  --muted: oklch(0.58 0.011 68);
+  --line: oklch(0.902 0.009 76);
+  --line-soft: oklch(0.938 0.007 78);
+  --accent: oklch(0.552 0.138 42);
+  --accent-ink: oklch(0.99 0.008 60);
+  --accent-soft: oklch(0.949 0.032 48);
+  --accent-line: oklch(0.86 0.06 45);
+  --ok: oklch(0.60 0.10 156);
+  --ok-soft: oklch(0.95 0.035 156);
+  --warn: oklch(0.72 0.125 74);
+  --warn-soft: oklch(0.96 0.04 80);
+  --danger: oklch(0.575 0.16 26);
+  --danger-soft: oklch(0.955 0.035 28);
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow-1: 0 1px 2px oklch(0.3 0.02 60 / 0.05);
+  --shadow-2: 0 1px 2px oklch(0.3 0.02 60 / 0.06), 0 10px 28px oklch(0.3 0.02 60 / 0.055);
+  --sidebar-bg: oklch(0.235 0.014 62);
+  --sidebar-ink: oklch(0.80 0.010 70);
+  --sidebar-ink-dim: oklch(0.62 0.012 70);
+}
+
+/* ============================================================
+ * 方向 B ·「控制台 Console」：冷石板 + 青绿强调，密度更高、数据感更强
+ * 场景：运营盯盘，一屏看更多行，数字对齐、状态一眼可辨
+ * ============================================================ */
+[data-theme='console'] {
+  --bg: oklch(0.965 0.006 250);
+  --surface: oklch(0.995 0.003 250);
+  --surface-2: oklch(0.955 0.007 250);
+  --ink: oklch(0.245 0.020 255);
+  --ink-2: oklch(0.43 0.016 254);
+  --muted: oklch(0.565 0.014 252);
+  --line: oklch(0.898 0.008 250);
+  --line-soft: oklch(0.936 0.006 250);
+  --accent: oklch(0.565 0.115 197);
+  --accent-ink: oklch(0.99 0.006 200);
+  --accent-soft: oklch(0.945 0.030 197);
+  --accent-line: oklch(0.85 0.055 197);
+  --ok: oklch(0.60 0.105 175);
+  --ok-soft: oklch(0.95 0.033 175);
+  --warn: oklch(0.72 0.125 78);
+  --warn-soft: oklch(0.96 0.038 80);
+  --danger: oklch(0.575 0.165 20);
+  --danger-soft: oklch(0.955 0.033 22);
+  --radius: 7px;
+  --radius-lg: 10px;
+  --shadow-1: 0 1px 2px oklch(0.28 0.03 255 / 0.05);
+  --shadow-2: 0 1px 2px oklch(0.28 0.03 255 / 0.06), 0 10px 26px oklch(0.28 0.03 255 / 0.05);
+  --sidebar-bg: oklch(0.225 0.022 256);
+  --sidebar-ink: oklch(0.80 0.012 250);
+  --sidebar-ink-dim: oklch(0.60 0.014 250);
+}
+
+/* ============================================================
+ * 方向 C ·「刊物 Editorial」：近白 + 深墨绿，靠排版与细分隔线而非卡片
+ * 场景：以阅读/审阅为主，弱化容器、强化层级，像一份内容简报
+ * ============================================================ */
+[data-theme='editorial'] {
+  --bg: oklch(0.982 0.004 95);
+  --surface: oklch(0.996 0.002 95);
+  --surface-2: oklch(0.966 0.005 95);
+  --ink: oklch(0.225 0.012 150);
+  --ink-2: oklch(0.40 0.012 150);
+  --muted: oklch(0.555 0.010 150);
+  --line: oklch(0.855 0.008 150);
+  --line-soft: oklch(0.915 0.006 150);
+  --accent: oklch(0.415 0.078 158);
+  --accent-ink: oklch(0.99 0.006 150);
+  --accent-soft: oklch(0.945 0.022 158);
+  --accent-line: oklch(0.80 0.045 158);
+  --ok: oklch(0.58 0.095 158);
+  --ok-soft: oklch(0.95 0.028 158);
+  --warn: oklch(0.70 0.115 72);
+  --warn-soft: oklch(0.96 0.035 76);
+  --danger: oklch(0.545 0.155 25);
+  --danger-soft: oklch(0.955 0.030 26);
+  --radius: 3px;
+  --radius-lg: 5px;
+  --shadow-1: none;
+  --shadow-2: 0 1px 0 oklch(0.85 0.008 150 / 0.9);
+  --sidebar-bg: oklch(0.985 0.004 95);
+  --sidebar-ink: oklch(0.30 0.012 150);
+  --sidebar-ink-dim: oklch(0.55 0.010 150);
+}
+
+/* ------------------------------------------------------------------
+ * Element Plus 变量桥接：把主题令牌映射到组件库变量，
+ * 这样 el-button / el-table / el-tag / el-tabs 等自动跟随主题。
+ * ------------------------------------------------------------------ */
+[data-theme] {
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: color-mix(in oklab, var(--accent) 70%, var(--surface));
+  --el-color-primary-light-5: color-mix(in oklab, var(--accent) 50%, var(--surface));
+  --el-color-primary-light-7: color-mix(in oklab, var(--accent) 30%, var(--surface));
+  --el-color-primary-light-8: color-mix(in oklab, var(--accent) 20%, var(--surface));
+  --el-color-primary-light-9: var(--accent-soft);
+  --el-color-success: var(--ok);
+  --el-color-warning: var(--warn);
+  --el-color-danger: var(--danger);
+  --el-color-error: var(--danger);
+  --el-color-info: var(--muted);
+
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--bg);
+  --el-bg-color-overlay: var(--surface);
+  --el-text-color-primary: var(--ink);
+  --el-text-color-regular: var(--ink-2);
+  --el-text-color-secondary: var(--muted);
+  --el-text-color-placeholder: var(--muted);
+  --el-border-color: var(--line);
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: var(--line-soft);
+  --el-border-color-extra-light: var(--line-soft);
+  --el-fill-color-blank: var(--surface);
+  --el-fill-color-light: var(--surface-2);
+  --el-border-radius-base: var(--radius);
+  --el-font-family: var(--font-sans);
+  --el-font-size-base: var(--fs-base);
+  --el-box-shadow-light: var(--shadow-2);
+}
