@@ -102,10 +102,11 @@ async def test_search_requires_cookie():
 
 
 @pytest.mark.asyncio
-async def test_unsupported_platform_without_mediacrawler(monkeypatch):
-    from app.config import settings
+async def test_unsupported_platform_raises():
+    """全部平台已原生；未知平台直接抛可读异常（不再有子进程兜底）。"""
     from app.modules import crawler
 
-    monkeypatch.setattr(settings, "mediacrawler_dir", "")
-    with pytest.raises(RuntimeError, match="尚未抽离|子进程兜底"):
-        await crawler.search(platform="weibo", keyword="x", cookie="", limit=5)
+    assert crawler._NATIVE == {"bilibili", "douyin", "xhs", "kuaishou", "zhihu", "weibo", "tieba"}
+    assert not hasattr(crawler, "_search_via_subprocess")
+    with pytest.raises(ValueError, match="不支持的采集平台"):
+        await crawler.search(platform="unknown_platform", keyword="x", cookie="", limit=5)
