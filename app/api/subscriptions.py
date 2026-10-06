@@ -6,7 +6,7 @@
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,8 +27,23 @@ class SubscriptionIn(BaseModel):
     title: str = ""
     enabled: bool = True
     auto_download: bool = False
-    interval_minutes: int = 360
+    interval_minutes: int = Field(360, ge=10)
     subdir_template: str = "{platform}/{creator}/{date}"
+    # 同步设置（A1/A4）：范围校验在 create/update 两处同时生效（同一个模型）。
+    min_play: int = Field(0, ge=0)
+    publish_after_days: int = Field(0, ge=0)
+    max_items: int = Field(50, ge=1, le=500)
+    only_new: bool = True
+    download_quality: str = "best"
+    with_comments: bool = False
+
+    @field_validator("download_quality")
+    @classmethod
+    def _check_download_quality(cls, value: str) -> str:
+        allowed = {"best", "1080", "720", "audio"}
+        if value not in allowed:
+            raise ValueError(f"download_quality 必须是 {sorted(allowed)} 之一")
+        return value
 
 
 class SubscriptionOut(BaseModel):
@@ -41,6 +56,13 @@ class SubscriptionOut(BaseModel):
     enabled: bool
     auto_download: bool
     interval_minutes: int
+    subdir_template: str = "{platform}/{creator}/{date}"
+    min_play: int = 0
+    publish_after_days: int = 0
+    max_items: int = 50
+    only_new: bool = True
+    download_quality: str = "best"
+    with_comments: bool = False
     last_sync_at: str | None = None
 
     model_config = {"from_attributes": True}
@@ -60,7 +82,7 @@ async def remote_sources(account_id: int, source_type: str = "favorite", db: Ses
         raise HTTPException(status_code=400, detail=f"{adapter.label} 暂不支持列出订阅源")
     try:
         credential = decrypt_credential(account.credential.ciphertext)
-        return await lister(credential)
+        return await lister(credential, source_type)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"拉取远端源失败: {exc}")
 
