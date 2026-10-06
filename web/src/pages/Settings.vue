@@ -97,6 +97,83 @@
         </el-form>
       </el-tab-pane>
 
+      <!-- 视频理解 -->
+      <el-tab-pane label="视频理解" name="process">
+        <p class="tip">素材分档加工门控（L2 抽帧 / L3 视频理解）与类型提示词。阈值存 system_setting，可在线调整，不写死。</p>
+        <el-form label-width="210px" style="max-width: 680px">
+          <el-form-item label="L2 热度阈值 l2_min_heat">
+            <el-input-number v-model="proc.l2_min_heat" :min="0" :precision="0" />
+          </el-form-item>
+          <el-form-item label="L3 热度阈值 l3_min_heat">
+            <el-input-number v-model="proc.l3_min_heat" :min="0" :precision="0" />
+          </el-form-item>
+          <el-form-item label="最低点赞下限 min_likes_floor">
+            <el-input-number v-model="proc.min_likes_floor" :min="0" :precision="0" />
+          </el-form-item>
+          <el-form-item label="单批预算 budget">
+            <el-input-number v-model="proc.budget" :min="0" :precision="0" />
+            <span class="detail">全局限额：l2/l3 在途 job（含 queued/running）上限；单条下载路径也受约束</span>
+          </el-form-item>
+          <el-form-item label="热门分位 top_pct">
+            <el-input-number v-model="proc.top_pct" :min="0" :max="1" :step="0.05" :precision="2" />
+            <span class="detail">仅批量路径（采集/同步）生效：每批按热度取前该比例升档；单条下载路径不适用</span>
+          </el-form-item>
+          <el-form-item label="点赞权重 weight_like">
+            <el-input-number v-model="proc.weight_like" :min="0" :step="0.1" :precision="2" />
+          </el-form-item>
+          <el-form-item label="评论权重 weight_comment">
+            <el-input-number v-model="proc.weight_comment" :min="0" :step="0.1" :precision="2" />
+          </el-form-item>
+          <el-form-item label="播放权重 weight_play">
+            <el-input-number v-model="proc.weight_play" :min="0" :step="0.1" :precision="2" />
+          </el-form-item>
+          <el-form-item label="每分钟抽帧 frames_per_min">
+            <el-input-number v-model="proc.frames_per_min" :min="0" :step="0.5" :precision="2" />
+          </el-form-item>
+          <el-form-item label="最多帧数 max_frames">
+            <el-input-number v-model="proc.max_frames" :min="1" :precision="0" />
+          </el-form-item>
+          <el-form-item label="视频内联上限 video_max_mb">
+            <el-input-number v-model="proc.video_max_mb" :min="0" :step="1" :precision="2" />
+          </el-form-item>
+          <el-form-item label="封面内联上限 cover_max_mb">
+            <el-input-number v-model="proc.cover_max_mb" :min="0" :step="1" :precision="2" />
+          </el-form-item>
+          <el-form-item label="低置信度阈值">
+            <el-input-number v-model="proc.low_confidence_threshold" :min="0" :max="1" :step="0.05" :precision="2" />
+          </el-form-item>
+          <el-form-item label="开启判类 classify_enabled">
+            <el-switch v-model="proc.classify_enabled" />
+          </el-form-item>
+          <el-form-item label="判类默认用封面 use_cover">
+            <el-switch v-model="proc.use_cover" />
+          </el-form-item>
+          <el-form-item label="视频理解 provider">
+            <el-select v-model="proc.provider" style="width: 200px">
+              <el-option label="qwen（OpenAI 兼容）" value="qwen" />
+              <el-option label="gemini（原生）" value="gemini" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="视觉模型 vision_model">
+            <el-input v-model="proc.vision_model" placeholder="qwen3.8-flash" />
+          </el-form-item>
+          <el-form-item label="判类模型 classify_model">
+            <el-input v-model="proc.classify_model" placeholder="qwen3.8-flash" />
+          </el-form-item>
+          <el-form-item label="类型目录 taxonomy（JSON）">
+            <el-input v-model="proc.taxonomyText" type="textarea" :rows="6" spellcheck="false" />
+            <span class="detail">枚举 → 中文，可增删类型</span>
+          </el-form-item>
+          <el-form-item label="类型提示词 type_prompts（JSON）">
+            <el-input v-model="proc.typePromptsText" type="textarea" :rows="10" spellcheck="false" />
+            <span class="detail">类型 → {focus, dimensions:[{key,name,ask}]}，保存前本地校验</span>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="saveProcessSettings">保存</el-button>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
       <!-- 诊断 -->
       <el-tab-pane label="依赖诊断" name="diag">
         <el-button @click="loadDiag">重新检测</el-button>
@@ -177,6 +254,28 @@ const commentSettings = reactive({
   top_n: 20,
   interval: 1,
 })
+const proc = reactive<any>({
+  l2_min_heat: 200,
+  l3_min_heat: 1000,
+  min_likes_floor: 100,
+  budget: 20,
+  top_pct: 0.2,
+  weight_like: 1,
+  weight_comment: 2,
+  weight_play: 0,
+  frames_per_min: 6,
+  max_frames: 24,
+  video_max_mb: 15,
+  cover_max_mb: 5,
+  low_confidence_threshold: 0.6,
+  classify_enabled: true,
+  use_cover: false,
+  provider: 'qwen',
+  vision_model: 'qwen3.8-flash',
+  classify_model: 'qwen3.8-flash',
+  taxonomyText: '{}',
+  typePromptsText: '{}',
+})
 
 async function loadRoots() {
   loadingRoots.value = true
@@ -245,11 +344,55 @@ async function saveCommentSettings() {
   ElMessage.success('已保存')
 }
 
+async function loadProcessSettings() {
+  const { data } = await api.get('/api/system/process-settings')
+  Object.assign(proc, data, {
+    taxonomyText: JSON.stringify(data.taxonomy ?? {}, null, 2),
+    typePromptsText: JSON.stringify(data.type_prompts ?? {}, null, 2),
+  })
+}
+
+async function saveProcessSettings() {
+  let taxonomy: any
+  let type_prompts: any
+  try {
+    taxonomy = JSON.parse(proc.taxonomyText)
+    type_prompts = JSON.parse(proc.typePromptsText)
+  } catch (e: any) {
+    return ElMessage.error('JSON 解析失败：' + e.message)
+  }
+  await api.put('/api/system/process-settings', {
+    l2_min_heat: proc.l2_min_heat,
+    l3_min_heat: proc.l3_min_heat,
+    min_likes_floor: proc.min_likes_floor,
+    budget: proc.budget,
+    top_pct: proc.top_pct,
+    weight_like: proc.weight_like,
+    weight_comment: proc.weight_comment,
+    weight_play: proc.weight_play,
+    frames_per_min: proc.frames_per_min,
+    max_frames: proc.max_frames,
+    video_max_mb: proc.video_max_mb,
+    cover_max_mb: proc.cover_max_mb,
+    low_confidence_threshold: proc.low_confidence_threshold,
+    classify_enabled: proc.classify_enabled,
+    use_cover: proc.use_cover,
+    provider: proc.provider,
+    vision_model: proc.vision_model,
+    classify_model: proc.classify_model,
+    taxonomy,
+    type_prompts,
+  })
+  ElMessage.success('已保存')
+  await loadProcessSettings()
+}
+
 onMounted(() => {
   loadRoots()
   loadSettings()
   loadDiag()
   loadCommentSettings()
+  loadProcessSettings()
 })
 </script>
 

@@ -147,6 +147,9 @@ class ContentItem(Base):
     url: Mapped[str] = mapped_column(String(1024), default="")
     cover_url: Mapped[str] = mapped_column(String(1024), default="")
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_sec: Mapped[int] = mapped_column(Integer, default=0)  # 视频时长，秒；判类/分档参考
+    auto_category: Mapped[str] = mapped_column(String(32), default="")  # 自动判类结果（类型枚举）
+    category_confidence: Mapped[float] = mapped_column(Float, default=0)
     source_kind: Mapped[str] = mapped_column(String(16), default="")  # crawl / subscription
     source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # crawl_task.id 或 subscription.id
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -182,6 +185,9 @@ class MediaAsset(Base):
     download_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/downloading/done/error
     transcribe_status: Mapped[str] = mapped_column(String(16), default="pending")
     analyze_status: Mapped[str] = mapped_column(String(16), default="pending")
+    process_tier: Mapped[str] = mapped_column(String(8), default="")  # ""/l1/l2/l3
+    frames_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/doing/done/error
+    understand_status: Mapped[str] = mapped_column(String(16), default="pending")
     error: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -354,3 +360,47 @@ class CommentFetchState(Base):
     last_fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_score: Mapped[float] = mapped_column(Float, default=0)
     fetched_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ============================================================
+# L2/L3：素材加工分档（抽帧 / 视频理解）
+# ============================================================
+
+
+class AssetFrame(Base):
+    """L2 抽帧结果：一素材多帧，(asset_id, scene_index) 联合唯一保证重复抽帧幂等。"""
+
+    __tablename__ = "asset_frame"
+    __table_args__ = (UniqueConstraint("asset_id", "scene_index", name="uq_asset_frame_asset_scene"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("media_asset.id", ondelete="CASCADE"), index=True)
+    scene_index: Mapped[int] = mapped_column(Integer, default=0)
+    timestamp_sec: Mapped[float] = mapped_column(Float, default=0)
+    path: Mapped[str] = mapped_column(String(512), default="")  # 相对 storage_root 的帧文件路径
+    is_keyframe: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VideoUnderstanding(Base):
+    """L3 视频理解结果：一素材一行（asset_id 唯一）。"""
+
+    __tablename__ = "video_understanding"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("media_asset.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    category: Mapped[str] = mapped_column(String(32), default="other")  # 判类枚举（或 other）
+    category_confidence: Mapped[float] = mapped_column(Float, default=0)
+    category_reason: Mapped[str] = mapped_column(String(512), default="")
+    low_confidence: Mapped[bool] = mapped_column(Boolean, default=False)  # 置信度低于阈值，供人工复核（设计 §4）
+    dimensions: Mapped[dict] = mapped_column(JSON, default=dict)  # 类型专属维度 → 值
+    summary: Mapped[str] = mapped_column(Text, default="")
+    timeline: Mapped[list] = mapped_column(JSON, default=list)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="")
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)  # 含 video_tokens
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/doing/done/error
+    error: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

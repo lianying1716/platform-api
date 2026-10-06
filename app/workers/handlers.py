@@ -15,7 +15,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.core import events
+from app.core import events, queue
 from app.core.storage import get_default_root, render_subdir, resolve_asset_dir
 from app.models import AnalysisResult, ContentItem, MediaAsset, Transcript
 from app.modules import media_download
@@ -57,6 +57,16 @@ async def handle_download(db: Session, payload: dict) -> None:
     asset.error = ""
     db.commit()
     events.publish("asset_status", {"asset_id": asset_id, "download": "done"})
+    # 下载完成后按动态热度门控自动决定是否升级到 l2/l3（设计 §6.1）。采集/同步时素材尚未
+    # 下载完，门控只对已下载素材生效，故真正的自动分档在此触发。失败不得翻转下载成功状态。
+    from app.core.process_settings import get_process_settings
+    from app.services.process_gate import enqueue_process_jobs
+
+    try:
+        enqueue_process_jobs(db, [content], settings=get_process_settings(db))
+    except Exception:  # noqa: BLE001 分档加工是增强项，失败不得翻转已完成的下载
+        db.rollback()
+        logger.exception("素材 #%s 下载后分档入队失败，已忽略", asset_id)
 
 
 async def handle_transcribe(db: Session, payload: dict) -> None:
@@ -216,6 +226,35 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
     db.commit()
 
 
+async def handle_extract_frames(db: Session, payload: dict) -> None:
+    """L2 抽帧：ffmpeg 场景切分 + 关键帧抽取，幂等写 AssetFrame。"""
+    from app.services.understand_service import run_extract_frames
+
+    asset_id = payload["asset_id"]
+    if db.get(MediaAsset, asset_id) is None:
+        return
+    await run_extract_frames(db, asset_id)
+
+
+async def handle_understand_video(db: Session, payload: dict) -> None:
+    """L3 视频理解：判类 → 类型专属提示词 → 调 vision → 写 VideoUnderstanding。"""
+    from app.services.understand_service import UnderstandInputError, run_understand
+
+    asset_id = payload["asset_id"]
+    if db.get(MediaAsset, asset_id) is None:
+        return
+    try:
+        await run_understand(
+            db,
+            asset_id,
+            force_category=payload.get("force_category") or None,
+            use_cover=payload.get("use_cover"),
+        )
+    except UnderstandInputError as exc:
+        # 数据问题（素材/内容缺失）不可重试，直接置 error，避免无谓重试。
+        raise queue.NonRetryableJobError(str(exc)) from exc
+
+
 HANDLERS = {
     "download": handle_download,
     "transcribe": handle_transcribe,
@@ -223,4 +262,6 @@ HANDLERS = {
     "sync": handle_sync,
     "crawl": handle_crawl,
     "fetch_comments": handle_fetch_comments,
+    "extract_frames": handle_extract_frames,
+    "understand_video": handle_understand_video,
 }

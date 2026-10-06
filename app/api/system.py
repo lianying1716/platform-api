@@ -1,3 +1,4 @@
+import json
 import platform as py_platform
 import shutil
 import sys
@@ -9,6 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core import security, storage
+from app.core.process_settings import (
+    _valid_dimension_list as _valid_common_dimensions,
+    _valid_taxonomy,
+    _valid_type_prompts,
+)
 from app.core.scheduler import scheduler
 from app.db import get_db
 from app.models import StorageRoot, SystemSetting
@@ -149,6 +155,118 @@ def update_comment_settings_api(body: dict, db: Session = Depends(get_db)):
             normalized[COMMENT_KEYS[short]] = str(spec(value))
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"非法评论配置 {short}={value!r}: {exc}") from exc
+
+    for key, value in normalized.items():
+        row = db.get(SystemSetting, key)
+        if row is None:
+            row = SystemSetting(key=key)
+            db.add(row)
+        row.value = value
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- 素材分档加工配置（L1/L2/L3 门控 + 类型目录 + 类型提示词） ----------
+def _as_bool(value) -> bool:
+    """布尔归一：接受 true/false、1/0、"true"/"1" 等；其余非法。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+    raise ValueError("需要布尔值")
+
+
+def _as_provider(value) -> str:
+    if not isinstance(value, str) or value not in ("qwen", "gemini"):
+        raise ValueError("provider 仅支持 qwen / gemini")
+    return value
+
+
+def _as_nonempty_str(value) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("需要非空字符串")
+    return value.strip()
+
+
+# 短名 -> 校验器。范围/枚举写死在这里（配置值本身不写死，可在线改）。
+_PROCESS_SPECS = {
+    "l2_min_heat": lambda v: _as_int(v, lo=0),
+    "l3_min_heat": lambda v: _as_int(v, lo=0),
+    "min_likes_floor": lambda v: _as_int(v, lo=0),
+    "budget": lambda v: _as_int(v, lo=0),
+    "top_pct": lambda v: _as_float(v, lo=0.0, hi=1.0),
+    "weight_like": lambda v: _as_float(v, lo=0.0),
+    "weight_comment": lambda v: _as_float(v, lo=0.0),
+    "weight_play": lambda v: _as_float(v, lo=0.0),
+    "frames_per_min": lambda v: _as_float(v, lo=0.0),
+    "max_frames": lambda v: _as_int(v, lo=1),
+    "video_max_mb": lambda v: _as_float(v, lo=0.0),
+    "cover_max_mb": lambda v: _as_float(v, lo=0.0),
+    "low_confidence_threshold": lambda v: _as_float(v, lo=0.0, hi=1.0),
+    "classify_enabled": _as_bool,
+    "use_cover": _as_bool,
+    "provider": _as_provider,
+    "vision_model": _as_nonempty_str,
+    "classify_model": _as_nonempty_str,
+}
+
+
+# 结构化配置键 -> 校验器。落库键见 _PROCESS_STRUCT_STORE。
+# 校验器复用 app.core.process_settings 的实现（读取侧同一套），避免两处定义漂移。
+_PROCESS_STRUCT_KEYS = {
+    "taxonomy": _valid_taxonomy,
+    "type_prompts": _valid_type_prompts,
+    "common_dimensions": _valid_common_dimensions,
+}
+_PROCESS_STRUCT_STORE = {
+    "taxonomy": "process_type_taxonomy",
+    "type_prompts": "process_type_prompts",
+    "common_dimensions": "process_prompt_common",
+}
+
+
+@router.get("/process-settings")
+def get_process_settings_api(db: Session = Depends(get_db)):
+    """返回门控参数 + 类型目录 + 类型提示词 + 通用维度（设置页展示用）。"""
+    from app.core.process_settings import (
+        get_common_dimensions,
+        get_process_settings,
+        get_taxonomy,
+        get_type_prompts,
+    )
+
+    out = get_process_settings(db)
+    out["taxonomy"] = get_taxonomy(db)
+    out["type_prompts"] = get_type_prompts(db)
+    out["common_dimensions"] = get_common_dimensions(db)
+    return out
+
+
+@router.put("/process-settings")
+def update_process_settings_api(body: dict, db: Session = Depends(get_db)):
+    """写入分档加工配置。先全量校验再落库：任一非法值返回 422，不做部分写入。"""
+    from app.core.process_settings import PROCESS_KEYS
+
+    normalized: dict[str, str] = {}
+    for short, value in (body or {}).items():
+        if short in _PROCESS_STRUCT_KEYS:
+            if not _PROCESS_STRUCT_KEYS[short](value):
+                raise HTTPException(status_code=422, detail=f"非法配置 {short}：结构不符合预期")
+            normalized[_PROCESS_STRUCT_STORE[short]] = json.dumps(value, ensure_ascii=False)
+            continue
+        spec = _PROCESS_SPECS.get(short)
+        if spec is None:
+            continue  # 未知键忽略（与既有 /settings 行为一致）
+        try:
+            normalized[PROCESS_KEYS[short]] = str(spec(value))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"非法加工配置 {short}={value!r}: {exc}") from exc
 
     for key, value in normalized.items():
         row = db.get(SystemSetting, key)

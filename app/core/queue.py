@@ -12,6 +12,10 @@ from sqlalchemy.orm import Session
 from app.models import JobQueue
 
 
+class NonRetryableJobError(Exception):
+    """不可重试的任务失败（输入/数据问题）。worker 直接置 error，不重新排队。"""
+
+
 def enqueue(
     db: Session,
     job_type: str,
@@ -28,15 +32,19 @@ def enqueue(
     commit=False 时只 flush 不提交，便于调用方在一个事务里批量投递后统一 commit。
     """
     if dedup:
-        existing = db.scalar(
+        # 不能用 `JobQueue.payload == payload` 做等值比较：PG 上 JSON 列映射为 `json`
+        # 类型，而 `json` 没有 `=` 运算符（只有 `jsonb` 有），该比较会抛
+        # `operator does not exist: json = json`（SQLite 的 JSON 支持 `=`，会掩盖此差异）。
+        # 改为先取同类型的未完成任务，再在 Python 端比较 payload。
+        rows = db.scalars(
             select(JobQueue).where(
                 JobQueue.job_type == job_type,
                 JobQueue.status.in_(("queued", "running")),
-                JobQueue.payload == payload,
             )
-        )
-        if existing is not None:
-            return existing
+        ).all()
+        for existing in rows:
+            if (existing.payload or {}) == payload:
+                return existing
     job = JobQueue(
         job_type=job_type,
         payload=payload,
@@ -91,10 +99,20 @@ def complete(db: Session, job: JobQueue) -> None:
     db.commit()
 
 
-def fail(db: Session, job: JobQueue, error: str, *, retry_delay_seconds: int = 60) -> None:
-    """失败处理：未超重试上限则重新排队（延后 run_after），否则置 error。"""
+def fail(
+    db: Session,
+    job: JobQueue,
+    error: str,
+    *,
+    retry_delay_seconds: int = 60,
+    retry: bool = True,
+) -> None:
+    """失败处理：未超重试上限则重新排队（延后 run_after），否则置 error。
+
+    `retry=False` 表示不可重试的失败（如输入/数据问题），直接置 error，不占用重试额度。
+    """
     job.error = error[:2000]
-    if job.attempts >= job.max_attempts:
+    if not retry or job.attempts >= job.max_attempts:
         job.status = "error"
     else:
         job.status = "queued"
