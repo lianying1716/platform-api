@@ -32,9 +32,9 @@
     </div>
 
     <div v-loading="loading">
-      <el-empty v-if="!loading && !creators.length" :description="emptyText" />
+      <el-empty v-if="!loading && !visibleCreators.length" :description="emptyText" />
       <div v-else class="grid">
-        <el-card v-for="c in creators" :key="c.id" class="creator-card" shadow="hover">
+        <el-card v-for="c in visibleCreators" :key="c.id" class="creator-card" shadow="hover">
           <div class="card-head">
             <el-avatar :size="64" :src="c.avatar" class="avatar" @click="openHome(c)">
               {{ (c.author_name || '?').slice(0, 1) }}
@@ -111,7 +111,7 @@ const PLATFORM_LABELS: Record<string, string> = { douyin: '抖音', bilibili: 'B
 const SUPPORTED = ['douyin', 'bilibili']
 
 const accounts = ref<Account[]>([])
-const creators = ref<FollowedCreator[]>([])
+const allCreators = ref<FollowedCreator[]>([])
 const loading = ref(false)
 const refreshing = ref(false)
 const busy = ref<number | null>(null)
@@ -139,8 +139,14 @@ const emptyText = computed(() => {
   return '暂无关注博主，点「刷新关注列表」从平台拉取'
 })
 
+const visibleCreators = computed(() =>
+  allCreators.value.filter(
+    (c) => c.platform === activePlatform.value && c.account_id === currentAccount.value?.id,
+  ),
+)
+
 function countFor(platform: string) {
-  return creators.value.filter((c) => c.platform === platform).length
+  return allCreators.value.filter((c) => c.platform === platform).length
 }
 function compact(n: number) {
   return n >= 10000 ? `${(n / 10000).toFixed(n % 10000 === 0 ? 0 : 1)}万` : `${n}`
@@ -168,17 +174,10 @@ function pickAccount() {
 }
 
 async function load() {
-  if (!currentAccount.value) {
-    creators.value = []
-    return
-  }
+  // 一次性拉全量（所有已入库的关注博主），前端按平台/账号过滤，保证 tab 计数准确。
   loading.value = true
   try {
-    creators.value = (
-      await api.get('/api/followed-creators', {
-        params: { platform: activePlatform.value, account_id: currentAccount.value.id },
-      })
-    ).data
+    allCreators.value = (await api.get('/api/followed-creators')).data
   } finally {
     loading.value = false
   }
