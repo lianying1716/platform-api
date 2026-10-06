@@ -7,14 +7,19 @@
 """
 
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+import mimetypes
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import security
 from app.core.queue import enqueue
+from app.core import storage
 from app.core.storage import resolve_asset_dir
 from app.db import get_db
 from app.models import (
@@ -53,6 +58,79 @@ class BreakdownRequest(BaseModel):
     force: bool = False
 
 
+_VIDEO_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+}
+
+
+def _guess_media_type(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _VIDEO_TYPES:
+        return _VIDEO_TYPES[ext]
+    return mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+def _parse_range(header: str, file_size: int) -> tuple[int, int] | None:
+    """解析 `Range: bytes=start-end`；不合法返回 None（忽略 Range 全量返回）。"""
+    if not header or not header.startswith("bytes="):
+        return None
+    spec = header[len("bytes=") :].split(",")[0].strip()
+    start_s, _, end_s = spec.partition("-")
+    try:
+        if start_s == "":
+            # 后缀范围 bytes=-N
+            length = int(end_s)
+            if length <= 0:
+                return None
+            start = max(0, file_size - length)
+            end = file_size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else file_size - 1
+    except ValueError:
+        return None
+    if start > end or start >= file_size:
+        return None
+    return start, min(end, file_size - 1)
+
+
+def _iter_file(path: str, start: int, end: int, chunk: int = 1024 * 256):
+    with open(path, "rb") as fh:
+        fh.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            data = fh.read(min(chunk, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+
+
+def _range_file_response(path: str, request: Request, media_type: str):
+    """支持 Range 的文件响应：视频可拖动进度条，不把整段视频读进内存。"""
+    file_size = storage.file_size(path)
+    range_header = request.headers.get("range")
+    rng = _parse_range(range_header, file_size) if range_header else None
+    if rng is None:
+        return FileResponse(path, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+    start, end = rng
+    headers = {
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(end - start + 1),
+    }
+    return StreamingResponse(
+        _iter_file(path, start, end),
+        status_code=206,
+        media_type=media_type,
+        headers=headers,
+    )
+
+
 def _latest_metric(db: Session, content_id: int) -> ContentMetricSnapshot | None:
     return db.scalar(
         select(ContentMetricSnapshot)
@@ -67,6 +145,8 @@ def list_assets(
     db: Session = Depends(get_db),
     platform: str | None = None,
     author_id: str | None = None,
+    content_type: str | None = None,
+    category: str | None = None,
     download_status: str | None = None,
     transcribe_status: str | None = None,
     source_kind: str | None = None,
@@ -78,6 +158,10 @@ def list_assets(
         stmt = stmt.where(ContentItem.platform == platform)
     if author_id:
         stmt = stmt.where(ContentItem.author_id == author_id)
+    if content_type:
+        stmt = stmt.where(ContentItem.content_type == content_type)
+    if category:
+        stmt = stmt.where(ContentItem.auto_category == category)
     if source_kind:
         stmt = stmt.where(ContentItem.source_kind == source_kind)
     if download_status:
@@ -86,25 +170,74 @@ def list_assets(
         stmt = stmt.where(MediaAsset.transcribe_status == transcribe_status)
     stmt = stmt.order_by(MediaAsset.id.desc()).limit(min(limit, 200)).offset(offset)
     rows = db.execute(stmt).all()
+
+    # 作者头像/主页：一次性查关注列表 + 创作者档案，避免逐条查询
+    from app.models import CreatorProfile, FollowedCreator
+
+    authors = {(c.platform, c.author_id) for _a, c in rows if c.author_id}
+    author_meta: dict[tuple[str, str], dict] = {}
+    if authors:
+        for fc in db.scalars(
+            select(FollowedCreator).where(
+                FollowedCreator.author_id.in_([aid for _p, aid in authors])
+            )
+        ).all():
+            author_meta.setdefault(
+                (fc.platform, fc.author_id),
+                {"avatar": fc.avatar, "home_url": fc.home_url, "name": fc.author_name},
+            )
+        for cp in db.scalars(
+            select(CreatorProfile).where(
+                CreatorProfile.author_id.in_([aid for _p, aid in authors])
+            )
+        ).all():
+            author_meta.setdefault(
+                (cp.platform, cp.author_id),
+                {"avatar": cp.avatar, "home_url": cp.homepage_url, "name": cp.author_name},
+            )
+
     out = []
     for asset, content in rows:
         metric = _latest_metric(db, content.id)
+        video_path = storage.resolve_asset_file(db, asset) if asset.video_file else ""
+        has_file = bool(video_path) and os.path.isfile(video_path)
+        size_bytes = storage.file_size(video_path) if has_file else 0
+        meta = author_meta.get((content.platform, content.author_id), {})
         out.append(
             {
                 "asset_id": asset.id,
                 "content_id": content.id,
                 "platform": content.platform,
+                "content_type": content.content_type or "video",
                 "title": content.title,
                 "author_name": content.author_name,
+                "author_id": content.author_id,
+                "author_avatar": meta.get("avatar", ""),
+                "author_home_url": meta.get("home_url", ""),
                 "cover_url": content.cover_url,
+                "url": content.url,
                 "published_at": content.published_at.isoformat() if content.published_at else None,
+                # 同步时间＝本地入库时间（含落盘），与「发布时间」区分
+                "created_at": content.created_at.isoformat() if content.created_at else None,
+                "synced_at": asset.updated_at.isoformat() if asset.updated_at else None,
+                "duration_sec": content.duration_sec or 0,
+                "auto_category": content.auto_category or "",
+                "category_confidence": content.category_confidence or 0,
+                "source_kind": content.source_kind or "",
+                "size_bytes": size_bytes,
+                # 视频可播放＝本地文件确实存在；文章走正文接口
+                "playable": has_file,
+                "tier": asset.process_tier or "",
                 "download_status": asset.download_status,
                 "transcribe_status": asset.transcribe_status,
                 "analyze_status": asset.analyze_status,
+                "understand_status": asset.understand_status,
                 "metrics": {
                     "play": metric.play if metric else 0,
                     "like": metric.like if metric else 0,
                     "comment": metric.comment if metric else 0,
+                    "favorite": metric.favorite if metric else 0,
+                    "share": metric.share if metric else 0,
                 }
                 if metric
                 else None,
@@ -174,6 +307,49 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
         }
         if analysis
         else None,
+    }
+
+
+@router.get("/assets/{asset_id}/media")
+def stream_media(asset_id: int, request: Request, db: Session = Depends(get_db)):
+    """视频流式播放：支持 HTTP Range（拖动进度条），未下载则 404。
+
+    只服务 storage_root 内的本机文件；不暴露任何绝对路径。
+    鉴权走全局 require_admin，它同时接受 Authorization 头与会话 Cookie
+    （``<video>`` 标签无法自定义请求头，只能靠 Cookie）。
+    """
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    path = storage.resolve_asset_file(db, asset)
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="本地没有可播放的视频文件")
+    media_type = _guess_media_type(path)
+    resp = _range_file_response(path, request, media_type)
+    # 私有内容，禁止代理缓存
+    resp.headers["Cache-Control"] = "private, max-age=3600"
+    return resp
+
+
+@router.get("/assets/{asset_id}/article")
+def get_article(asset_id: int, db: Session = Depends(get_db)):
+    """文章正文：公众号等文本内容的阅读视图数据源。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    content = db.get(ContentItem, asset.content_id)
+    transcript = db.scalar(select(Transcript).where(Transcript.asset_id == asset_id))
+    extra = content.extra if content and isinstance(content.extra, dict) else {}
+    return {
+        "asset_id": asset_id,
+        "title": content.title if content else "",
+        "author_name": content.author_name if content else "",
+        "platform": content.platform if content else "",
+        "url": content.url if content else "",
+        "published_at": content.published_at.isoformat() if content and content.published_at else None,
+        "cover_url": content.cover_url if content else "",
+        "html": extra.get("html", ""),
+        "text": transcript.full_text if transcript else "",
     }
 
 

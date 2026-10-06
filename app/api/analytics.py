@@ -23,6 +23,7 @@ from app.models import (
     JobQueue,
     MediaAsset,
     PlatformAccount,
+    StorageRoot,
     VideoUnderstanding,
 )
 
@@ -32,6 +33,7 @@ router = APIRouter(prefix="/api", tags=["analytics"], dependencies=[Depends(secu
 @router.get("/dashboard/summary")
 def dashboard_summary(db: Session = Depends(get_db)):
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    week_ago = today - timedelta(days=7)
 
     accounts_total = db.scalar(select(func.count(PlatformAccount.id))) or 0
     accounts_bad = (
@@ -39,11 +41,156 @@ def dashboard_summary(db: Session = Depends(get_db)):
         or 0
     )
     today_content = db.scalar(select(func.count(ContentItem.id)).where(ContentItem.created_at >= today)) or 0
+    week_content = (
+        db.scalar(select(func.count(ContentItem.id)).where(ContentItem.created_at >= week_ago)) or 0
+    )
     jobs_pending = (
         db.scalar(select(func.count(JobQueue.id)).where(JobQueue.status.in_(("queued", "running")))) or 0
     )
     jobs_failed = db.scalar(select(func.count(JobQueue.id)).where(JobQueue.status == "error")) or 0
     assets_total = db.scalar(select(func.count(MediaAsset.id))) or 0
+
+    # 内容类型分布：视频 / 文章 / 图文
+    by_type: dict[str, int] = {"video": 0, "article": 0, "image": 0}
+    for ctype, cnt in db.execute(
+        select(ContentItem.content_type, func.count(ContentItem.id)).group_by(ContentItem.content_type)
+    ).all():
+        by_type[str(ctype or "video")] = int(cnt)
+    video_total = by_type.get("video", 0)
+    article_total = by_type.get("article", 0) + by_type.get("image", 0)
+
+    # 总时长：只统计视频（文章/图文没有时长概念）
+    duration_total = (
+        db.scalar(
+            select(func.coalesce(func.sum(ContentItem.duration_sec), 0)).where(
+                ContentItem.content_type == "video"
+            )
+        )
+        or 0
+    )
+
+    # 平台维度：条数 / 视频 / 文章 / 播放 / 点赞
+    platform_rows = db.execute(
+        select(
+            ContentItem.platform,
+            ContentItem.content_type,
+            func.count(ContentItem.id),
+        ).group_by(ContentItem.platform, ContentItem.content_type)
+    ).all()
+    platforms: dict[str, dict] = {}
+    for plat, ctype, cnt in platform_rows:
+        p = platforms.setdefault(
+            plat or "unknown",
+            {"platform": plat or "unknown", "total": 0, "video": 0, "article": 0, "play": 0, "like": 0},
+        )
+        p["total"] += int(cnt)
+        if (ctype or "video") == "video":
+            p["video"] += int(cnt)
+        else:
+            p["article"] += int(cnt)
+
+    # 每个内容取最新快照的播放/点赞，按平台聚合（子查询取最新 captured_at）
+    latest = (
+        select(
+            ContentMetricSnapshot.content_id,
+            func.max(ContentMetricSnapshot.captured_at).label("ts"),
+        )
+        .group_by(ContentMetricSnapshot.content_id)
+        .subquery()
+    )
+    metric_rows = db.execute(
+        select(
+            ContentItem.platform,
+            func.coalesce(func.sum(ContentMetricSnapshot.play), 0),
+            func.coalesce(func.sum(ContentMetricSnapshot.like), 0),
+            func.coalesce(func.sum(ContentMetricSnapshot.comment), 0),
+            func.coalesce(func.sum(ContentMetricSnapshot.favorite), 0),
+        )
+        .join(ContentMetricSnapshot, ContentMetricSnapshot.content_id == ContentItem.id)
+        .join(latest, (latest.c.content_id == ContentMetricSnapshot.content_id) & (latest.c.ts == ContentMetricSnapshot.captured_at))
+        .group_by(ContentItem.platform)
+    ).all()
+    totals = {"play": 0, "like": 0, "comment": 0, "favorite": 0}
+    for plat, play, like, comment, fav in metric_rows:
+        p = platforms.setdefault(
+            plat or "unknown",
+            {"platform": plat or "unknown", "total": 0, "video": 0, "article": 0, "play": 0, "like": 0},
+        )
+        p["play"] = int(play or 0)
+        p["like"] = int(like or 0)
+        totals["play"] += int(play or 0)
+        totals["like"] += int(like or 0)
+        totals["comment"] += int(comment or 0)
+        totals["favorite"] += int(fav or 0)
+
+    # 分类分布（auto_category 判类结果）
+    from app.core.process_settings import get_taxonomy
+
+    taxonomy = get_taxonomy(db)
+    category_rows = db.execute(
+        select(ContentItem.auto_category, func.count(ContentItem.id))
+        .group_by(ContentItem.auto_category)
+        .order_by(desc(func.count(ContentItem.id)))
+    ).all()
+    categories = [
+        {
+            "key": key or "",
+            # 判类结果可能是枚举 key（走 taxonomy 翻译）或已是中文标签（直接用）
+            "label": (taxonomy.get(key) or key) if key else "未判类",
+            "count": int(cnt),
+        }
+        for key, cnt in category_rows
+    ]
+
+    # 加工进度
+    transcribed = db.scalar(select(func.count(MediaAsset.id)).where(MediaAsset.transcribe_status == "done")) or 0
+    understood = db.scalar(select(func.count(MediaAsset.id)).where(MediaAsset.understand_status == "done")) or 0
+
+    # 存储占用：按素材累加本地文件体积（文件不存在计 0）
+    from app.core import storage
+
+    used_bytes = 0
+    storage_by_platform: dict[str, int] = {}
+    for asset, content in db.execute(
+        select(MediaAsset, ContentItem).join(ContentItem, MediaAsset.content_id == ContentItem.id)
+    ).all():
+        size = storage.file_size(storage.resolve_asset_file(db, asset)) if asset.video_file else 0
+        if not size and asset.relative_path:
+            size = storage.dir_size(storage.resolve_asset_dir(db, asset))
+        used_bytes += size
+        key = content.platform or "unknown"
+        storage_by_platform[key] = storage_by_platform.get(key, 0) + size
+
+    roots = db.scalars(select(StorageRoot).order_by(StorageRoot.id)).all()
+    storage_roots = []
+    for r in roots:
+        ok, detail = storage.probe_root(r.path)
+        storage_roots.append(
+            {
+                "id": r.id,
+                "name": r.name,
+                "path": r.path,
+                "is_default": r.is_default,
+                "available": ok,
+                "detail": detail,
+                "used_bytes": storage.dir_size(r.path) if ok else 0,
+            }
+        )
+
+    # 近 14 天每日新增
+    trend = []
+    for i in range(13, -1, -1):
+        day = today - timedelta(days=i)
+        nxt = day + timedelta(days=1)
+        cnt = (
+            db.scalar(
+                select(func.count(ContentItem.id)).where(
+                    ContentItem.created_at >= day, ContentItem.created_at < nxt
+                )
+            )
+            or 0
+        )
+        trend.append({"date": day.strftime("%m-%d"), "added": int(cnt)})
 
     # 最近 24h 热门 Top10（按最新快照的播放量）
     since = datetime.utcnow() - timedelta(hours=24)
@@ -59,9 +206,38 @@ def dashboard_summary(db: Session = Depends(get_db)):
 
     return {
         "accounts": {"total": accounts_total, "abnormal": accounts_bad},
+        # 兼容旧前端字段
+        "accounts_error": accounts_bad,
+        "crawled_today": int(today_content),
+        "jobs_pending": int(jobs_pending),
+        "jobs_failed": int(jobs_failed),
+        "hot_assets": hot,
+        # 新增统计
         "today_crawled": today_content,
+        "week_crawled": int(week_content),
         "jobs": {"pending": jobs_pending, "failed": jobs_failed},
         "assets_total": assets_total,
+        "content": {
+            "total": sum(by_type.values()),
+            "video": video_total,
+            "article": article_total,
+            "duration_sec": int(duration_total),
+        },
+        "platforms": sorted(platforms.values(), key=lambda x: -x["total"]),
+        "categories": categories,
+        "processing": {
+            "transcribed": int(transcribed),
+            "understood": int(understood),
+            "pending": int(jobs_pending),
+            "failed": int(jobs_failed),
+        },
+        "engagement": totals,
+        "storage": {
+            "used_bytes": used_bytes,
+            "by_platform": storage_by_platform,
+            "roots": storage_roots,
+        },
+        "trend": trend,
         "hot": hot,
     }
 

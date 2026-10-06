@@ -55,6 +55,7 @@ from app.models import (  # noqa: E402
     SystemSetting,
     TaskLog,
     Transcript,
+    StorageRoot,
     VideoUnderstanding,
     ViralBreakdown,
 )
@@ -903,8 +904,73 @@ def _create_metrics(session, rng, now, contents) -> None:
     session.flush()
 
 
+def _ensure_demo_storage_root(session) -> StorageRoot:
+    """演示用存储根：放在 data/demo_storage，保证视频能真实播放。
+
+    只在该根不存在时才建，不覆盖用户已有配置。
+    """
+    from app.config import settings
+
+    path = settings.data_dir / "demo_storage"
+    path.mkdir(parents=True, exist_ok=True)
+    root = session.scalar(select(StorageRoot).where(StorageRoot.name == "演示存储"))
+    if root is None:
+        has_default = session.scalar(select(StorageRoot).where(StorageRoot.is_default.is_(True)))
+        root = StorageRoot(name="演示存储", path=str(path), is_default=has_default is None)
+        session.add(root)
+        session.flush()
+    return root
+
+
+def _demo_video_bytes(seconds: int = 3) -> bytes:
+    """生成一段真实可解码的小 mp4（纯色 + 音调），让「播放」按钮真的能播。
+
+    优先用 ffmpeg；不可用时退回一个 1x1 的极简 mp4（仍可被浏览器解析）。
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if shutil.which("ffmpeg"):
+        with tempfile.TemporaryDirectory() as td:
+            out = f"{td}/demo.mp4"
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", f"color=c=0x8b2f2f:s=320x180:d={seconds}",
+                "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+                "-c:a", "aac", "-shortest", out,
+            ]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+                with open(out, "rb") as fh:
+                    return fh.read()
+            except (subprocess.SubprocessError, OSError):
+                pass
+    # 兜底：最小 ftyp box（可被识别为 mp4，但多半无法解码画面）
+    return bytes.fromhex("00000018667479706d703432000000006d70343269736f6d") + b"\x00" * 1024
+
+
+def _write_demo_video_files(root: StorageRoot, assets) -> None:
+    """为已下载的演示视频落盘，让素材库的「播放」链路端到端可用。"""
+    import os
+
+    payload = _demo_video_bytes()
+    for asset in assets:
+        if asset.download_status != "done" or not asset.video_file:
+            continue
+        asset.storage_root_id = root.id
+        directory = os.path.join(root.path, asset.relative_path)
+        os.makedirs(directory, exist_ok=True)
+        target = os.path.join(directory, asset.video_file)
+        # 演示文件体积很小，直接覆盖，保证是真实可解码的 mp4
+        with open(target, "wb") as fh:
+            fh.write(payload)
+
+
 def _create_assets(session, rng, now, contents) -> list[MediaAsset]:
     videos = [c for c in contents if c.content_type == "video"][:25]
+    articles = [c for c in contents if c.content_type in ("article", "image")]
     download_cycle = ["done", "done", "done", "done", "done", "done", "downloading", "pending", "error", "done"]
     assets: list[MediaAsset] = []
     for idx, content in enumerate(videos):
@@ -950,6 +1016,25 @@ def _create_assets(session, rng, now, contents) -> list[MediaAsset]:
         )
         session.add(asset)
         assets.append(asset)
+
+    # 文章 / 图文：无需下载，正文走 Transcript（与公众号导入一致），
+    # 这样素材库的「文章」筛选、阅读视图与导出都能在演示数据上跑通。
+    for idx, content in enumerate(articles):
+        relative_path = f"demo/{content.platform}/{content.author_id}/{content.external_id}"
+        asset = MediaAsset(
+            content_id=content.id,
+            storage_root_id=None,
+            relative_path=relative_path,
+            video_file="",
+            audio_file="",
+            download_status="done",  # 抓取即下载
+            transcribe_status="done",  # 正文已在 transcript
+            analyze_status=["done", "pending"][idx % 2],
+            process_tier="",
+            understand_status="",
+        )
+        session.add(asset)
+        assets.append(asset)
     session.flush()
     return assets
 
@@ -977,6 +1062,27 @@ def _create_processing(session, rng, now, assets, contents) -> None:
     for asset in assets:
         content = content_by_id[asset.content_id]
         if asset.transcribe_status == "done":
+            if content.content_type in ("article", "image"):
+                # 文章：正文直接进 transcript，供阅读视图与 AI 分析使用
+                body = (
+                    f"{content.title}\n\n"
+                    "最近好多朋友问到这个话题，我把自己的经验整理成一份清单，"
+                    "从准备、执行到避坑一次讲清楚。\n\n"
+                    "一、先明确目标\n别看别人做什么就跟着做，先想清楚自己要解决什么问题。\n\n"
+                    "二、列清单再动手\n把必需项和可选项分开，预算优先给高频使用的部分。\n\n"
+                    "三、留出试错空间\n第一次别追求完美，先跑通一遍再优化。\n\n"
+                    "如果这份清单对你有帮助，记得收藏，后面我还会补充更多细节。"
+                )
+                session.add(
+                    Transcript(
+                        asset_id=asset.id,
+                        language="zh",
+                        model="article",
+                        segments=[],
+                        full_text=body,
+                    )
+                )
+                continue
             segs = _segments(rng, content.title)
             session.add(
                 Transcript(
@@ -1189,7 +1295,9 @@ def _create(session) -> None:
     _create_creators(session, now)
     _create_followed_creators(session, accounts, now, rng)
     _create_metrics(session, rng, now, contents)
+    root = _ensure_demo_storage_root(session)
     assets = _create_assets(session, rng, now, contents)
+    _write_demo_video_files(root, assets)
     _create_processing(session, rng, now, assets, contents)
     _create_comments(session, rng, now, contents)
     _create_jobs_logs(session, rng, now, contents, assets)

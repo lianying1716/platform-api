@@ -7,6 +7,9 @@
  *   V1 "Grotesk / 瑞士排版"   —— 强网格、粗字重、单一高饱和强调，几近无卡片
  *   V2 "Nocturne / 深夜控制台" —— 深色、发光强调色、等宽数字、数据演出感
  *   V3 "Bauhaus / 包豪斯纸品"  —— 高对比米白+原色块、硬边、印刷体感
+ *
+ * ★ 已选定 V3 包豪斯为正式方向：下面 :root 里就是它的令牌，全站默认生效。
+ *   V1/V2 仅保留给 /design-preview 样张页对比用。
  */
 
 :root {
@@ -32,6 +35,43 @@
   --sp-6: 30px;
   --sp-7: 42px;
   --sp-8: 58px;
+
+  /* ============================================================
+   * V3 · Bauhaus / 包豪斯纸品（正式方向，全局默认）
+   * 场景：白天、印刷品般的版面；高对比米白底 + 原色块（红/蓝/黄），硬边、粗线。
+   * 色：暖米白 + 砖红强调 + 蓝/黄辅助；硬边框、无圆角、偏移阴影。
+   * ============================================================ */
+  --bg: oklch(0.955 0.012 88);
+  --surface: oklch(0.985 0.008 90);
+  --surface-2: oklch(0.935 0.016 88);
+  --surface-3: oklch(0.90 0.020 88);
+  --ink: oklch(0.20 0.010 60);
+  --ink-2: oklch(0.34 0.012 60);
+  --muted: oklch(0.52 0.014 62);
+  --line: oklch(0.24 0.012 60);
+  --line-soft: oklch(0.86 0.016 84);
+  --accent: oklch(0.55 0.20 28);
+  --accent-2: oklch(0.48 0.17 258);
+  --accent-ink: oklch(0.99 0.006 90);
+  --accent-soft: oklch(0.93 0.06 40);
+  --accent-line: oklch(0.72 0.13 30);
+  --ok: oklch(0.52 0.13 158);
+  --ok-soft: oklch(0.93 0.05 158);
+  --warn: oklch(0.78 0.16 92);
+  --warn-soft: oklch(0.94 0.07 95);
+  --danger: oklch(0.55 0.20 28);
+  --danger-soft: oklch(0.93 0.06 30);
+  --radius: 0px;
+  --radius-lg: 0px;
+  --radius-pill: 0px;
+  --shadow-1: 3px 3px 0 oklch(0.24 0.012 60);
+  --shadow-2: 5px 5px 0 oklch(0.24 0.012 60);
+  --sidebar-bg: oklch(0.20 0.010 60);
+  --sidebar-ink: oklch(0.96 0.010 88);
+  --sidebar-ink-dim: oklch(0.66 0.014 70);
+  --chart-grid: oklch(0.88 0.014 86);
+  --fs-display: var(--fs-4xl);
+  --tracking-display: -0.01em;
 }
 
 /* ============================================================
@@ -151,7 +191,8 @@
   --tracking-display: -0.01em;
 }
 
-/* Element Plus 变量桥接（让既有 el-* 组件跟随主题） */
+/* Element Plus 变量桥接（让既有 el-* 组件跟随主题）；:root 与样张作用域都生效 */
+:root,
 [data-dir] {
   --el-color-primary: var(--accent);
   --el-color-primary-light-3: color-mix(in oklab, var(--accent) 72%, var(--surface));

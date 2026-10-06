@@ -114,3 +114,48 @@ def probe_root(path: str) -> tuple[bool, str]:
         return writable, "可读写" if writable else "存在但不可写"
     except OSError as exc:
         return False, f"检测失败: {exc}"
+
+
+def file_size(path: str) -> int:
+    """单文件字节数；不存在/不可读返回 0。"""
+    import os
+
+    try:
+        return os.path.getsize(path) if os.path.isfile(path) else 0
+    except OSError:
+        return 0
+
+
+def dir_size(path: str, *, max_files: int = 20000) -> int:
+    """目录总字节数（递归）。路径不存在返回 0，遍历文件数设上限避免卡死。"""
+    import os
+
+    if not path or not os.path.isdir(path):
+        return 0
+    total = 0
+    seen = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+            seen += 1
+            if seen >= max_files:
+                return total
+    return total
+
+
+def resolve_asset_file(db: Session, asset: "MediaAsset") -> str:
+    """素材本地视频文件的物理路径；无视频文件返回空串。
+
+    仅后端内部使用（用于 Range 流式播放），不对外暴露绝对路径。
+    """
+    import os
+
+    if not asset.video_file:
+        return ""
+    directory = resolve_asset_dir(db, asset)
+    if not directory:
+        return ""
+    return os.path.join(directory, asset.video_file)

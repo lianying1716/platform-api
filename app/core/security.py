@@ -19,6 +19,8 @@ _TOKEN_TTL = 7 * 24 * 3600
 _sessions: dict[str, float] = {}  # token -> 过期时间戳
 
 ADMIN_PASSWORD_KEY = "admin_password_hash"
+# 会话 Cookie 名；视频等标签无法带 Authorization 头，靠它鉴权。
+SESSION_COOKIE = "xsai_session"
 
 
 def hash_password(password: str) -> str:
@@ -60,12 +62,25 @@ def revoke_token(token: str) -> None:
     _sessions.pop(token, None)
 
 
-def require_admin(request: Request, db: Session = Depends(get_db)) -> str:
-    """FastAPI 依赖：校验 Authorization: Bearer <token>。"""
-    auth = request.headers.get("Authorization", "")
-    token = auth.removeprefix("Bearer ").strip()
-    expires = _sessions.get(token)
+def token_valid(token: str) -> bool:
+    """校验会话 token（不依赖 Request）。用于 ``<video src>`` 这类无法带请求头的场景。"""
+    expires = _sessions.get(token or "")
     if not token or expires is None or expires < time.time():
         _sessions.pop(token, None)
+        return False
+    return True
+
+
+def require_admin(request: Request, db: Session = Depends(get_db)) -> str:
+    """FastAPI 依赖：校验 Authorization: Bearer <token>，或会话 Cookie。
+
+    接受 Cookie 是为了让 ``<video src>`` 这类无法自定义请求头的标签也能鉴权
+    （登录时同时下发 httpOnly Cookie）。
+    """
+    auth = request.headers.get("Authorization", "")
+    token = auth.removeprefix("Bearer ").strip()
+    if not token:
+        token = request.cookies.get(SESSION_COOKIE, "")
+    if not token_valid(token):
         raise HTTPException(status_code=401, detail="未登录或会话已过期")
     return "admin"

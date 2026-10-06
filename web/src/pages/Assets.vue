@@ -1,53 +1,169 @@
 <template>
-  <div>
-    <div class="filters">
-      <el-select v-model="filters.platform" placeholder="平台" clearable style="width: 120px" @change="load">
+  <div class="ui-page">
+    <div class="ui-head">
+      <h1>素材库</h1>
+      <span class="sub">共 {{ assets.length }} 条 · 视频可播放，文章可阅读</span>
+      <div class="grow" />
+      <button class="ui-btn" @click="load">刷新</button>
+      <button class="ui-btn" @click="importDialog = true">导入文章</button>
+      <button class="ui-btn primary" :disabled="!selected.length" @click="exportSel('md')">
+        导出 Markdown
+      </button>
+      <button class="ui-btn" :disabled="!selected.length" @click="exportSel('json')">导出 JSON</button>
+    </div>
+
+    <!-- 筛选条：类型 / 平台 / 分类 / 状态 -->
+    <div class="ui-filters">
+      <div class="ui-seg">
+        <button v-for="v in typeTabs" :key="v.k" :class="{ on: filters.content_type === v.k }" @click="setType(v.k)">
+          {{ v.label }}
+        </button>
+      </div>
+      <el-select v-model="filters.platform" placeholder="平台" clearable size="small" style="width: 130px" @change="load">
         <el-option label="B站" value="bilibili" />
         <el-option label="抖音" value="douyin" />
+        <el-option label="快手" value="kuaishou" />
+        <el-option label="知乎" value="zhihu" />
         <el-option label="小红书" value="xhs" />
         <el-option label="微信公众号" value="wechat_mp" />
       </el-select>
-      <el-select v-model="filters.transcribe_status" placeholder="转录状态" clearable style="width: 130px" @change="load">
+      <el-select v-model="filters.category" placeholder="分类" clearable size="small" style="width: 150px" @change="load">
+        <el-option v-for="(label, key) in taxonomy" :key="key" :label="label" :value="key" />
+      </el-select>
+      <el-select v-model="filters.transcribe_status" placeholder="转录状态" clearable size="small" style="width: 130px" @change="load">
         <el-option label="待转录" value="pending" />
-        <el-option label="转录中" value="transcribing" />
         <el-option label="已完成" value="done" />
         <el-option label="失败" value="error" />
       </el-select>
-      <el-button @click="load">刷新</el-button>
-      <el-button @click="importDialog = true">导入文章</el-button>
-      <el-button type="primary" :disabled="!selected.length" @click="exportSel('md')">导出 Markdown</el-button>
-      <el-button type="primary" plain :disabled="!selected.length" @click="exportSel('json')">导出 JSON</el-button>
+      <span class="grow" />
+      <span v-if="selected.length" class="ui-badge acc">已选 {{ selected.length }} 条</span>
     </div>
 
-    <el-table :data="assets" v-loading="loading" @selection-change="(s: any[]) => (selected = s)" style="margin-top: 12px">
-      <el-table-column type="selection" width="44" />
-      <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="platform" label="平台" width="90" />
-      <el-table-column prop="author_name" label="作者" width="120" />
-      <el-table-column label="下载" width="90">
-        <template #default="{ row }"><el-tag size="small" :type="t(row.download_status)">{{ s(row.download_status) }}</el-tag></template>
-      </el-table-column>
-      <el-table-column label="转录" width="90">
-        <template #default="{ row }"><el-tag size="small" :type="t(row.transcribe_status)">{{ s(row.transcribe_status) }}</el-tag></template>
-      </el-table-column>
-      <el-table-column label="分析" width="90">
-        <template #default="{ row }"><el-tag size="small" :type="t(row.analyze_status)">{{ s(row.analyze_status) }}</el-tag></template>
-      </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="openDetail(row.asset_id)">详情</el-button>
-          <el-button size="small" @click="act(row.asset_id, 'transcribe')">转录</el-button>
-          <el-button size="small" @click="act(row.asset_id, 'analyze')">分析</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <!-- 卡片网格 -->
+    <div v-loading="loading">
+      <div v-if="!loading && !assets.length" class="ui-empty">
+        <div class="big">还没有素材</div>
+        <p>去「关键词采集」或「关注列表」跑一次同步，素材会自动入库。</p>
+      </div>
+      <div v-else class="asset-grid">
+        <article v-for="a in assets" :key="a.asset_id" class="asset" :class="{ picked: isPicked(a) }">
+          <!-- 封面/预览：视频悬浮播放键，文章显示正文摘要入口 -->
+          <div class="cover" :style="a.cover_url ? { backgroundImage: `url(${a.cover_url})` } : {}">
+            <span v-if="!a.cover_url" class="ph">{{ typeLabel(a.content_type) }}</span>
+            <span class="badge-plat">{{ platformLabel(a.platform) }}</span>
+            <span class="badge-type">{{ typeLabel(a.content_type) }}</span>
+            <span v-if="a.duration_sec" class="badge-dur">{{ mmss(a.duration_sec) }}</span>
+            <button
+              v-if="a.content_type === 'video' && a.playable"
+              class="play"
+              title="播放"
+              @click="openPlayer(a)"
+            >
+              ▶
+            </button>
+            <span v-else-if="a.content_type === 'video'" class="badge-nofile">未下载</span>
+          </div>
+
+          <div class="body">
+            <div class="title" :title="a.title">{{ a.title || '（无标题）' }}</div>
+
+            <!-- 博主：头像 + 昵称，可点跳主页 -->
+            <div class="author">
+              <span class="ava" :style="a.author_avatar ? { backgroundImage: `url(${a.author_avatar})` } : {}">
+                {{ a.author_avatar ? '' : (a.author_name || '?').slice(0, 1) }}
+              </span>
+              <a v-if="a.author_home_url" :href="a.author_home_url" target="_blank" rel="noopener" class="aname">
+                {{ a.author_name || a.author_id }}
+              </a>
+              <span v-else class="aname">{{ a.author_name || '未知博主' }}</span>
+            </div>
+
+            <!-- 分类 + 发布时间 + 同步时间 -->
+            <div class="meta-rows">
+              <div class="mrow">
+                <span class="mk">分类</span>
+                <span v-if="a.auto_category" class="ui-badge acc">
+                  {{ taxonomy[a.auto_category] || a.auto_category }}
+                  <em v-if="a.category_confidence">· {{ (a.category_confidence * 100).toFixed(0) }}%</em>
+                </span>
+                <span v-else class="ui-badge none">未判类</span>
+              </div>
+              <div class="mrow"><span class="mk">发布</span><span class="mv">{{ fmtDate(a.published_at) }}</span></div>
+              <div class="mrow"><span class="mk">同步</span><span class="mv">{{ fmtTime(a.synced_at || a.created_at) }}</span></div>
+            </div>
+
+            <!-- 指标 -->
+            <div class="nums">
+              <span><b>{{ compact(a.metrics?.play) }}</b> 播放</span>
+              <span><b>{{ compact(a.metrics?.like) }}</b> 赞</span>
+              <span><b>{{ compact(a.metrics?.comment) }}</b> 评论</span>
+              <span><b>{{ compact(a.metrics?.favorite) }}</b> 收藏</span>
+            </div>
+
+            <div class="foot">
+              <span class="size">{{ bytes(a.size_bytes) }}</span>
+              <span class="ui-badge" :class="statusTone(a.download_status)">{{ s(a.download_status) }}</span>
+              <span class="grow" />
+              <label v-if="selected.length || pickMode" class="pick">
+                <input type="checkbox" :checked="isPicked(a)" @change="togglePick(a)" />
+              </label>
+            </div>
+
+            <div class="acts">
+              <button class="ui-btn sm" @click="openDetail(a.asset_id)">详情</button>
+              <button v-if="a.content_type === 'video' && a.playable" class="ui-btn sm" @click="openPlayer(a)">播放</button>
+              <button v-if="a.content_type !== 'video'" class="ui-btn sm" @click="openArticle(a.asset_id)">阅读</button>
+              <button class="ui-btn sm" @click="act(a.asset_id, 'transcribe')">转录</button>
+              <button class="ui-btn sm" @click="act(a.asset_id, 'analyze')">分析</button>
+            </div>
+          </div>
+        </article>
+      </div>
+    </div>
+
+    <!-- 视频播放器（走 Range 流式接口，可拖进度条） -->
+    <div v-if="player" class="ui-modal" @click.self="player = null">
+      <div class="ui-modal-box player-box">
+        <div class="ui-panel-head">
+          <h2>{{ player.title || '（无标题）' }}</h2>
+          <div class="grow" />
+          <button class="ui-btn ghost sm" @click="player = null">关闭</button>
+        </div>
+        <div class="player-wrap">
+          <video
+            :src="`/api/assets/${player.asset_id}/media`"
+            controls
+            autoplay
+            playsinline
+            preload="metadata"
+          />
+        </div>
+        <div class="player-meta">
+          <span>{{ platformLabel(player.platform) }} · {{ player.author_name || '未知博主' }}</span>
+          <span>{{ fmtDate(player.published_at) }} 发布 · {{ bytes(player.size_bytes) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 文章阅读视图 -->
+    <div v-if="article" class="ui-modal article-modal" @click.self="article = null">
+      <div class="ui-modal-box">
+        <div class="ui-panel-head">
+          <h2>{{ article.title }}</h2>
+          <div class="grow" />
+          <a v-if="article.url" class="ui-btn sm" :href="article.url" target="_blank" rel="noopener">打开原文</a>
+          <button class="ui-btn ghost sm" @click="article = null">关闭</button>
+        </div>
+        <div class="ui-modal-body article-body">
+          <p class="art-meta">{{ article.author_name }} · {{ fmtDate(article.published_at) }}</p>
+          <div v-if="article.html" class="art-html" v-html="article.html" />
+          <pre v-else class="art-text">{{ article.text }}</pre>
+        </div>
+      </div>
+    </div>
 
     <el-dialog v-model="importDialog" title="导入微信公众号文章" width="520px">
-      <el-input
-        v-model="importUrl"
-        placeholder="https://mp.weixin.qq.com/s/..."
-        clearable
-      />
+      <el-input v-model="importUrl" placeholder="https://mp.weixin.qq.com/s/..." clearable />
       <p class="hint">仅支持单篇文章链接。批量历史文章列表接口微信已关闭，无法导入整号历史。</p>
       <template #footer>
         <el-button @click="importDialog = false">取消</el-button>
@@ -249,7 +365,39 @@ const selected = ref<any[]>([])
 const loading = ref(false)
 const drawer = ref(false)
 const detail = ref<any>(null)
-const filters = reactive({ platform: '', transcribe_status: '' })
+const filters = reactive({ platform: '', transcribe_status: '', content_type: '', category: '' })
+
+const typeTabs = [
+  { k: '', label: '全部' },
+  { k: 'video', label: '视频' },
+  { k: 'article', label: '文章' },
+]
+function setType(k: string) {
+  filters.content_type = k
+  load()
+}
+
+// 卡片选集：默认只在已选或已有勾选时显示勾选框
+const pickMode = ref(false)
+function isPicked(a: any) {
+  return selected.value.some((x) => x.asset_id === a.asset_id)
+}
+function togglePick(a: any) {
+  const i = selected.value.findIndex((x) => x.asset_id === a.asset_id)
+  if (i >= 0) selected.value.splice(i, 1)
+  else selected.value.push(a)
+}
+
+// 视频播放 / 文章阅读
+const player = ref<any>(null)
+const article = ref<any>(null)
+function openPlayer(a: any) {
+  player.value = a
+}
+async function openArticle(assetId: number) {
+  const { data } = await api.get(`/api/assets/${assetId}/article`)
+  article.value = data
+}
 
 const importDialog = ref(false)
 const importUrl = ref('')
@@ -467,6 +615,54 @@ const statusText: Record<string, string> = {
 }
 function s(v: string) { return statusText[v] ?? v }
 function t(v: string) { return ({ done: 'success', error: 'danger' } as Record<string, string>)[v] ?? 'info' }
+
+// 卡片展示用格式化
+const PLATFORM_LABELS: Record<string, string> = {
+  douyin: '抖音', bilibili: 'B站', kuaishou: '快手', zhihu: '知乎',
+  xhs: '小红书', wechat_mp: '微信公众号', weibo: '微博', tieba: '贴吧',
+}
+function platformLabel(p: string) {
+  return PLATFORM_LABELS[p] || p || '未知'
+}
+const TYPE_LABELS: Record<string, string> = { video: '视频', article: '文章', image: '图文' }
+function typeLabel(t: string) {
+  return TYPE_LABELS[t] || t || '内容'
+}
+function statusTone(v: string) {
+  return ({ done: 'ok', error: 'bad' } as Record<string, string>)[v] || ''
+}
+function mmss(sec: number) {
+  const s = Math.max(0, Math.round(sec))
+  const m = Math.floor(s / 60)
+  return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+}
+function compact(v: any) {
+  const n = Number(v || 0)
+  if (n >= 1e8) return `${(n / 1e8).toFixed(1)}亿`
+  if (n >= 1e4) return `${(n / 1e4).toFixed(1)}万`
+  return String(n)
+}
+function bytes(v: any) {
+  const n = Number(v || 0)
+  if (n <= 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  let x = n
+  while (x >= 1024 && i < units.length - 1) { x /= 1024; i += 1 }
+  return `${x.toFixed(i >= 3 ? 2 : 0)} ${units[i]}`
+}
+function fmtDate(v: string | null) {
+  if (!v) return '—'
+  const d = new Date(v.endsWith('Z') ? v : v + 'Z')
+  return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+}
+// 分类中文名（来自系统设置的类型目录）
+async function loadTaxonomy() {
+  try {
+    const { data } = await api.get('/api/system/process-settings')
+    taxonomy.value = data.taxonomy || {}
+  } catch { /* 不阻塞列表 */ }
+}
 // 评论时间：后端为 UTC naive ISO（无 Z），补 'Z' 再按本地时区显示。
 function fmtTime(v: string | null) {
   if (!v) return ''
@@ -476,7 +672,9 @@ function fmtTime(v: string | null) {
 async function load() {
   loading.value = true
   try {
-    const { data } = await api.get('/api/assets', { params: { ...filters } })
+    const { data } = await api.get('/api/assets', {
+      params: { ...filters, limit: 200 },
+    })
     assets.value = data
   } finally {
     loading.value = false
@@ -537,7 +735,10 @@ async function exportSel(format: string) {
   URL.revokeObjectURL(url)
 }
 
-onMounted(load)
+onMounted(() => {
+  loadTaxonomy()
+  load()
+})
 onUnmounted(() => {
   stopProcPoll()
   stopBdPoll()
@@ -545,6 +746,128 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.ui-page { display: flex; flex-direction: column; gap: var(--sp-5); }
+.ui-filters { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.ui-filters .grow { margin-left: auto; }
+
+/* 素材卡片网格 */
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: var(--sp-3); }
+.asset {
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+  transition: transform .14s ease-out, box-shadow .14s ease-out;
+}
+.asset:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
+.asset.picked { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+.asset .cover {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background-color: var(--surface-3);
+  background-size: cover;
+  background-position: center;
+  border-bottom: 1px solid var(--ink);
+  display: grid;
+  place-items: center;
+}
+.asset .cover .ph { font-size: var(--fs-2xl); font-weight: 800; color: var(--muted); letter-spacing: .08em; }
+.asset .cover .badge-plat,
+.asset .cover .badge-type,
+.asset .cover .badge-dur,
+.asset .cover .badge-nofile {
+  position: absolute;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 2px 7px;
+  border: 1px solid var(--ink);
+  background: var(--surface);
+  color: var(--ink);
+}
+.asset .cover .badge-plat { top: 8px; left: 8px; background: var(--ink); color: var(--surface); }
+.asset .cover .badge-type { top: 8px; right: 8px; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.asset .cover .badge-dur { bottom: 8px; right: 8px; font-variant-numeric: tabular-nums; }
+.asset .cover .badge-nofile { bottom: 8px; right: 8px; color: var(--muted); }
+.asset .cover .play {
+  position: absolute;
+  width: 54px; height: 54px;
+  border-radius: 50%;
+  border: 2px solid var(--ink);
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid; place-items: center;
+  padding-left: 3px;
+  transition: transform .14s ease-out, background .14s ease-out;
+}
+.asset .cover .play:hover { transform: scale(1.08); background: var(--accent); color: var(--accent-ink); }
+
+.asset .body { padding: var(--sp-4); display: flex; flex-direction: column; gap: 9px; flex: 1; }
+.asset .title {
+  font-weight: 650; font-size: var(--fs-md); color: var(--ink); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.asset .author { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.asset .ava {
+  width: 22px; height: 22px; flex: none;
+  background-color: var(--surface-2); background-size: cover; background-position: center;
+  border: 1px solid var(--ink);
+  display: grid; place-items: center;
+  font-size: var(--fs-xs); font-weight: 700; color: var(--ink-2);
+  overflow: hidden;
+}
+.asset .aname {
+  color: var(--ink-2); font-size: var(--fs-sm); text-decoration: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.asset .aname:hover { color: var(--accent); text-decoration: underline; }
+
+.asset .meta-rows { display: flex; flex-direction: column; gap: 3px; }
+.asset .mrow { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xs); }
+.asset .mk { color: var(--muted); min-width: 28px; }
+.asset .mv { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.ui-badge.none { border-style: dashed; color: var(--muted); background: transparent; }
+.ui-badge em { font-style: normal; opacity: .75; }
+
+.asset .nums {
+  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  font-size: var(--fs-xs); color: var(--muted);
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 8px;
+}
+.asset .nums b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+.asset .foot { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--muted); }
+.asset .foot .grow { margin-left: auto; }
+.asset .size { font-variant-numeric: tabular-nums; }
+.asset .pick input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
+.asset .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+
+/* 播放器 / 文章阅读 */
+.ui-modal {
+  position: fixed; inset: 0; z-index: 200;
+  background: color-mix(in oklab, var(--ink) 55%, transparent);
+  display: grid; place-items: center; padding: var(--sp-5);
+}
+.ui-modal-box {
+  width: min(920px, 100%); max-height: 90vh; display: flex; flex-direction: column;
+  background: var(--surface); border: 2px solid var(--ink); box-shadow: var(--shadow-2);
+}
+.player-wrap { background: oklch(0.12 0 0); display: grid; place-items: center; }
+.player-wrap video { width: 100%; max-height: 64vh; display: block; }
+.player-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: var(--sp-3) var(--sp-4); font-size: var(--fs-sm); color: var(--muted); }
+.article-body { padding: var(--sp-5); overflow: auto; }
+.art-meta { color: var(--muted); font-size: var(--fs-sm); margin: 0 0 14px; }
+.art-html { line-height: 1.8; font-size: var(--fs-base); color: var(--ink-2); }
+.art-html :deep(img) { max-width: 100%; height: auto; border: 1px solid var(--line-soft); }
+.art-html :deep(p) { margin: 0 0 12px; }
+.art-text { white-space: pre-wrap; font-family: var(--font-sans); line-height: 1.8; color: var(--ink-2); margin: 0; }
+
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
 .meta { color: #909399; margin: 4px 0 12px; }
 .hint { color: #909399; font-size: 12px; margin: 8px 0 0; }
