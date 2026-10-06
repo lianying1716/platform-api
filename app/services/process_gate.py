@@ -6,6 +6,7 @@
   档位：score >= l3_min_heat → l3；>= l2_min_heat → l2；否则 l1
   分位：按 score 降序，只有前 top_pct 份额可高于 l1          # 随批自适应
   预算：l2/l3 合计受 budget 约束，超出的从最低分起降回 l1
+  在途：入队前再按「在途 job + 本次待入队」计一次，超 budget 不建 job（全局上限）
   不降级：已 l3 的候选保持 l3，分数/分位/预算都不降
 
 职责划分（对应设计 §6.1「动态门控决定是否升级」）：
@@ -13,6 +14,12 @@
 - `select_targets` / `enqueue_process_jobs`：把决策接到采集/同步/下载链路上——取最新指标快照
   作为候选，按档位自动入队 `extract_frames`(l2) / `understand_video`(l3)，并去重、跳过已加工者。
   仅对**已下载视频**的素材入队：抽帧与视频理解都要读本地视频，未下载就入队只会失败重试。
+
+预算语义（I1 修正）：`select_tier` 的 `top_pct`（分位）与 `budget`（预算）都是**批内相对量**，
+单条调用（`handle_download` 每次只传当前这一条）必然令二者退化。因此在**入队层**增加一道
+**在途预算**（全局）：把「当前 queued/running 的 l2/l3 job」计入已用预算，只在剩余额度内入队。
+这样无论调用方是批量（crawl/sync）还是单条（下载完成），`budget` 都能真正约束在途 job 上限；
+`top_pct` 仍是批内相对量，仅批量路径有语义（见设置页「单批预算 / 热门分位」说明）。
 """
 
 from __future__ import annotations
@@ -161,6 +168,27 @@ def _existing_tier(asset: MediaAsset) -> str:
     return str(asset.process_tier or "")
 
 
+def _budget_counts(db: Session) -> tuple[int, set[tuple[str, int]]]:
+    """在途 l2/l3 预算用量：返回 (已用 budget 条数, 已在途的 (job_type, asset_id) 集合)。
+
+    只统计 `_TIER_JOB` 两类（extract_frames / understand_video）的 queued/running job——
+    它们是本门控的产物，也是唯一会真正消耗加工预算的任务。同一 asset 若有多条重复 job
+    （理论上 dedup 会拦，DB 层面仍可能残留），只计一条，避免重复扣预算。
+    """
+    rows = db.scalars(
+        select(JobQueue).where(
+            JobQueue.job_type.in_(tuple(_TIER_JOB.values())),
+            JobQueue.status.in_(("queued", "running")),
+        )
+    ).all()
+    pending: set[tuple[str, int]] = set()
+    for job in rows:
+        aid = (job.payload or {}).get("asset_id")
+        if aid is not None:
+            pending.add((job.job_type, int(aid)))
+    return len(pending), pending
+
+
 def select_targets(
     db: Session, contents: list[ContentItem], *, settings: dict
 ) -> list[tuple[MediaAsset, str, str]]:
@@ -216,30 +244,26 @@ def enqueue_process_jobs(
     调用方需保证指标快照与素材状态已落库/提交，门控才读得到。
     `enqueue(dedup=True)` 会命中已有 queued/running 同类 job，这里先记录它们，
     才能把返回值如实报成「本次新建条数」。
+
+    在途预算（I1）：先统计队列中已有的 l2/l3 在途 job，只在 `budget` 剩余额度内建新 job。
+    这使下载完成路径（每次 batch=1）也受 `budget` 约束，而非「够热就无限升档」。
     """
     from app.core.queue import enqueue
 
     targets = select_targets(db, contents, settings=settings)
-    if not targets:
+    used, pending = _budget_counts(db)
+    # budget<=0 → 不新建（writer 侧已校验 budget>=0；这里对 0 也保持「无额度」语义）。
+    remaining = max(0, int(settings["budget"]) - used)
+    if remaining == 0:
         return 0
-
-    pending: set[tuple[str, int]] = set()
-    rows = db.scalars(
-        select(JobQueue).where(
-            JobQueue.job_type.in_(tuple(_TIER_JOB.values())),
-            JobQueue.status.in_(("queued", "running")),
-        )
-    ).all()
-    for job in rows:
-        aid = (job.payload or {}).get("asset_id")
-        if aid is not None:
-            pending.add((job.job_type, int(aid)))
 
     created = 0
     for asset, tier, _reason in targets:
         job_type = _TIER_JOB[tier]
         if (job_type, asset.id) in pending:
             continue
+        if created >= remaining:
+            break  # 在途预算已用尽：够热也不再新建（超出部分留待后续运行再定档）
         job = enqueue(db, job_type, {"asset_id": asset.id}, priority=_PROCESS_PRIORITY, commit=False)
         key = (job.job_type, int((job.payload or {}).get("asset_id", asset.id)))
         if key not in pending:

@@ -339,6 +339,47 @@ def test_download_gate_failure_does_not_flip_download(session, monkeypatch):
     assert asset.download_status == "done"
 
 
+def test_download_path_respects_inflight_budget(session, monkeypatch):
+    """I1 回归：下载完成路径每条 batch=1，但累计在途 L3 job 仍受 budget 约束。
+
+    修复前：50 条爆款逐一走 handle_download → 50 个 understand_video job（budget=20 被突破）；
+    修复后：在途预算封顶，最多建 budget 个。
+    """
+    from app.models import (
+        ContentItem,
+        ContentMetricSnapshot,
+        JobQueue,
+        MediaAsset,
+        SystemSetting,
+    )
+    from app.workers import handlers
+
+    async def fake_download(url, target_dir, **kw):
+        return {"video_file": "video.mp4", "audio_file": "audio.wav"}
+
+    monkeypatch.setattr("app.modules.media_download.download", fake_download)
+
+    # 预算=3，逐条下载 8 条爆款：每条都够 L3 门槛，但累计在途只能到 3。
+    session.add(SystemSetting(key="process_budget", value="3"))
+    session.commit()
+
+    for i in range(8):
+        content = ContentItem(
+            platform="douyin", external_id=f"hot{i}", title="爆款", url=f"https://d/hot{i}"
+        )
+        session.add(content)
+        session.flush()
+        session.add(ContentMetricSnapshot(content_id=content.id, like=5000, comment=100))
+        asset = MediaAsset(content_id=content.id, download_status="pending")
+        session.add(asset)
+        session.commit()
+        asyncio.run(handlers.handle_download(session, {"asset_id": asset.id}))
+        session.refresh(asset)
+        assert asset.download_status == "done"
+
+    assert session.query(JobQueue).filter_by(job_type="understand_video").count() == 3
+
+
 def test_crawl_process_gate_failure_does_not_flip_run(session, monkeypatch):
     """I1：分档门控入队抛错不得把已成功的采集翻转成 error。"""
     from app.models import CrawlTask

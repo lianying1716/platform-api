@@ -319,3 +319,87 @@ def test_select_targets_uses_latest_metric_snapshot(_engine):
     picks = select_targets(db, [c], settings=dict(_GATE, top_pct=1.0))
     assert picks == []
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# I1：在途预算（全局）——单条/下载完成路径也不能突破 budget
+# ---------------------------------------------------------------------------
+
+
+def test_enqueue_inflight_budget_caps_single_item_calls(_engine):
+    """I1：逐条调用（下载完成路径 batch=1）时，累计在途 l2/l3 job 不得超过 budget。
+
+    回归：修复前 50 条爆款逐一走门控 → 建 50 个 L3 job（budget=20 被突破）。
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.process_gate import enqueue_process_jobs
+
+    db = sessionmaker(bind=_engine)()
+    settings = dict(_GATE, top_pct=1.0, budget=3)  # top_pct=1 排除分位干扰，只看预算
+    created = 0
+    for i in range(10):
+        c, _ = _mk_ready(db, f"hot{i}", like=5000, comment=0)
+        created += enqueue_process_jobs(db, [c], settings=settings)
+
+    assert created == 3
+    assert db.query(JobQueue).filter_by(job_type="understand_video").count() == 3
+    db.close()
+
+
+def test_enqueue_inflight_budget_counts_running_and_frees_on_done(_engine):
+    """在途预算把 running job 也计入；job 完成后额度释放，后续可再入队。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.process_gate import enqueue_process_jobs
+
+    db = sessionmaker(bind=_engine)()
+    settings = dict(_GATE, top_pct=1.0, budget=1)
+
+    c1, a1 = _mk_ready(db, "hot1", like=5000, comment=0)
+    assert enqueue_process_jobs(db, [c1], settings=settings) == 1
+    # 该 job 被 worker 领走（running）仍占额度：第 2 条够热也不入队。
+    job = db.query(JobQueue).filter_by(job_type="understand_video").one()
+    job.status = "running"
+    db.commit()
+    c2, a2 = _mk_ready(db, "hot2", like=6000, comment=0)
+    assert enqueue_process_jobs(db, [c2], settings=settings) == 0
+
+    # job 完成后额度释放 → 第 2 条可入队。
+    job.status = "done"
+    db.commit()
+    assert enqueue_process_jobs(db, [c2], settings=settings) == 1
+    db.close()
+
+
+def test_enqueue_budget_zero_creates_nothing(_engine):
+    """budget=0 → 无额度，即便热度爆表也不建 job（写入侧已保证 budget>=0）。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.process_gate import enqueue_process_jobs
+
+    db = sessionmaker(bind=_engine)()
+    c, _ = _mk_ready(db, "hot", like=999999, comment=0)
+    assert enqueue_process_jobs(db, [c], settings=dict(_GATE, top_pct=1.0, budget=0)) == 0
+    assert db.query(JobQueue).count() == 0
+    db.close()
+
+
+def test_enqueue_inflight_budget_does_not_block_dedup_hits(_engine):
+    """在途预算不会令「同 asset 已在途」的重复调用重复计数或重复建 job。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import JobQueue
+    from app.services.process_gate import enqueue_process_jobs
+
+    db = sessionmaker(bind=_engine)()
+    # budget=2：首次入队后仍有 1 个额度，第二次调用会走到 dedup 分支（而非额度耗尽短路）。
+    settings = dict(_GATE, top_pct=1.0, budget=2)
+    c, _ = _mk_ready(db, "hot", like=5000, comment=0)
+    assert enqueue_process_jobs(db, [c], settings=settings) == 1
+    assert enqueue_process_jobs(db, [c], settings=settings) == 0  # dedup 吸收
+    assert db.query(JobQueue).count() == 1
+    db.close()

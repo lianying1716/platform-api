@@ -112,9 +112,11 @@
           </el-form-item>
           <el-form-item label="单批预算 budget">
             <el-input-number v-model="proc.budget" :min="0" :precision="0" />
+            <span class="detail">全局限额：l2/l3 在途 job（含 queued/running）上限；单条下载路径也受约束</span>
           </el-form-item>
           <el-form-item label="热门分位 top_pct">
             <el-input-number v-model="proc.top_pct" :min="0" :max="1" :step="0.05" :precision="2" />
+            <span class="detail">仅批量路径（采集/同步）生效：每批按热度取前该比例升档；单条下载路径不适用</span>
           </el-form-item>
           <el-form-item label="点赞权重 weight_like">
             <el-input-number v-model="proc.weight_like" :min="0" :step="0.1" :precision="2" />
