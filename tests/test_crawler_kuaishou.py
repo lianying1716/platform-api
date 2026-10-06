@@ -177,3 +177,27 @@ def test_search_kuaishou_stops_on_repeating_cursor(monkeypatch):
     import asyncio
     items = asyncio.run(ks.search_kuaishou("k", "cookie", limit=50, sort="popular"))
     assert calls["n"] <= 3 and len(items) >= 1
+
+
+def test_search_kuaishou_stops_when_page_yields_no_usable_items(monkeypatch):
+    """每页条目都被过滤（0 新增）但游标持续推进时，必须停止，不得无限翻页。"""
+    import asyncio
+    import app.modules.crawler.kuaishou as ks
+
+    calls = {"n": 0}
+
+    class Resp:
+        def json(self):
+            calls["n"] += 1
+            # feeds 非空但都缺 photo.id → _normalize_feed 返回 None；pcursor 每页都变
+            return {"data": {"visionSearchPhoto": {"result": 1, "feeds": [{"author": {}, "photo": {}}],
+                                                   "pcursor": f"c{calls['n']}", "searchSessionId": "s"}}}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return Resp()
+
+    monkeypatch.setattr(ks.httpx, "AsyncClient", lambda **k: Client())
+    items = asyncio.run(ks.search_kuaishou("k", "cookie", limit=50, sort="popular"))
+    assert items == [] and calls["n"] <= 2

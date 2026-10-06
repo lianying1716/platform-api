@@ -65,7 +65,7 @@ def _patch_sign(monkeypatch, module):
 
 @pytest.mark.asyncio
 async def test_search_zhihu_request_shape_and_normalization(monkeypatch):
-    """验证请求形状（host/path/params/签名头）、签名覆盖完整 URL，以及混合响应归一化。"""
+    """验证请求形状（host/path/params/签名头）、签名覆盖路径+查询串，以及混合响应归一化。"""
     from app.modules.crawler import zhihu
 
     sign_calls = _patch_sign(monkeypatch, zhihu)
@@ -200,3 +200,27 @@ async def test_crawler_search_dispatches_zhihu_native(monkeypatch):
 
     items = await crawler.search(platform="zhihu", keyword="x", cookie="d_c0=1", limit=1)
     assert [it["external_id"] for it in items] == ["a1"]
+
+
+def test_search_zhihu_stops_when_page_yields_no_usable_items(monkeypatch):
+    """每页 data 非空但全部被 _normalize_item 过滤、offset 持续推进时必须停止。"""
+    import app.modules.crawler.zhihu as zhihu
+
+    calls = {"n": 0}
+
+    class Resp:
+        def json(self):
+            calls["n"] += 1
+            # 未知 type → 全部过滤；paging.is_end 恒 False
+            return {"data": [{"type": "unknown", "object": {}}], "paging": {"is_end": False}}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **k): return Resp()
+
+    _patch_sign(monkeypatch, zhihu)
+    monkeypatch.setattr(zhihu.httpx, "AsyncClient", lambda **k: Client())
+    import asyncio
+    items = asyncio.run(zhihu.search_zhihu("k", "d_c0=x", limit=50, sort="popular"))
+    assert items == [] and calls["n"] <= 2

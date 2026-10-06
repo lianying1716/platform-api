@@ -16,7 +16,6 @@ import httpx
 
 from app.modules.crawler import zhihu_sign
 
-_SEARCH_URL = "https://www.zhihu.com/api/v4/search_v3"
 _SEARCH_PATH = "/api/v4/search_v3"  # 签名只覆盖路径+查询串（不含 host）
 
 # 与 client._UA 保持一致；各平台模块各自持有常量，避免与 client 相互 import。
@@ -151,6 +150,7 @@ async def search_zhihu(keyword: str, cookie: str, limit: int, sort: str) -> list
                 raise RuntimeError("知乎搜索失败：Cookie 可能失效或被风控")
 
             rows = data.get("data") or []
+            before = len(items)
             for row in rows:
                 norm = _normalize_item(row)
                 if norm is None:
@@ -162,7 +162,9 @@ async def search_zhihu(keyword: str, cookie: str, limit: int, sort: str) -> list
             paging = data.get("paging") if isinstance(data.get("paging"), dict) else {}
             if paging.get("is_end"):
                 break
-            if not rows:
+            # 防死循环：本页没有任何**可用**条目（全部被过滤/类型未知）时停止，
+            # 否则 offset 持续推进会让 while 永不退出、拖死 worker。
+            if not rows or len(items) == before:
                 break
             page += 1
     return items[:limit]

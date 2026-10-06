@@ -92,6 +92,7 @@ async def search_kuaishou(keyword: str, cookie: str, limit: int, sort: str) -> l
                     "快手搜索失败：Cookie 可能失效或被风控（result != 1 或缺失 feeds）"
                 )
             session_id = result.get("searchSessionId") or session_id
+            before = len(items)
             for feed in result.get("feeds") or []:
                 norm = _normalize_feed(feed)
                 if norm is None:
@@ -101,6 +102,10 @@ async def search_kuaishou(keyword: str, cookie: str, limit: int, sort: str) -> l
                     break
             cursor = result.get("pcursor") or ""
             if not cursor or cursor == "no_more":
+                break
+            # 防死循环：本页没有新增**可用**条目（条目被过滤/字段漂移）时停止，
+            # 否则游标持续推进会让 while 永不退出、拖死 worker。
+            if len(items) == before:
                 break
             # 防死循环：游标原地不动（服务端软限流/异常）时立即停止，避免 worker 无限翻页。
             if cursor == prev_cursor:
