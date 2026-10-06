@@ -10,3 +10,6 @@ web/dist/
 app/static/
 .DS_Store
 ._*
+
+# playwright cli artifacts
+.playwright-cli/

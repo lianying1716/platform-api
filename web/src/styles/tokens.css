@@ -1,139 +1,161 @@
 /*
- * 设计令牌 · 候选方向
- * 每个方向用 [data-theme="..."] 作用域，同一套 markup 换令牌即可对比。
- * 颜色一律 OKLCH；中性色都带极低色度（chroma 0.004~0.012）向品牌色偏移。
+ * 设计令牌 v2 · 三款「大胆」方向
+ * 一律 OKLCH；中性色带极低色度（chroma .004~.02）向品牌色偏移。
+ * 用 [data-dir="..."] 作用域，同一套 markup 换令牌即可对比。
+ *
+ * 方向命名：
+ *   V1 "Grotesk / 瑞士排版"   —— 强网格、粗字重、单一高饱和强调，几近无卡片
+ *   V2 "Nocturne / 深夜控制台" —— 深色、发光强调色、等宽数字、数据演出感
+ *   V3 "Bauhaus / 包豪斯纸品"  —— 高对比米白+原色块、硬边、印刷体感
  */
 
 :root {
-  /* 字体：产品 UI 用系统栈，中文优先 PingFang / 微软雅黑 */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 
-  /* 字号阶（1.14 比例，产品 UI 偏紧） */
   --fs-xs: 11px;
   --fs-sm: 12px;
   --fs-md: 13px;
   --fs-base: 14px;
   --fs-lg: 16px;
-  --fs-xl: 19px;
-  --fs-2xl: 23px;
-  --fs-3xl: 28px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+  --fs-4xl: 44px;
 
-  /* 间距阶 */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
   --sp-4: 16px;
   --sp-5: 22px;
   --sp-6: 30px;
-  --sp-7: 40px;
+  --sp-7: 42px;
+  --sp-8: 58px;
 }
 
 /* ============================================================
- * 方向 A ·「暖石 Atelier」：暖中性纸感 + 赭石强调
- * 场景：白天办公室，长时间看内容列表，希望界面安静、素材本身出彩
+ * V1 · Grotesk / 瑞士排版
+ * 场景：白天、大屏；把工作台当成一份「数据版式」，靠网格与字重分层，几乎不用卡片。
+ * 色：近白纸 + 单一电蓝强调；无圆角（2px）、无投影、细分隔线。
  * ============================================================ */
-[data-theme='atelier'] {
-  --bg: oklch(0.968 0.008 78);
-  --surface: oklch(0.995 0.004 80);
-  --surface-2: oklch(0.956 0.009 78);
-  --ink: oklch(0.27 0.014 62);
-  --ink-2: oklch(0.44 0.012 64);
-  --muted: oklch(0.58 0.011 68);
-  --line: oklch(0.902 0.009 76);
-  --line-soft: oklch(0.938 0.007 78);
-  --accent: oklch(0.552 0.138 42);
-  --accent-ink: oklch(0.99 0.008 60);
-  --accent-soft: oklch(0.949 0.032 48);
-  --accent-line: oklch(0.86 0.06 45);
-  --ok: oklch(0.60 0.10 156);
-  --ok-soft: oklch(0.95 0.035 156);
-  --warn: oklch(0.72 0.125 74);
-  --warn-soft: oklch(0.96 0.04 80);
-  --danger: oklch(0.575 0.16 26);
-  --danger-soft: oklch(0.955 0.035 28);
-  --radius: 10px;
-  --radius-lg: 14px;
-  --shadow-1: 0 1px 2px oklch(0.3 0.02 60 / 0.05);
-  --shadow-2: 0 1px 2px oklch(0.3 0.02 60 / 0.06), 0 10px 28px oklch(0.3 0.02 60 / 0.055);
-  --sidebar-bg: oklch(0.235 0.014 62);
-  --sidebar-ink: oklch(0.80 0.010 70);
-  --sidebar-ink-dim: oklch(0.62 0.012 70);
-}
-
-/* ============================================================
- * 方向 B ·「控制台 Console」：冷石板 + 青绿强调，密度更高、数据感更强
- * 场景：运营盯盘，一屏看更多行，数字对齐、状态一眼可辨
- * ============================================================ */
-[data-theme='console'] {
-  --bg: oklch(0.965 0.006 250);
-  --surface: oklch(0.995 0.003 250);
-  --surface-2: oklch(0.955 0.007 250);
-  --ink: oklch(0.245 0.020 255);
-  --ink-2: oklch(0.43 0.016 254);
-  --muted: oklch(0.565 0.014 252);
-  --line: oklch(0.898 0.008 250);
-  --line-soft: oklch(0.936 0.006 250);
-  --accent: oklch(0.565 0.115 197);
-  --accent-ink: oklch(0.99 0.006 200);
-  --accent-soft: oklch(0.945 0.030 197);
-  --accent-line: oklch(0.85 0.055 197);
-  --ok: oklch(0.60 0.105 175);
-  --ok-soft: oklch(0.95 0.033 175);
-  --warn: oklch(0.72 0.125 78);
-  --warn-soft: oklch(0.96 0.038 80);
-  --danger: oklch(0.575 0.165 20);
-  --danger-soft: oklch(0.955 0.033 22);
-  --radius: 7px;
-  --radius-lg: 10px;
-  --shadow-1: 0 1px 2px oklch(0.28 0.03 255 / 0.05);
-  --shadow-2: 0 1px 2px oklch(0.28 0.03 255 / 0.06), 0 10px 26px oklch(0.28 0.03 255 / 0.05);
-  --sidebar-bg: oklch(0.225 0.022 256);
-  --sidebar-ink: oklch(0.80 0.012 250);
-  --sidebar-ink-dim: oklch(0.60 0.014 250);
-}
-
-/* ============================================================
- * 方向 C ·「刊物 Editorial」：近白 + 深墨绿，靠排版与细分隔线而非卡片
- * 场景：以阅读/审阅为主，弱化容器、强化层级，像一份内容简报
- * ============================================================ */
-[data-theme='editorial'] {
-  --bg: oklch(0.982 0.004 95);
-  --surface: oklch(0.996 0.002 95);
-  --surface-2: oklch(0.966 0.005 95);
-  --ink: oklch(0.225 0.012 150);
-  --ink-2: oklch(0.40 0.012 150);
-  --muted: oklch(0.555 0.010 150);
-  --line: oklch(0.855 0.008 150);
-  --line-soft: oklch(0.915 0.006 150);
-  --accent: oklch(0.415 0.078 158);
-  --accent-ink: oklch(0.99 0.006 150);
-  --accent-soft: oklch(0.945 0.022 158);
-  --accent-line: oklch(0.80 0.045 158);
-  --ok: oklch(0.58 0.095 158);
-  --ok-soft: oklch(0.95 0.028 158);
-  --warn: oklch(0.70 0.115 72);
-  --warn-soft: oklch(0.96 0.035 76);
-  --danger: oklch(0.545 0.155 25);
-  --danger-soft: oklch(0.955 0.030 26);
-  --radius: 3px;
-  --radius-lg: 5px;
+[data-dir='grotesk'] {
+  --bg: oklch(0.975 0.002 260);
+  --surface: oklch(1 0 0);
+  --surface-2: oklch(0.955 0.004 260);
+  --surface-3: oklch(0.925 0.006 260);
+  --ink: oklch(0.205 0.008 265);
+  --ink-2: oklch(0.40 0.010 265);
+  --muted: oklch(0.565 0.010 265);
+  --line: oklch(0.87 0.006 265);
+  --line-soft: oklch(0.925 0.005 265);
+  --accent: oklch(0.52 0.215 262);
+  --accent-2: oklch(0.62 0.19 320);
+  --accent-ink: oklch(1 0 0);
+  --accent-soft: oklch(0.945 0.045 262);
+  --accent-line: oklch(0.80 0.10 262);
+  --ok: oklch(0.58 0.13 158);
+  --ok-soft: oklch(0.95 0.045 158);
+  --warn: oklch(0.72 0.15 72);
+  --warn-soft: oklch(0.96 0.05 78);
+  --danger: oklch(0.56 0.20 25);
+  --danger-soft: oklch(0.955 0.045 27);
+  --radius: 2px;
+  --radius-lg: 3px;
+  --radius-pill: 999px;
   --shadow-1: none;
-  --shadow-2: 0 1px 0 oklch(0.85 0.008 150 / 0.9);
-  --sidebar-bg: oklch(0.985 0.004 95);
-  --sidebar-ink: oklch(0.30 0.012 150);
-  --sidebar-ink-dim: oklch(0.55 0.010 150);
+  --shadow-2: 0 18px 40px oklch(0.25 0.02 265 / 0.07);
+  --sidebar-bg: oklch(0.185 0.008 265);
+  --sidebar-ink: oklch(0.90 0.006 265);
+  --sidebar-ink-dim: oklch(0.62 0.010 265);
+  --chart-grid: oklch(0.91 0.005 265);
+  --fs-display: var(--fs-4xl);
+  --tracking-display: -0.03em;
 }
 
-/* ------------------------------------------------------------------
- * Element Plus 变量桥接：把主题令牌映射到组件库变量，
- * 这样 el-button / el-table / el-tag / el-tabs 等自动跟随主题。
- * ------------------------------------------------------------------ */
-[data-theme] {
+/* ============================================================
+ * V2 · Nocturne / 深夜控制台
+ * 场景：暗光房间、24 小时盯盘；深色底 + 单一发光强调，等宽数字，图表是主角。
+ * 色：近黑蓝底 + 青绿发光强调；中等圆角、内发光边。
+ * ============================================================ */
+[data-dir='nocturne'] {
+  --bg: oklch(0.185 0.012 265);
+  --surface: oklch(0.230 0.014 265);
+  --surface-2: oklch(0.275 0.016 265);
+  --surface-3: oklch(0.320 0.018 265);
+  --ink: oklch(0.955 0.006 250);
+  --ink-2: oklch(0.80 0.012 255);
+  --muted: oklch(0.635 0.016 258);
+  --line: oklch(0.335 0.018 265);
+  --line-soft: oklch(0.290 0.016 265);
+  --accent: oklch(0.79 0.145 178);
+  --accent-2: oklch(0.70 0.17 305);
+  --accent-ink: oklch(0.19 0.03 260);
+  --accent-soft: oklch(0.30 0.055 178);
+  --accent-line: oklch(0.45 0.09 178);
+  --ok: oklch(0.78 0.15 150);
+  --ok-soft: oklch(0.30 0.05 150);
+  --warn: oklch(0.82 0.15 80);
+  --warn-soft: oklch(0.32 0.05 80);
+  --danger: oklch(0.70 0.18 20);
+  --danger-soft: oklch(0.32 0.06 20);
+  --radius: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+  --shadow-1: 0 1px 0 oklch(1 0 0 / 0.04) inset;
+  --shadow-2: 0 20px 44px oklch(0.08 0.02 265 / 0.55);
+  --sidebar-bg: oklch(0.155 0.012 265);
+  --sidebar-ink: oklch(0.92 0.008 250);
+  --sidebar-ink-dim: oklch(0.58 0.014 258);
+  --chart-grid: oklch(0.315 0.016 265);
+  --fs-display: var(--fs-4xl);
+  --tracking-display: -0.02em;
+}
+
+/* ============================================================
+ * V3 · Bauhaus / 包豪斯纸品
+ * 场景：白天、印刷品般的版面；高对比米白底 + 原色块（红/蓝/黄），硬边、粗线。
+ * 色：暖米白 + 砖红强调 + 蓝/黄辅助；硬边框、无圆角、偏移阴影。
+ * ============================================================ */
+[data-dir='bauhaus'] {
+  --bg: oklch(0.955 0.012 88);
+  --surface: oklch(0.985 0.008 90);
+  --surface-2: oklch(0.935 0.016 88);
+  --surface-3: oklch(0.90 0.020 88);
+  --ink: oklch(0.20 0.010 60);
+  --ink-2: oklch(0.34 0.012 60);
+  --muted: oklch(0.52 0.014 62);
+  --line: oklch(0.24 0.012 60);
+  --line-soft: oklch(0.86 0.016 84);
+  --accent: oklch(0.55 0.20 28);
+  --accent-2: oklch(0.48 0.17 258);
+  --accent-ink: oklch(0.99 0.006 90);
+  --accent-soft: oklch(0.93 0.06 40);
+  --accent-line: oklch(0.72 0.13 30);
+  --ok: oklch(0.52 0.13 158);
+  --ok-soft: oklch(0.93 0.05 158);
+  --warn: oklch(0.78 0.16 92);
+  --warn-soft: oklch(0.94 0.07 95);
+  --danger: oklch(0.55 0.20 28);
+  --danger-soft: oklch(0.93 0.06 30);
+  --radius: 0px;
+  --radius-lg: 0px;
+  --radius-pill: 0px;
+  --shadow-1: 3px 3px 0 oklch(0.24 0.012 60);
+  --shadow-2: 5px 5px 0 oklch(0.24 0.012 60);
+  --sidebar-bg: oklch(0.20 0.010 60);
+  --sidebar-ink: oklch(0.96 0.010 88);
+  --sidebar-ink-dim: oklch(0.66 0.014 70);
+  --chart-grid: oklch(0.88 0.014 86);
+  --fs-display: var(--fs-4xl);
+  --tracking-display: -0.01em;
+}
+
+/* Element Plus 变量桥接（让既有 el-* 组件跟随主题） */
+[data-dir] {
   --el-color-primary: var(--accent);
-  --el-color-primary-light-3: color-mix(in oklab, var(--accent) 70%, var(--surface));
-  --el-color-primary-light-5: color-mix(in oklab, var(--accent) 50%, var(--surface));
+  --el-color-primary-light-3: color-mix(in oklab, var(--accent) 72%, var(--surface));
+  --el-color-primary-light-5: color-mix(in oklab, var(--accent) 52%, var(--surface));
   --el-color-primary-light-7: color-mix(in oklab, var(--accent) 30%, var(--surface));
   --el-color-primary-light-8: color-mix(in oklab, var(--accent) 20%, var(--surface));
   --el-color-primary-light-9: var(--accent-soft);
@@ -142,7 +164,6 @@
   --el-color-danger: var(--danger);
   --el-color-error: var(--danger);
   --el-color-info: var(--muted);
-
   --el-bg-color: var(--surface);
   --el-bg-color-page: var(--bg);
   --el-bg-color-overlay: var(--surface);
@@ -150,13 +171,18 @@
   --el-text-color-regular: var(--ink-2);
   --el-text-color-secondary: var(--muted);
   --el-text-color-placeholder: var(--muted);
+  --el-text-color-disabled: var(--muted);
   --el-border-color: var(--line);
   --el-border-color-light: var(--line);
   --el-border-color-lighter: var(--line-soft);
   --el-border-color-extra-light: var(--line-soft);
-  --el-fill-color-blank: var(--surface);
+  --el-fill-color: var(--surface-2);
   --el-fill-color-light: var(--surface-2);
+  --el-fill-color-lighter: var(--surface-2);
+  --el-fill-color-blank: var(--surface);
+  --el-mask-color: color-mix(in oklab, var(--ink) 35%, transparent);
   --el-border-radius-base: var(--radius);
+  --el-border-radius-small: var(--radius);
   --el-font-family: var(--font-sans);
   --el-font-size-base: var(--fs-base);
   --el-box-shadow-light: var(--shadow-2);

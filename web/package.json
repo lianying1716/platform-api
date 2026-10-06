@@ -10,9 +10,12 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
+    "@vueuse/core": "^13.9.0",
     "axios": "^1.7.9",
+    "echarts": "^6.1.0",
     "element-plus": "^2.9.0",
     "vue": "^3.5.13",
+    "vue-echarts": "^8.3.1",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
