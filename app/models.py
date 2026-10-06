@@ -495,3 +495,38 @@ class TaskLog(Base):
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     actor: Mapped[str] = mapped_column(String(64), default="worker")  # worker/scheduler/api
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class FollowedCreator(Base):
+    """关注博主（某账号关注的 UP 主 / 抖音达人）+ 同步开关。
+
+    与 ``creator_profile``（所有抓到的作者）区分：本表只存「当前账号关注的人」，
+    是「关注博主列表」页的卡片数据源，并按 ``sync_enabled`` 维护订阅。
+    头像 / 昵称 / 主页链接均来自平台真实响应。
+    """
+
+    __tablename__ = "followed_creator"
+    __table_args__ = (
+        UniqueConstraint("account_id", "author_id", name="uq_followed_creator_account_author"),
+        Index("ix_followed_creator_platform_account", "platform", "account_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("platform_account.id", ondelete="CASCADE"), index=True
+    )
+    platform: Mapped[str] = mapped_column(String(32), index=True)  # douyin / bilibili
+    author_id: Mapped[str] = mapped_column(String(128))  # B站 mid / 抖音 sec_uid
+    author_name: Mapped[str] = mapped_column(String(128), default="")
+    avatar: Mapped[str] = mapped_column(String(512), default="")
+    home_url: Mapped[str] = mapped_column(String(512), default="")
+    signature: Mapped[str] = mapped_column(Text, default="")
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    follower_count: Mapped[int] = mapped_column(BigInteger, default=0)  # 粉丝数，0=未知
+    like_count: Mapped[int] = mapped_column(BigInteger, default=0)  # 获赞数，0=未知
+    sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    full_sync: Mapped[bool] = mapped_column(Boolean, default=False)  # True=全量，False=只同步新发布
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
