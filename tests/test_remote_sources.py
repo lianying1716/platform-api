@@ -328,3 +328,13 @@ def test_remote_sources_endpoint_defaults_to_favorite(client, monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json() == []
     assert seen["source_type"] == "favorite"
+
+
+def test_published_at_helpers():
+    """两个适配器的 Unix 秒 -> ISO 帮助函数（供 publish_after_days 过滤使用）。"""
+    from app.modules.bilibili import _ts_to_iso as bts
+    from app.modules.douyin import _ts_to_iso as dts
+
+    assert bts(1700000000).startswith("2023-11-1")
+    assert dts("1700000000").startswith("2023-11-1")
+    assert bts(None) is None and bts(0) is None and dts("bad") is None

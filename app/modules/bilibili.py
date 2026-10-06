@@ -9,6 +9,19 @@ import httpx
 
 from app.modules.base import CheckResult, QrPoll, QrStart, make_qr_png_b64, register
 
+
+def _ts_to_iso(value) -> str | None:
+    """Unix 秒 -> ISO 字符串；缺失/非法返回 None（同步侧 _parse_published_at 可解析）。"""
+    try:
+        from datetime import datetime, timezone
+
+        ts = int(value)
+        if ts <= 0:
+            return None
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _QR_GENERATE = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 _QR_POLL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
@@ -217,6 +230,8 @@ class BilibiliAdapter:
                             "author_id": str((m.get("upper") or {}).get("mid", "")),
                             "url": f"https://www.bilibili.com/video/{m.get('bvid', '')}",
                             "cover_url": m.get("cover", ""),
+                            # pubtime 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
+                            "published_at": _ts_to_iso(m.get("pubtime")),
                             "metrics": {
                                 "play": (m.get("cnt_info") or {}).get("play", 0),
                                 "favorite": (m.get("cnt_info") or {}).get("collect", 0),

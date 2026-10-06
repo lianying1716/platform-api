@@ -13,6 +13,19 @@ import httpx
 
 from app.modules.base import CheckResult, QrPoll, QrStart, register
 
+
+def _ts_to_iso(value) -> str | None:
+    """Unix 秒 -> ISO 字符串；缺失/非法返回 None（同步侧 _parse_published_at 可解析）。"""
+    try:
+        from datetime import datetime, timezone
+
+        ts = int(value)
+        if ts <= 0:
+            return None
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
 _HOST = "https://www.douyin.com"
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 
@@ -198,6 +211,8 @@ class DouyinAdapter:
                         "author_id": author.get("sec_uid", ""),
                         "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
                         "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
+                        # create_time 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
+                        "published_at": _ts_to_iso(aw.get("create_time")),
                         "metrics": {
                             "play": stats.get("play_count", 0),
                             "like": stats.get("digg_count", 0),
