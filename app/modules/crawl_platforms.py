@@ -12,7 +12,7 @@
 
 接口来源：MediaCrawler media_platform/{kuaishou,zhihu,weibo,tieba}/client.py:pong
 （NON-COMMERCIAL LEARNING LICENSE 1.1, Copyright (c) 2024 relakkes@gmail.com，仅自用学习）
-四家均无公开扫码 API，走「手动粘贴 Cookie」录入（与 xhs 的手动兜底一致）。
+快手 / 知乎支持浏览器扫码登录（browser_qr，与抖音/小红书同款）；微博 / 贴吧仅手动粘贴 Cookie。
 """
 
 import functools
@@ -37,7 +37,10 @@ def _ks_profile_query() -> str:
 
 
 class _CookieAdapter:
-    """四家采集平台的公共骨架：整段 Cookie 录入、无扫码、体检各自实现。"""
+    """四家采集平台的公共骨架：整段 Cookie 录入、可选手动粘贴、体检各自实现。
+
+    子类置 ``supports_qr = True`` 并覆写 qr_start/qr_poll 即可接入扫码。
+    """
 
     platform = ""
     label = ""
@@ -65,6 +68,17 @@ class _CookieAdapter:
 class KuaishouAdapter(_CookieAdapter):
     platform = "kuaishou"
     label = "快手"
+    supports_qr = True
+
+    async def qr_start(self) -> QrStart:
+        from app.modules.browser_qr import browser_qr_start
+
+        return await browser_qr_start("kuaishou")
+
+    async def qr_poll(self, session_data: dict) -> QrPoll:
+        from app.modules.browser_qr import browser_qr_poll
+
+        return await browser_qr_poll("kuaishou", session_data)
 
     async def check(self, credential: dict) -> CheckResult:
         headers = {
@@ -96,6 +110,17 @@ class ZhihuAdapter(_CookieAdapter):
     platform = "zhihu"
     label = "知乎"
     hint_cookie_keys = ("z_c0",)
+    supports_qr = True
+
+    async def qr_start(self) -> QrStart:
+        from app.modules.browser_qr import browser_qr_start
+
+        return await browser_qr_start("zhihu")
+
+    async def qr_poll(self, session_data: dict) -> QrPoll:
+        from app.modules.browser_qr import browser_qr_poll
+
+        return await browser_qr_poll("zhihu", session_data)
 
     async def check(self, credential: dict) -> CheckResult:
         headers = {
