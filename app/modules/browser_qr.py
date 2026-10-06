@@ -215,23 +215,28 @@ async def browser_qr_start(platform: str) -> QrStart:
     conf = _PLATFORM_CONF[platform]
     async_playwright = _require_playwright()
 
+    needs_display = bool(conf.get("needs_display"))
     xvfb_proc = None
-    prev_display = os.environ.get("DISPLAY")
-    if conf.get("needs_display"):
-        xvfb_proc, display = _start_xvfb()
-        if xvfb_proc is not None and display:
-            os.environ["DISPLAY"] = display
-        elif not prev_display:
-            raise BrowserQrUnavailable(
-                f"{platform} 扫码需要图形显示（headless 会被平台验证码拦截），"
-                "但系统未安装 Xvfb。请安装 Xvfb 或改用「手动粘 Cookie」方式录入。"
-            )
+    launch_env = None
+    if needs_display:
+        if os.environ.get("DISPLAY"):
+            launch_env = None  # 环境已有显示，直接用
+        else:
+            xvfb_proc, display = _start_xvfb()
+            if xvfb_proc is None or not display:
+                raise BrowserQrUnavailable(
+                    f"{platform} 扫码需要图形显示（headless 会被平台验证码拦截），"
+                    "但系统未安装 Xvfb。请安装 Xvfb 或改用「手动粘 Cookie」方式录入。"
+                )
+            # 只注入本次 Chromium 启动的环境，不改全局 os.environ（避免并发扫码串扰）。
+            launch_env = {**os.environ, "DISPLAY": display}
 
-    headless = not conf.get("needs_display")
+    headless = not needs_display
     pw = await async_playwright().start()
     try:
         browser = await pw.chromium.launch(
             headless=headless,
+            env=launch_env,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -293,12 +298,6 @@ async def browser_qr_start(platform: str) -> QrStart:
         if xvfb_proc is not None:
             await _stop_xvfb({"xvfb": xvfb_proc})
         raise
-    finally:
-        # 还原进程环境，避免影响其它请求。
-        if prev_display is None:
-            os.environ.pop("DISPLAY", None)
-        else:
-            os.environ["DISPLAY"] = prev_display
 
 
 async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
