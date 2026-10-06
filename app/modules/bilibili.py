@@ -8,6 +8,7 @@
 import httpx
 
 from app.modules.base import CheckResult, QrPoll, QrStart, make_qr_png_b64, register
+from app.modules.crawler import bili_sign
 
 
 def _ts_to_iso(value) -> str | None:
@@ -285,9 +286,18 @@ class BilibiliAdapter:
             return 0
 
     async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
-        """拉取一个收藏夹里的视频列表，规整为统一 item。"""
+        """拉取订阅源内容列表，规整为统一 item。
+
+        - favorite：收藏夹（/x/v3/fav/resource/list）
+        - creator：UP 主投稿（/x/space/wbi/arc/search，WBI 签名 + 登录 Cookie）
+        """
+        if source_type == "creator":
+            return await self._fetch_creator_videos(credential, remote_id, limit)
         if source_type != "favorite":
             return []
+        return await self._fetch_favorite_videos(credential, remote_id, limit)
+
+    async def _fetch_favorite_videos(self, credential: dict, remote_id: str, limit: int) -> list[dict]:
         items: list[dict] = []
         page = 1
         async with _client() as client:
@@ -321,6 +331,70 @@ class BilibiliAdapter:
                         }
                     )
                 if not data.get("has_more"):
+                    break
+                page += 1
+        return items[:limit]
+
+    async def _fetch_creator_videos(self, credential: dict, mid: str, limit: int) -> list[dict]:
+        """UP 主投稿列表（WBI 签名）。命中风控（-352/-412/412）抛可读异常。"""
+        from urllib.parse import urlencode
+
+        mid = str(mid or "").strip()
+        if not mid:
+            return []
+        cookies = _cookies(credential)
+        img_key, sub_key = await bili_sign.fetch_wbi_keys(cookies)
+        items: list[dict] = []
+        page = 1
+        async with _client() as client:
+            while len(items) < limit:
+                params = bili_sign.sign(
+                    {
+                        "mid": mid,
+                        "pn": page,
+                        "ps": 30,
+                        "order": "pubdate",
+                        "platform": "web",
+                        "web_location": "1550101",
+                    },
+                    img_key,
+                    sub_key,
+                )
+                url = f"https://api.bilibili.com/x/space/wbi/arc/search?{urlencode(params)}"
+                resp = await client.get(url, cookies=cookies)
+                if resp.status_code in (412, 403):
+                    raise RuntimeError("B站风控校验失败（HTTP %s），请稍后再试" % resp.status_code)
+                data = resp.json()
+                code = data.get("code")
+                if code in (-352, -412, -509):
+                    raise RuntimeError(f"B站风控校验失败（{data.get('message', code)}），请稍后再试")
+                if code != 0:
+                    raise RuntimeError(f"B站投稿拉取失败: {data.get('message', code)}")
+                vlist = ((data.get("data") or {}).get("list") or {}).get("vlist") or []
+                if not vlist:
+                    break
+                for v in vlist:
+                    items.append(
+                        {
+                            "external_id": str(v.get("bvid") or ""),
+                            "content_type": "video",
+                            "title": v.get("title", ""),
+                            "author_name": v.get("author", ""),
+                            "author_id": str(v.get("mid") or mid),
+                            "url": f"https://www.bilibili.com/video/{v.get('bvid', '')}",
+                            "cover_url": _https(v.get("pic", "")),
+                            "published_at": _ts_to_iso(v.get("created")),
+                            "metrics": {
+                                "play": v.get("play", 0),
+                                "comment": v.get("video_review", 0) or v.get("comment", 0),
+                                "favorite": v.get("favorites", 0),
+                            },
+                        }
+                    )
+                if len(items) >= limit:
+                    break
+                page_count = ((data.get("data") or {}).get("page") or {}).get("count") or 0
+                if page_count and page >= int(page_count):
                     break
                 page += 1
         return items[:limit]

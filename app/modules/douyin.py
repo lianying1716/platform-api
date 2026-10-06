@@ -12,6 +12,7 @@ utils/DouyinRequestParamManager.cs（MIT，纯 HTTP + Cookie，无签名依赖�
 import httpx
 
 from app.modules.base import CheckResult, QrPoll, QrStart, register
+from app.modules.crawler import douyin_sign
 
 
 def _ts_to_iso(value) -> str | None:
@@ -242,8 +243,14 @@ class DouyinAdapter:
         return out[:limit]
 
     async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
-        """拉取收藏（source_type=favorite）。抖音收藏接口分页用 cursor。"""
+        """拉取订阅源内容。
+
+        - favorite/collection：我的收藏（/aweme/v1/web/aweme/listcollection）
+        - creator：博主主页视频（/aweme/v1/web/aweme/post/，a_bogus 签名 + 登录 Cookie）
+        """
         cookie = credential.get("cookie", "")
+        if source_type == "creator":
+            return await self._fetch_creator_videos(cookie, remote_id, limit)
         if source_type not in ("favorite", "collection"):
             return []
         items: list[dict] = []
@@ -278,6 +285,73 @@ class DouyinAdapter:
             if not data.get("has_more"):
                 break
             cursor = str(data.get("cursor", "0"))
+        return items[:limit]
+
+    async def _fetch_creator_videos(self, cookie: str, sec_user_id: str, limit: int) -> list[dict]:
+        """博主主页视频列表（a_bogus 签名）。签名失败/风控抛可读异常。"""
+        from urllib.parse import urlencode
+
+        sec_user_id = str(sec_user_id or "").strip()
+        if not sec_user_id:
+            return []
+        base = "/aweme/v1/web/aweme/post/"
+        referer = f"https://www.douyin.com/user/{sec_user_id}"
+        items: list[dict] = []
+        max_cursor = "0"
+        async with _client(cookie, referer) as client:
+            while len(items) < limit:
+                params = dict(
+                    BASE_PARAMS,
+                    sec_user_id=sec_user_id,
+                    count="18",
+                    max_cursor=max_cursor,
+                    locate_query="false",
+                    publish_video_strategy_type="2",
+                )
+                qs = urlencode(params)
+                try:
+                    a_bogus = douyin_sign.get_a_bogus(base, qs, _UA)
+                except Exception as exc:  # noqa: BLE001 签名不可用时给可读错误
+                    raise RuntimeError(f"抖音签名失败（{exc}），无法拉取博主视频") from exc
+                resp = await client.get(f"{base}?{qs}&a_bogus={a_bogus}")
+                if resp.status_code in (403, 412):
+                    raise RuntimeError("抖音风控拦截（HTTP %s），请稍后再试" % resp.status_code)
+                try:
+                    data = resp.json()
+                except ValueError:
+                    raise RuntimeError("抖音博主视频拉取失败：Cookie 可能失效或被风控")
+                if data.get("status_code") not in (0, None):
+                    raise RuntimeError(f"抖音博主视频拉取失败: status_code={data.get('status_code')}")
+                aweme_list = data.get("aweme_list") or []
+                if not aweme_list:
+                    break
+                for aw in aweme_list:
+                    stats = aw.get("statistics") or {}
+                    author = aw.get("author") or {}
+                    items.append(
+                        {
+                            "external_id": str(aw.get("aweme_id", "")),
+                            "content_type": "video",
+                            "title": aw.get("desc", ""),
+                            "author_name": author.get("nickname", ""),
+                            "author_id": author.get("sec_uid", "") or sec_user_id,
+                            "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
+                            "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
+                            "published_at": _ts_to_iso(aw.get("create_time")),
+                            "metrics": {
+                                "play": stats.get("play_count", 0),
+                                "like": stats.get("digg_count", 0),
+                                "comment": stats.get("comment_count", 0),
+                                "favorite": stats.get("collect_count", 0),
+                                "share": stats.get("share_count", 0),
+                            },
+                        }
+                    )
+                    if len(items) >= limit:
+                        break
+                if not data.get("has_more"):
+                    break
+                max_cursor = str(data.get("max_cursor", "0"))
         return items[:limit]
 
 
