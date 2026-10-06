@@ -100,6 +100,9 @@ async def handle_transcribe(db: Session, payload: dict) -> None:
     existing.segments = result["segments"]
     existing.full_text = result["full_text"]
     asset.transcribe_status = "done"
+    # 记录「普通」档：转录即 basic。不得把高级（视频理解）降级回 basic。
+    if asset.process_tier != "advanced":
+        asset.process_tier = "basic"
     asset.error = ""
     db.commit()
     events.publish("asset_status", {"asset_id": asset_id, "transcribe": "done"})

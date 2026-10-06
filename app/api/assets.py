@@ -6,7 +6,6 @@
 - 批量导出：md / json。
 """
 
-import json
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -285,6 +284,9 @@ def enqueue_process(asset_id: int, body: ProcessRequest, db: Session = Depends(g
 
     if tier == "basic":
         asset.transcribe_status = "pending"
+        # 记录「普通」档（不得把已完成的「高级」降级回 basic）。
+        if asset.process_tier != "advanced":
+            asset.process_tier = "basic"
         db.commit()
         job = enqueue(db, "transcribe", {"asset_id": asset_id})
         return {"job_id": job.id, "tier": tier}

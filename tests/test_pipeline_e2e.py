@@ -137,6 +137,7 @@ def test_full_pipeline_download_transcribe_analyze(session, monkeypatch):
     asyncio.run(handlers.handle_transcribe(session, {"asset_id": asset.id}))
     session.refresh(asset)
     assert asset.transcribe_status == "done"
+    assert asset.process_tier == "basic"
     tr = session.scalar(select(Transcript).where(Transcript.asset_id == asset.id))
     assert tr.full_text == "你好世界"
 
@@ -162,6 +163,33 @@ def test_transcribe_blocked_before_download(session, monkeypatch):
 
     with pytest.raises(ValueError, match="尚未下载"):
         asyncio.run(handlers.handle_transcribe(session, {"asset_id": asset.id}))
+
+
+def test_transcribe_keeps_advanced_tier(session, monkeypatch):
+    """已到 advanced（视频理解）的素材，转录成功不得降级回 basic。"""
+    import asyncio
+
+    from app.models import ContentItem, MediaAsset
+    from app.workers import handlers
+
+    async def fake_transcribe(path, options):
+        return {"language": "zh", "model": "m", "segments": [], "full_text": "x"}
+
+    monkeypatch.setattr("app.modules.transcription.transcribe", fake_transcribe)
+
+    content = ContentItem(platform="douyin", external_id="adv1", url="https://d/adv1")
+    session.add(content)
+    session.flush()
+    asset = MediaAsset(
+        content_id=content.id, download_status="done", video_file="v.mp4", process_tier="advanced"
+    )
+    session.add(asset)
+    session.commit()
+
+    asyncio.run(handlers.handle_transcribe(session, {"asset_id": asset.id}))
+    session.refresh(asset)
+    assert asset.transcribe_status == "done"
+    assert asset.process_tier == "advanced"
 
 
 def test_queue_claim_complete_and_retry(session):

@@ -226,7 +226,9 @@ def test_post_process_enqueues_basic_transcribe(client, _engine):
     assert jobs[0].payload["asset_id"] == asset_id
     from app.models import MediaAsset
 
-    assert db.get(MediaAsset, asset_id).transcribe_status == "pending"
+    a = db.get(MediaAsset, asset_id)
+    assert a.transcribe_status == "pending"
+    assert a.process_tier == "basic"  # 「普通」档在入队时落地
     db.close()
 
 
