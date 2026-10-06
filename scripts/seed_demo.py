@@ -847,6 +847,32 @@ def _create_followed_creators(session, accounts, now, rng) -> list[FollowedCreat
             )
     session.add_all(out)
     session.flush()
+    # 一致性：sync_enabled=True 的博主应有一条启用的 creator 订阅（与 API 语义一致）。
+    existing = {
+        (s.account_id, s.remote_id): s
+        for s in session.scalars(select(Subscription)).all()
+        if s.source_type == "creator"
+    }
+    for fc in out:
+        if not fc.sync_enabled:
+            continue
+        sub = existing.get((fc.account_id, fc.author_id))
+        if sub is None:
+            session.add(
+                Subscription(
+                    account_id=fc.account_id,
+                    platform=fc.platform,
+                    source_type="creator",
+                    remote_id=fc.author_id,
+                    title=f"{PREFIX} {fc.platform}·关注 {fc.author_name}",
+                    enabled=True,
+                    only_new=not fc.full_sync,
+                )
+            )
+        else:
+            sub.enabled = True
+            sub.only_new = not fc.full_sync
+    session.flush()
     return out
 
 
