@@ -131,6 +131,50 @@ class DouyinAdapter:
 
         return await browser_qr_poll("douyin", session_data)
 
+    async def list_sources(self, credential: dict, source_type: str) -> list[dict]:
+        """列出可订阅的源，返回 [{remote_id, title}]。
+
+        source_type：
+        - favorite：抖音没有“收藏夹列表”接口，返回虚拟项“我的收藏”。
+        - creator：自己关注的博主（需 sec_user_id，分页到 ~50 条）。
+        其它类型或缺少必需凭证字段时返回 []（不抛异常）。
+        """
+        if source_type == "favorite":
+            return [{"remote_id": credential.get("sec_user_id") or "self", "title": "我的收藏"}]
+        if source_type == "creator":
+            sec_user_id = (credential.get("sec_user_id") or "").strip()
+            if not sec_user_id:
+                return []
+            return await self._list_followings(credential.get("cookie", ""), sec_user_id)
+        return []
+
+    async def _list_followings(self, cookie: str, sec_user_id: str, limit: int = 50) -> list[dict]:
+        """关注列表。解析防御式：字段缺失/请求失败都只返回已拿到的部分。"""
+        out: list[dict] = []
+        offset = 1
+        count = 20
+        try:
+            while len(out) < limit:
+                data = await following_list(cookie, sec_user_id, offset=str(offset), count=str(count))
+                if not data or data.get("status_code") != 0:
+                    break
+                followings = data.get("followings") or []
+                if not followings:
+                    break
+                for f in followings:
+                    sec_uid = f.get("sec_uid") or ""
+                    if not sec_uid:
+                        continue
+                    out.append({"remote_id": sec_uid, "title": f.get("nickname", "")})
+                    if len(out) >= limit:
+                        break
+                if not data.get("has_more"):
+                    break
+                offset += count
+        except (httpx.HTTPError, ValueError):
+            return out[:limit]
+        return out[:limit]
+
     async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
         """拉取收藏（source_type=favorite）。抖音收藏接口分页用 cursor。"""
         cookie = credential.get("cookie", "")

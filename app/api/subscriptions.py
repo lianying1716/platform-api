@@ -47,8 +47,8 @@ class SubscriptionOut(BaseModel):
 
 
 @router.get("/accounts/{account_id}/remote-sources")
-async def remote_sources(account_id: int, db: Session = Depends(get_db)):
-    """拉取账号的收藏夹/关注/合集树。需要有效凭证。"""
+async def remote_sources(account_id: int, source_type: str = "favorite", db: Session = Depends(get_db)):
+    """拉取账号的收藏夹/合集/关注列表（source_type: favorite/collection/creator）。需要有效凭证。"""
     account = db.get(PlatformAccount, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
