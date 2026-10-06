@@ -1,4 +1,4 @@
-"""L3 视频理解 provider 适配器：把视频内联进多模态请求并解析结构化结果。
+"""视频理解 provider 适配器：把视频内联进多模态请求并解析结构化结果。
 
 为什么需要「适配器」而不是一套通用 payload（见 `docs/plans/2026-10-05-video-understanding-tier-research.md`
 与 `docs/plans/evidence/2026-10-05-xsai-video-input-probe.md`）：

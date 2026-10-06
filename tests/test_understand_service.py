@@ -6,7 +6,6 @@
 - 判类失败回退 other 且不阻断理解；未知类型归一 other。
 - 提示词按类型区分（含类型 Focus 与类型专属维度）。
 - 体积超限走压缩分支；视频缺失不硬拦。
-- run_extract_frames：帧 upsert 幂等 + frames_status/process_tier 状态。
 """
 
 import asyncio
@@ -102,6 +101,7 @@ def test_run_understand_writes(monkeypatch, session):
     assert c.auto_category == "commerce"
     assert c.category_confidence == 0.9
     assert a.understand_status == "done"
+    assert a.process_tier == "advanced"
 
 
 def test_run_understand_force_category_skips_classify(monkeypatch, session):
@@ -226,64 +226,6 @@ def test_run_understand_missing_video_does_not_hard_fail(monkeypatch, session):
 
     u = asyncio.run(svc.run_understand(session, a.id))
     assert u.status == "done"
-
-
-def test_run_extract_frames_upserts_and_sets_tier(monkeypatch, session):
-    c, a = _seed(session, video_file="v.mp4")
-
-    def fake_extract(video_path, out_dir, *, max_frames, per_min, scene_threshold=0.3):
-        os.makedirs(out_dir, exist_ok=True)
-        frames = []
-        for i in range(2):
-            p = os.path.join(out_dir, f"frame_{i + 1:03d}.jpg")
-            with open(p, "wb") as fh:
-                fh.write(b"x")
-            frames.append({"scene_index": i, "timestamp_sec": float(i), "path": p, "is_keyframe": True})
-        return {"frames": frames, "count": len(frames)}
-
-    monkeypatch.setattr(svc.frames, "extract", fake_extract)
-
-    n = asyncio.run(svc.run_extract_frames(session, a.id))
-    assert n == 2
-
-    from app.models import AssetFrame
-
-    rows = session.query(AssetFrame).filter_by(asset_id=a.id).order_by(AssetFrame.scene_index).all()
-    assert [r.scene_index for r in rows] == [0, 1]
-    assert all(r.path.endswith(".jpg") for r in rows)
-    session.refresh(a)
-    assert a.frames_status == "done"
-    assert a.process_tier == "l2"
-
-    asyncio.run(svc.run_extract_frames(session, a.id))
-    rows2 = session.query(AssetFrame).filter_by(asset_id=a.id).all()
-    assert len(rows2) == 2
-
-
-def test_run_extract_frames_fewer_frames_removes_orphans(monkeypatch, session):
-    c, a = _seed(session, video_file="v.mp4")
-    calls = {"n": 0}
-
-    def fake_extract(video_path, out_dir, *, max_frames, per_min, scene_threshold=0.3):
-        os.makedirs(out_dir, exist_ok=True)
-        n = 3 if calls["n"] == 0 else 1
-        calls["n"] += 1
-        frames = []
-        for i in range(n):
-            p = os.path.join(out_dir, f"frame_{i + 1:03d}.jpg")
-            with open(p, "wb") as fh:
-                fh.write(b"x")
-            frames.append({"scene_index": i, "timestamp_sec": float(i), "path": p, "is_keyframe": True})
-        return {"frames": frames, "count": len(frames)}
-
-    monkeypatch.setattr(svc.frames, "extract", fake_extract)
-    asyncio.run(svc.run_extract_frames(session, a.id))
-    asyncio.run(svc.run_extract_frames(session, a.id))
-
-    from app.models import AssetFrame
-
-    rows = session.query(AssetFrame).filter_by(asset_id=a.id).all()
-    assert len(rows) == 1
 
 
 # --------------------------------------------------------------------------- 修复回归（Task 7 review）

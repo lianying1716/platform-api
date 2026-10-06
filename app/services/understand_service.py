@@ -1,4 +1,4 @@
-"""L3 组合服务：判类 → 选类型提示词 → 视频理解 → 落库；以及 L2 抽帧写库。
+"""高级档组合服务：判类 → 选类型提示词 → 视频理解 → 落库。
 
 两遍式视频理解的服务层（设计 §3、计划 Task 7）：
 
@@ -17,7 +17,6 @@
 - `async run_understand(db, asset_id, *, force_category=None, use_cover=None)`：跑完整链路，返回
   `VideoUnderstanding`；理解失败会把 `status` 落 `error` 并**原样抛出**（worker 负责重试）。
 - `UnderstandInputError`：素材/内容缺失等数据问题——不可重试，worker 应直接失败。
-- `async run_extract_frames(db, asset_id)`：抽帧并幂等写 `AssetFrame`，更新状态与档位。
 """
 
 import logging
@@ -36,9 +35,9 @@ from app.core.process_settings import (
     get_taxonomy,
     get_type_prompts,
 )
-from app.core.storage import get_default_root, resolve_asset_dir
-from app.models import AssetFrame, ContentItem, MediaAsset, SystemSetting, Transcript, VideoUnderstanding
-from app.modules import frames, vision
+from app.core.storage import resolve_asset_dir
+from app.models import ContentItem, MediaAsset, SystemSetting, Transcript, VideoUnderstanding
+from app.modules import vision
 from app.modules.classify import classify
 
 logger = logging.getLogger("platform.understand")
@@ -93,7 +92,7 @@ def build_prompt(
         label: 类型中文名（角色描述用）。
         focus: 该类型的「关注点」段落（类型区分的灵魂）。
         dimensions: 该类型维度清单（通用 + 专属），每项 ``{key,name,ask}``。
-        transcript: L1 转录全文（可为空）。
+        transcript: 转录全文（可为空）。
     """
     dim_lines = "\n".join(f"- {d['key']}（{d['name']}）：{d['ask']}" for d in dimensions)
     body = (
@@ -279,7 +278,7 @@ async def run_understand(
     force_category: str | None = None,
     use_cover: bool | None = None,
 ) -> VideoUnderstanding:
-    """跑完整 L3 链路，返回并落库 `VideoUnderstanding`。
+    """跑完整高级档链路，返回并落库 `VideoUnderstanding`。
 
     Raises:
         UnderstandInputError: 素材不存在 / 无关联内容（数据问题，不可重试）。
@@ -375,7 +374,7 @@ async def run_understand(
         content.category_confidence = conf
         asset.understand_status = "done"
         asset.error = ""
-        asset.process_tier = "l3"
+        asset.process_tier = "advanced"
         db.commit()
         db.refresh(existing)
         events.publish("asset_status", {"asset_id": asset_id, "understand": "done"})
@@ -388,82 +387,4 @@ async def run_understand(
             asset.error = str(exc)[:512]
             db.commit()
         events.publish("asset_status", {"asset_id": asset_id, "understand": "error"})
-        raise
-
-
-def _storage_root_path(db: Session, asset: MediaAsset) -> str:
-    root = None
-    if asset.storage_root_id is not None:
-        from app.models import StorageRoot
-
-        root = db.get(StorageRoot, asset.storage_root_id)
-    if root is None:
-        root = get_default_root(db)
-    return root.path if root is not None else ""
-
-
-def _to_relative(db: Session, asset: MediaAsset, abs_path: str) -> str:
-    """绝对帧路径 → storage_root 相对路径（POSIX 风格）；无法归一则原样返回。"""
-    root = _storage_root_path(db, asset)
-    if not root:
-        return abs_path
-    try:
-        rel = os.path.relpath(abs_path, root)
-    except ValueError:  # 跨盘符（Windows）无法计算相对路径
-        return abs_path
-    return rel.replace("\\", "/")
-
-
-async def run_extract_frames(db: Session, asset_id: int) -> int:
-    """抽帧并幂等写 `AssetFrame`，更新 `frames_status`/`process_tier`。返回帧数。"""
-    asset = db.get(MediaAsset, asset_id)
-    if asset is None:
-        raise ValueError(f"素材不存在: {asset_id}")
-
-    asset.frames_status = "doing"
-    db.commit()
-
-    try:
-        s = get_process_settings(db)
-        video_path = _asset_video_path(db, asset)
-        out_dir = os.path.join(os.path.dirname(video_path), "frames")
-        result = frames.extract(
-            video_path,
-            out_dir,
-            max_frames=int(s.get("max_frames", 24)),
-            per_min=float(s.get("frames_per_min", 6)),
-        )
-
-        existing = {f.scene_index: f for f in db.scalars(select(AssetFrame).where(AssetFrame.asset_id == asset_id)).all()}
-        seen: set[int] = set()
-        for item in result.get("frames", []):
-            idx = int(item["scene_index"])
-            seen.add(idx)
-            row = existing.get(idx)
-            if row is None:
-                row = AssetFrame(asset_id=asset_id, scene_index=idx)
-                db.add(row)
-            row.timestamp_sec = float(item.get("timestamp_sec", 0))
-            row.path = _to_relative(db, asset, item.get("path", ""))
-            row.is_keyframe = bool(item.get("is_keyframe", True))
-        # 帧数变少时清理孤儿行
-        for idx, row in existing.items():
-            if idx not in seen:
-                db.delete(row)
-
-        asset.frames_status = "done"
-        asset.error = ""
-        if asset.process_tier in ("", "l1"):
-            asset.process_tier = "l2"
-        db.commit()
-        events.publish("asset_status", {"asset_id": asset_id, "frames": "done"})
-        return int(result.get("count", len(seen)))
-    except Exception as exc:
-        db.rollback()
-        asset = db.get(MediaAsset, asset_id)
-        if asset is not None:
-            asset.frames_status = "error"
-            asset.error = str(exc)[:512]
-            db.commit()
-        events.publish("asset_status", {"asset_id": asset_id, "frames": "error"})
         raise

@@ -185,8 +185,7 @@ class MediaAsset(Base):
     download_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/downloading/done/error
     transcribe_status: Mapped[str] = mapped_column(String(16), default="pending")
     analyze_status: Mapped[str] = mapped_column(String(16), default="pending")
-    process_tier: Mapped[str] = mapped_column(String(8), default="")  # ""/l1/l2/l3
-    frames_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/doing/done/error
+    process_tier: Mapped[str] = mapped_column(String(16), default="")  # ""/basic/advanced
     understand_status: Mapped[str] = mapped_column(String(16), default="pending")
     error: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -363,27 +362,12 @@ class CommentFetchState(Base):
 
 
 # ============================================================
-# L2/L3：素材加工分档（抽帧 / 视频理解）
+# P6：素材加工分档（视频理解）
 # ============================================================
 
 
-class AssetFrame(Base):
-    """L2 抽帧结果：一素材多帧，(asset_id, scene_index) 联合唯一保证重复抽帧幂等。"""
-
-    __tablename__ = "asset_frame"
-    __table_args__ = (UniqueConstraint("asset_id", "scene_index", name="uq_asset_frame_asset_scene"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    asset_id: Mapped[int] = mapped_column(ForeignKey("media_asset.id", ondelete="CASCADE"), index=True)
-    scene_index: Mapped[int] = mapped_column(Integer, default=0)
-    timestamp_sec: Mapped[float] = mapped_column(Float, default=0)
-    path: Mapped[str] = mapped_column(String(512), default="")  # 相对 storage_root 的帧文件路径
-    is_keyframe: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-
-
 class VideoUnderstanding(Base):
-    """L3 视频理解结果：一素材一行（asset_id 唯一）。"""
+    """高级档视频理解结果：一素材一行（asset_id 唯一）。"""
 
     __tablename__ = "video_understanding"
 

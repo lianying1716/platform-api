@@ -94,13 +94,12 @@
 
         <el-divider>分档加工</el-divider>
         <div class="tier-row">
-          <el-tag size="small" type="info">当前档位：{{ detail.status?.tier || '未加工' }}</el-tag>
-          <el-tag size="small" :type="t(proc.frames_status)">抽帧 {{ sStatus(proc.frames_status) }}</el-tag>
+          <el-tag size="small" type="info">当前档位：{{ tierLabel(detail.status?.tier) }}</el-tag>
           <el-tag size="small" :type="t(proc.understand_status)">理解 {{ sStatus(proc.understand_status) }}</el-tag>
         </div>
         <div class="tier-actions">
-          <el-button size="small" :loading="procBusy" :disabled="procBusy" @click="runProcess('l2')">抽帧（L2）</el-button>
-          <el-button size="small" type="primary" :loading="procBusy" :disabled="procBusy" @click="runProcess('l3')">视频理解（L3）</el-button>
+          <el-button size="small" :loading="procBusy" :disabled="procBusy" @click="runProcess('basic')">转录（普通）</el-button>
+          <el-button size="small" type="primary" :loading="procBusy" :disabled="procBusy" @click="runProcess('advanced')">视频理解（高级）</el-button>
           <el-checkbox v-model="proc.use_cover">判类用封面</el-checkbox>
           <el-select v-model="proc.force_category" placeholder="改类型重跑（可选）" clearable size="small" style="width: 180px">
             <el-option v-for="(label, key) in taxonomy" :key="key" :label="label" :value="key" />
@@ -130,17 +129,6 @@
           <p v-if="understanding.error" class="err">{{ understanding.error }}</p>
         </div>
         <p v-else-if="proc.understand_status === 'error'" class="err">理解失败：{{ understandError || detail.status?.error }}</p>
-
-        <div v-if="frames.length" class="frame-wall">
-          <template v-for="f in frames" :key="f.scene_index">
-            <img
-              v-if="frameUrls[f.scene_index] && !failedFrames.has(f.scene_index)"
-              :src="frameUrls[f.scene_index]"
-              :title="`${f.timestamp_sec}s`"
-              @error="onFrameError(f.scene_index)"
-            />
-          </template>
-        </div>
       </div>
     </el-drawer>
   </div>
@@ -167,10 +155,7 @@ const commentTotal = ref(0)
 const commentOffset = ref(0)
 
 // 分档加工
-const proc = reactive<any>({ frames_status: '', understand_status: '', use_cover: false, force_category: '' })
-const frames = ref<any[]>([])
-const frameUrls = ref<Record<number, string>>({})
-const failedFrames = ref<Set<number>>(new Set())
+const proc = reactive<any>({ understand_status: '', use_cover: false, force_category: '' })
 const understanding = ref<any>(null)
 const understandError = ref('')
 const taxonomy = ref<Record<string, string>>({})
@@ -186,7 +171,7 @@ let procTimer: number | undefined
 // 加工中状态：需轮询等待 worker 完成。
 const ACTIVE_STATUS = ['pending', 'doing']
 function isProcActive() {
-  return ACTIVE_STATUS.includes(proc.frames_status) || ACTIVE_STATUS.includes(proc.understand_status)
+  return ACTIVE_STATUS.includes(proc.understand_status)
 }
 function stopProcPoll() {
   if (procTimer) { clearInterval(procTimer); procTimer = undefined }
@@ -212,9 +197,10 @@ function fmtVal(v: any) {
   return typeof v === 'object' ? JSON.stringify(v, null, 0) : String(v)
 }
 
-function revokeFrameUrls() {
-  for (const url of Object.values(frameUrls.value)) URL.revokeObjectURL(url)
-  frameUrls.value = {}
+// 档位取值 -> 中文（两档：basic 普通 / advanced 高级）。
+const tierNames: Record<string, string> = { basic: '普通（转录）', advanced: '高级（视频理解）' }
+function tierLabel(tier: string | undefined) {
+  return tier ? (tierNames[tier] ?? tier) : '未加工'
 }
 
 // 维度 key -> 中文名：合并通用维度 + 各类型专属维度。
@@ -244,36 +230,14 @@ async function loadProcess(assetId: number, opts: { resetInputs?: boolean } = {}
     proc.use_cover = globalUseCover.value
     proc.force_category = ''
   }
-  revokeFrameUrls()
-  failedFrames.value = new Set()
-  frames.value = []
   understanding.value = null
   understandError.value = ''
-  const f = await api.get(`/api/assets/${assetId}/frames`)
-  frames.value = f.data.frames || []
-  proc.frames_status = f.data.frames_status
-  // 档位也取自刷新点，避免动作后「当前档位」停留在打开抽屉时的快照。
-  if (detail.value?.status) detail.value.status.tier = f.data.process_tier || ''
-  const urls: Record<number, string> = {}
-  for (const fr of frames.value) {
-    try {
-      const resp = await api.get(`/api/assets/${assetId}/frames/${fr.scene_index}/image`, { responseType: 'blob' })
-      urls[fr.scene_index] = URL.createObjectURL(resp.data)
-    } catch { /* 单帧缺失跳过 */ }
-  }
-  frameUrls.value = urls
   const u = await api.get(`/api/assets/${assetId}/understanding`)
   proc.understand_status = u.data.understand_status
   if (detail.value?.status && u.data.process_tier) detail.value.status.tier = u.data.process_tier
   understanding.value = u.data.status === 'pending' ? null : u.data
   understandError.value = u.data.error || ''
   syncProcTimer()
-}
-
-function onFrameError(sceneIndex: number) {
-  const next = new Set(failedFrames.value)
-  next.add(sceneIndex)
-  failedFrames.value = next
 }
 
 async function runProcess(tier: string) {
@@ -389,7 +353,6 @@ async function exportSel(format: string) {
 onMounted(load)
 onUnmounted(() => {
   stopProcPoll()
-  revokeFrameUrls()
 })
 </script>
 
@@ -411,6 +374,4 @@ onUnmounted(() => {
 .dim-k { color: #909399; min-width: 88px; }
 .dim-v { flex: 1; }
 .err { color: #f56c6c; font-size: 12px; }
-.frame-wall { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.frame-wall img { width: 96px; height: 64px; object-fit: cover; border-radius: 4px; border: 1px solid #f0f0f0; }
 </style>

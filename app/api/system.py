@@ -166,7 +166,7 @@ def update_comment_settings_api(body: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-# ---------- 素材分档加工配置（L1/L2/L3 门控 + 类型目录 + 类型提示词） ----------
+# ---------- 素材分档加工配置（普通/高级门控 + 类型目录 + 类型提示词） ----------
 def _as_bool(value) -> bool:
     """布尔归一：接受 true/false、1/0、"true"/"1" 等；其余非法。"""
     if isinstance(value, bool):
@@ -196,16 +196,13 @@ def _as_nonempty_str(value) -> str:
 
 # 短名 -> 校验器。范围/枚举写死在这里（配置值本身不写死，可在线改）。
 _PROCESS_SPECS = {
-    "l2_min_heat": lambda v: _as_int(v, lo=0),
-    "l3_min_heat": lambda v: _as_int(v, lo=0),
+    "min_heat": lambda v: _as_int(v, lo=0),
     "min_likes_floor": lambda v: _as_int(v, lo=0),
     "budget": lambda v: _as_int(v, lo=0),
     "top_pct": lambda v: _as_float(v, lo=0.0, hi=1.0),
     "weight_like": lambda v: _as_float(v, lo=0.0),
     "weight_comment": lambda v: _as_float(v, lo=0.0),
     "weight_play": lambda v: _as_float(v, lo=0.0),
-    "frames_per_min": lambda v: _as_float(v, lo=0.0),
-    "max_frames": lambda v: _as_int(v, lo=1),
     "video_max_mb": lambda v: _as_float(v, lo=0.0),
     "cover_max_mb": lambda v: _as_float(v, lo=0.0),
     "low_confidence_threshold": lambda v: _as_float(v, lo=0.0, hi=1.0),

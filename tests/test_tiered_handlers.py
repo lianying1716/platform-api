@@ -1,7 +1,6 @@
 """分档加工 worker handlers：注册 + 透传 + 幂等/异常语义。
 
 handler 约定：形如 async def(db, payload) -> None，抛异常即失败交给 runner 重试。
-- handle_extract_frames：调 run_extract_frames。
 - handle_understand_video：调 run_understand，透传 force_category / use_cover。
 - asset 不存在时静默返回（与既有 handler 一致），不抛错。
 """
@@ -25,21 +24,9 @@ def _seed(db):
 
 
 def test_handlers_registered():
-    assert "extract_frames" in handlers.HANDLERS
+    # 两档简化：handler 表只剩真实存在的加工 handler，无抽帧残留。
     assert "understand_video" in handlers.HANDLERS
-
-
-def test_handle_extract_frames_delegates(monkeypatch, session):
-    a = _seed(session)
-    seen = {}
-
-    async def fake_run(db, asset_id, **kw):
-        seen["asset_id"] = asset_id
-        return 3
-
-    monkeypatch.setattr(svc, "run_extract_frames", fake_run)
-    asyncio.run(handlers.handle_extract_frames(session, {"asset_id": a.id}))
-    assert seen["asset_id"] == a.id
+    assert all("frame" not in name for name in handlers.HANDLERS)
 
 
 def test_handle_understand_video_passes_options(monkeypatch, session):
@@ -62,10 +49,6 @@ def test_handle_understand_video_passes_options(monkeypatch, session):
 
 def test_handle_understand_video_missing_asset_is_noop(session):
     asyncio.run(handlers.handle_understand_video(session, {"asset_id": 999999}))  # 不抛
-
-
-def test_handle_extract_frames_missing_asset_is_noop(session):
-    asyncio.run(handlers.handle_extract_frames(session, {"asset_id": 999999}))  # 不抛
 
 
 def test_handle_understand_video_input_error_is_non_retryable(monkeypatch, session):

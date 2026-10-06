@@ -57,7 +57,7 @@ async def handle_download(db: Session, payload: dict) -> None:
     asset.error = ""
     db.commit()
     events.publish("asset_status", {"asset_id": asset_id, "download": "done"})
-    # 下载完成后按动态热度门控自动决定是否升级到 l2/l3（设计 §6.1）。采集/同步时素材尚未
+    # 下载完成后按动态热度门控自动决定是否升级到高级档（设计 §6.1）。采集/同步时素材尚未
     # 下载完，门控只对已下载素材生效，故真正的自动分档在此触发。失败不得翻转下载成功状态。
     from app.core.process_settings import get_process_settings
     from app.services.process_gate import enqueue_process_jobs
@@ -226,18 +226,8 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
     db.commit()
 
 
-async def handle_extract_frames(db: Session, payload: dict) -> None:
-    """L2 抽帧：ffmpeg 场景切分 + 关键帧抽取，幂等写 AssetFrame。"""
-    from app.services.understand_service import run_extract_frames
-
-    asset_id = payload["asset_id"]
-    if db.get(MediaAsset, asset_id) is None:
-        return
-    await run_extract_frames(db, asset_id)
-
-
 async def handle_understand_video(db: Session, payload: dict) -> None:
-    """L3 视频理解：判类 → 类型专属提示词 → 调 vision → 写 VideoUnderstanding。"""
+    """高级档视频理解：判类 → 类型专属提示词 → 调 vision → 写 VideoUnderstanding。"""
     from app.services.understand_service import UnderstandInputError, run_understand
 
     asset_id = payload["asset_id"]
@@ -262,6 +252,5 @@ HANDLERS = {
     "sync": handle_sync,
     "crawl": handle_crawl,
     "fetch_comments": handle_fetch_comments,
-    "extract_frames": handle_extract_frames,
     "understand_video": handle_understand_video,
 }

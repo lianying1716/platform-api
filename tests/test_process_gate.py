@@ -3,11 +3,13 @@ from sqlalchemy.exc import IntegrityError
 
 
 def test_tiered_models_exist(session):
-    from app.models import AssetFrame, VideoUnderstanding, ContentItem, MediaAsset
+    from app.models import VideoUnderstanding, ContentItem, MediaAsset
     from sqlalchemy import inspect
 
-    assert "asset_frame" in inspect(session.get_bind()).get_table_names()
-    assert "video_understanding" in inspect(session.get_bind()).get_table_names()
+    tables = set(inspect(session.get_bind()).get_table_names())
+    # 两档简化：模型层只剩 video_understanding，不再有抽帧表。
+    assert "video_understanding" in tables
+    assert all("frame" not in name for name in tables)
     assert hasattr(ContentItem, "duration_sec") and hasattr(ContentItem, "auto_category")
     assert hasattr(MediaAsset, "process_tier")
 
@@ -21,10 +23,9 @@ def test_tiered_columns_shape(_engine):
     assert {"duration_sec", "auto_category", "category_confidence"} <= content_cols
 
     asset_cols = {c["name"] for c in insp.get_columns("media_asset")}
-    assert {"process_tier", "frames_status", "understand_status"} <= asset_cols
-
-    frame_cols = {c["name"] for c in insp.get_columns("asset_frame")}
-    assert {"id", "asset_id", "scene_index", "timestamp_sec", "path", "is_keyframe", "created_at"} <= frame_cols
+    assert {"process_tier", "understand_status"} <= asset_cols
+    # 两档简化：media_asset 不再有任何以 frame 命名的状态列。
+    assert all("frame" not in name for name in asset_cols)
 
     vu_cols = {c["name"] for c in insp.get_columns("video_understanding")}
     assert {
@@ -33,38 +34,18 @@ def test_tiered_columns_shape(_engine):
         "usage", "status", "error", "created_at",
     } <= vu_cols
 
-    # asset_frame(asset_id, scene_index) 联合唯一
-    frame_uqs = [tuple(u["column_names"]) for u in insp.get_unique_constraints("asset_frame")]
-    assert ("asset_id", "scene_index") in frame_uqs
     # video_understanding.asset_id 唯一（unique=True + index=True → 唯一索引）
     vu_uidx = [i for i in insp.get_indexes("video_understanding")
                if i["unique"] and i["column_names"] == ["asset_id"]]
     assert vu_uidx, "video_understanding.asset_id 应有唯一索引"
 
 
-def test_asset_frame_unique_constraint(_engine):
-    from sqlalchemy.orm import sessionmaker
+def test_process_tier_widened_for_two_tier(_engine):
+    """process_tier 放宽到 16，足以容纳 "advanced"。"""
+    from sqlalchemy import inspect
 
-    from app.models import AssetFrame, ContentItem, MediaAsset
-
-    S = sessionmaker(bind=_engine)
-    db = S()
-    c = ContentItem(platform="douyin", external_id="t1af", content_type="video")
-    db.add(c)
-    db.flush()
-    asset = MediaAsset(content_id=c.id, video_file="v.mp4")
-    db.add(asset)
-    db.flush()
-    db.add(AssetFrame(asset_id=asset.id, scene_index=0, timestamp_sec=0.0, path="f0.jpg"))
-    db.commit()
-    db.add(AssetFrame(asset_id=asset.id, scene_index=0, timestamp_sec=1.0, path="dup.jpg"))
-    try:
-        db.commit()
-        raise AssertionError("duplicate (asset_id, scene_index) should fail")
-    except IntegrityError:
-        db.rollback()
-    finally:
-        db.close()
+    col = next(c for c in inspect(_engine).get_columns("media_asset") if c["name"] == "process_tier")
+    assert col["type"].length == 16
 
 
 def test_video_understanding_unique_asset(_engine):
@@ -101,8 +82,7 @@ _GATE = {
     "weight_comment": 2,
     "weight_play": 0,
     "min_likes_floor": 100,
-    "l2_min_heat": 200,
-    "l3_min_heat": 1000,
+    "min_heat": 1000,
     "top_pct": 0.5,
     "budget": 2,
 }
@@ -121,12 +101,12 @@ def _cand(cid, like=0, comment=0, play=0, existing_tier=""):
 def test_gate_tiers_and_budget():
     from app.services.process_gate import select_tier
     s = {"weight_like":1,"weight_comment":2,"weight_play":0,"min_likes_floor":100,
-         "l2_min_heat":200,"l3_min_heat":1000,"top_pct":0.5,"budget":2}
+         "min_heat":1000,"top_pct":0.5,"budget":2}
     cands=[{"content_id":i,"like":l,"comment":0,"play":0,"existing_tier":""}
            for i,l in enumerate([5000,800,50,10])]
     out={r["content_id"]:r["tier"] for r in select_tier(cands,s)}
-    assert out[0]=="l3" and out[1]=="l2" and out[2]=="l1" and out[3]=="l1"
-    assert sum(1 for r in select_tier(cands,s) if r["tier"] in ("l2","l3")) <= s["budget"]
+    assert out[0]=="advanced" and out[1]=="basic" and out[2]=="basic" and out[3]=="basic"
+    assert sum(1 for r in select_tier(cands,s) if r["tier"]=="advanced") <= s["budget"]
 
 
 def test_gate_empty_input():
@@ -134,22 +114,22 @@ def test_gate_empty_input():
     assert select_tier([], _GATE) == []
 
 
-def test_gate_floor_caps_to_l1():
-    """like < min_likes_floor → 不高于 l1，即便 score 达到 l3 门槛。"""
+def test_gate_floor_caps_to_basic():
+    """like < min_likes_floor → 不高于 basic，即便 score 达到高级门槛。"""
     from app.services.process_gate import select_tier
-    # play 权重为 0，用极大 comment 把分数顶到 l3 门槛，但 like 低于下限。
+    # play 权重为 0，用极大 comment 把分数顶到高级门槛，但 like 低于下限。
     s = dict(_GATE, weight_comment=10.0, top_pct=1.0)
     out = {r["content_id"]: r["tier"] for r in select_tier([_cand(1, like=10, comment=500)], s)}
-    assert out[1] == "l1"
+    assert out[1] == "basic"
 
 
 def test_gate_score_formula():
     """score = w_like*like + w_comment*comment + w_play*play。"""
     from app.services.process_gate import select_tier
     s = dict(_GATE, weight_like=1.0, weight_comment=2.0, weight_play=0.5, top_pct=1.0)
-    # 100*1 + 50*2 + 400*0.5 = 100 + 100 + 200 = 400 → l2（>=200 且 <1000）
+    # 100*1 + 50*2 + 400*0.5 = 100 + 100 + 200 = 400 < 1000 → basic
     rows = select_tier([_cand(1, like=100, comment=50, play=400)], s)
-    assert rows[0]["tier"] == "l2"
+    assert rows[0]["tier"] == "basic"
     assert rows[0]["score"] == 400
 
 
@@ -159,30 +139,30 @@ def test_gate_budget_demotes_lowest_scores():
     s = dict(_GATE, top_pct=1.0, budget=1)
     cands = [_cand(1, like=5000), _cand(2, like=3000), _cand(3, like=800)]
     out = {r["content_id"]: r["tier"] for r in select_tier(cands, s)}
-    assert out[1] == "l3"
-    assert out[2] == "l1"  # 次高分也超出 budget，被降级
-    assert out[3] == "l1"  # 唯一预算名额之外的最低分被降级
-    assert sum(1 for t in out.values() if t in ("l2","l3")) <= s["budget"]
+    assert out[1] == "advanced"
+    assert out[2] == "basic"  # 次高分也超出 budget，被降级
+    assert out[3] == "basic"  # 唯一预算名额之外的最低分被降级
+    assert sum(1 for t in out.values() if t == "advanced") <= s["budget"]
 
 
-def test_gate_no_downgrade_existing_l3():
-    """已 l3 的不降级：分数再低也保持 l3。"""
+def test_gate_no_downgrade_existing_advanced():
+    """已 advanced 的不降级：分数再低也保持 advanced。"""
     from app.services.process_gate import select_tier
     s = dict(_GATE, top_pct=0.1, budget=0)
-    cands = [_cand(1, like=5000), _cand(2, like=1, existing_tier="l3")]
+    cands = [_cand(1, like=5000), _cand(2, like=1, existing_tier="advanced")]
     out = {r["content_id"]: r["tier"] for r in select_tier(cands, s)}
-    assert out[2] == "l3"
+    assert out[2] == "advanced"
 
 
 def test_gate_percentile_limits_upgrades():
-    """分位：只有分数最高的 top_pct 份额可能高于 l1。"""
+    """分位：只有分数最高的 top_pct 份额可能升到 advanced。"""
     from app.services.process_gate import select_tier
     s = dict(_GATE, top_pct=0.5, budget=10)
-    # 4 条仅取前 2；第 3、4 名即便过下限也压回 l1。
+    # 4 条仅取前 2；第 3、4 名即便过下限也压回 basic。
     cands = [_cand(i, like=l) for i, l in enumerate([5000, 3000, 800, 500])]
     out = {r["content_id"]: r["tier"] for r in select_tier(cands, s)}
-    assert out[0] == "l3" and out[1] == "l3"
-    assert out[2] == "l1" and out[3] == "l1"
+    assert out[0] == "advanced" and out[1] == "advanced"
+    assert out[2] == "basic" and out[3] == "basic"
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +189,8 @@ def _mk_ready(db, ext, like, comment, *, platform="douyin", content_type="video"
     return c, asset
 
 
-def test_select_targets_picks_l2_l3_only_for_ready_video(_engine):
-    """门控候选：只收已下载完成的视频，按档位给出 (asset, tier, reason)。"""
+def test_select_targets_picks_advanced_only_for_ready_video(_engine):
+    """门控候选：只收已下载完成的视频；只有 advanced 档产出目标（basic 无 job）。"""
     from sqlalchemy.orm import sessionmaker
 
     from app.services.process_gate import select_targets
@@ -227,12 +207,13 @@ def test_select_targets_picks_l2_l3_only_for_ready_video(_engine):
         db, [hot, warm, cold, pending, article], settings=dict(_GATE, top_pct=1.0)
     )
     got = {a.id: t for a, t, _ in picks}
-    assert got == {hot_asset.id: "l3", warm_asset.id: "l2"}
+    # warm（like=800 < 高级阈值 1000）→ basic，无 job；只有 hot 是 advanced。
+    assert got == {hot_asset.id: "advanced"}
     db.close()
 
 
 def test_enqueue_process_jobs_creates_jobs_and_sets_status(_engine):
-    """自动门控入队：l2→extract_frames、l3→understand_video，并即时置 pending 状态。"""
+    """自动门控入队：只有 advanced→understand_video，并即时置 pending 状态。"""
     from sqlalchemy.orm import sessionmaker
 
     from app.models import JobQueue
@@ -244,17 +225,15 @@ def test_enqueue_process_jobs_creates_jobs_and_sets_status(_engine):
     _mk_ready(db, "cold", like=5, comment=0)
 
     n = enqueue_process_jobs(db, [hot, warm], settings=dict(_GATE, top_pct=1.0))
-    assert n == 2
+    assert n == 1  # warm 是 basic，无 job（转录走既有独立管线）
 
     jobs = {j.job_type: j for j in db.query(JobQueue).all()}
-    assert set(jobs) == {"extract_frames", "understand_video"}
-    assert jobs["extract_frames"].payload["asset_id"] == warm_asset.id
+    assert set(jobs) == {"understand_video"}
     assert jobs["understand_video"].payload["asset_id"] == hot_asset.id
     assert all(j.priority == 120 for j in jobs.values())
 
     db.refresh(warm_asset)
     db.refresh(hot_asset)
-    assert warm_asset.frames_status == "pending"
     assert hot_asset.understand_status == "pending"
     db.close()
 
@@ -268,11 +247,11 @@ def test_enqueue_process_jobs_dedup_and_already_processed(_engine):
 
     db = sessionmaker(bind=_engine)()
     hot, hot_asset = _mk_ready(db, "hot", like=5000, comment=0)
-    done, done_asset = _mk_ready(db, "done", like=6000, comment=0, tier="l3")
+    done, done_asset = _mk_ready(db, "done", like=6000, comment=0, tier="advanced")
     settings = dict(_GATE, top_pct=1.0)
 
     assert enqueue_process_jobs(db, [hot, done], settings=settings) == 1
-    # 同一批再来一次：hot 的 job 仍在队列（dedup 吸收），done 已 l3 → 返回值 0。
+    # 同一批再来一次：hot 的 job 仍在队列（dedup 吸收），done 已 advanced → 返回值 0。
     assert enqueue_process_jobs(db, [hot, done], settings=settings) == 0
     assert db.query(JobQueue).filter_by(job_type="understand_video").count() == 1
     assert db.query(JobQueue).filter_by(job_type="understand_video").one().payload[
@@ -307,7 +286,7 @@ def test_select_targets_uses_latest_metric_snapshot(_engine):
 
     db = sessionmaker(bind=_engine)()
     c, asset = _mk_ready(db, "trend", like=5000, comment=0)
-    # 再落一条更晚、更冷的快照，应按它判为 l1。
+    # 再落一条更晚、更冷的快照，应按它判为 basic（无 job）。
     db.add(
         ContentMetricSnapshot(
             content_id=c.id, like=5, comment=0,
@@ -327,9 +306,9 @@ def test_select_targets_uses_latest_metric_snapshot(_engine):
 
 
 def test_enqueue_inflight_budget_caps_single_item_calls(_engine):
-    """I1：逐条调用（下载完成路径 batch=1）时，累计在途 l2/l3 job 不得超过 budget。
+    """I1：逐条调用（下载完成路径 batch=1）时，累计在途 advanced job 不得超过 budget。
 
-    回归：修复前 50 条爆款逐一走门控 → 建 50 个 L3 job（budget=20 被突破）。
+    回归：修复前 50 条爆款逐一走门控 → 建 50 个高级 job（budget=20 被突破）。
     """
     from sqlalchemy.orm import sessionmaker
 

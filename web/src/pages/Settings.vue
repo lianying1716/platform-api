@@ -99,20 +99,17 @@
 
       <!-- 视频理解 -->
       <el-tab-pane label="视频理解" name="process">
-        <p class="tip">素材分档加工门控（L2 抽帧 / L3 视频理解）与类型提示词。阈值存 system_setting，可在线调整，不写死。</p>
+        <p class="tip">素材分档加工门控（普通=转录 / 高级=视频理解）与类型提示词。阈值存 system_setting，可在线调整，不写死。</p>
         <el-form label-width="210px" style="max-width: 680px">
-          <el-form-item label="L2 热度阈值 l2_min_heat">
-            <el-input-number v-model="proc.l2_min_heat" :min="0" :precision="0" />
-          </el-form-item>
-          <el-form-item label="L3 热度阈值 l3_min_heat">
-            <el-input-number v-model="proc.l3_min_heat" :min="0" :precision="0" />
+          <el-form-item label="高级档热度阈值 min_heat">
+            <el-input-number v-model="proc.min_heat" :min="0" :precision="0" />
           </el-form-item>
           <el-form-item label="最低点赞下限 min_likes_floor">
             <el-input-number v-model="proc.min_likes_floor" :min="0" :precision="0" />
           </el-form-item>
           <el-form-item label="单批预算 budget">
             <el-input-number v-model="proc.budget" :min="0" :precision="0" />
-            <span class="detail">全局限额：l2/l3 在途 job（含 queued/running）上限；单条下载路径也受约束</span>
+            <span class="detail">全局限额：高级档在途 job（含 queued/running）上限；单条下载路径也受约束</span>
           </el-form-item>
           <el-form-item label="热门分位 top_pct">
             <el-input-number v-model="proc.top_pct" :min="0" :max="1" :step="0.05" :precision="2" />
@@ -126,12 +123,6 @@
           </el-form-item>
           <el-form-item label="播放权重 weight_play">
             <el-input-number v-model="proc.weight_play" :min="0" :step="0.1" :precision="2" />
-          </el-form-item>
-          <el-form-item label="每分钟抽帧 frames_per_min">
-            <el-input-number v-model="proc.frames_per_min" :min="0" :step="0.5" :precision="2" />
-          </el-form-item>
-          <el-form-item label="最多帧数 max_frames">
-            <el-input-number v-model="proc.max_frames" :min="1" :precision="0" />
           </el-form-item>
           <el-form-item label="视频内联上限 video_max_mb">
             <el-input-number v-model="proc.video_max_mb" :min="0" :step="1" :precision="2" />
@@ -255,16 +246,13 @@ const commentSettings = reactive({
   interval: 1,
 })
 const proc = reactive<any>({
-  l2_min_heat: 200,
-  l3_min_heat: 1000,
+  min_heat: 1000,
   min_likes_floor: 100,
   budget: 20,
   top_pct: 0.2,
   weight_like: 1,
   weight_comment: 2,
   weight_play: 0,
-  frames_per_min: 6,
-  max_frames: 24,
   video_max_mb: 15,
   cover_max_mb: 5,
   low_confidence_threshold: 0.6,
@@ -362,16 +350,13 @@ async function saveProcessSettings() {
     return ElMessage.error('JSON 解析失败：' + e.message)
   }
   await api.put('/api/system/process-settings', {
-    l2_min_heat: proc.l2_min_heat,
-    l3_min_heat: proc.l3_min_heat,
+    min_heat: proc.min_heat,
     min_likes_floor: proc.min_likes_floor,
     budget: proc.budget,
     top_pct: proc.top_pct,
     weight_like: proc.weight_like,
     weight_comment: proc.weight_comment,
     weight_play: proc.weight_play,
-    frames_per_min: proc.frames_per_min,
-    max_frames: proc.max_frames,
     video_max_mb: proc.video_max_mb,
     cover_max_mb: proc.cover_max_mb,
     low_confidence_threshold: proc.low_confidence_threshold,

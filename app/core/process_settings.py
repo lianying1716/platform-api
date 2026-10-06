@@ -19,16 +19,13 @@ _STR = "str"
 
 # 对外短名 -> system_setting key（单一事实来源；API / 服务复用此映射）
 PROCESS_KEYS: dict[str, str] = {
-    "l2_min_heat": "process_l2_min_heat",
-    "l3_min_heat": "process_l3_min_heat",
+    "min_heat": "process_min_heat",
     "min_likes_floor": "process_min_likes_floor",
     "budget": "process_budget",
     "top_pct": "process_top_pct",
     "weight_like": "process_weight_like",
     "weight_comment": "process_weight_comment",
     "weight_play": "process_weight_play",
-    "frames_per_min": "process_frames_per_min",
-    "max_frames": "process_max_frames",
     "video_max_mb": "process_video_max_mb",
     "classify_enabled": "process_classify_enabled",
     "use_cover": "process_use_cover",
@@ -41,16 +38,14 @@ PROCESS_KEYS: dict[str, str] = {
 
 # system_setting key -> (默认值, 类型)。默认值可被 system_setting 覆盖。
 _DEFAULTS: dict[str, tuple[object, str]] = {
-    "process_l2_min_heat": (200, _INT),
-    "process_l3_min_heat": (1000, _INT),
+    # 高级档（视频理解）热度阈值：score >= 此值才升高级，否则普通档（转录）。
+    "process_min_heat": (1000, _INT),
     "process_min_likes_floor": (100, _INT),
     "process_budget": (20, _INT),
     "process_top_pct": (0.2, _FLOAT),
     "process_weight_like": (1.0, _FLOAT),
     "process_weight_comment": (2.0, _FLOAT),
     "process_weight_play": (0.0, _FLOAT),
-    "process_frames_per_min": (6.0, _FLOAT),
-    "process_max_frames": (24, _INT),
     "process_video_max_mb": (15.0, _FLOAT),
     "process_classify_enabled": (True, _BOOL),
     "process_use_cover": (False, _BOOL),

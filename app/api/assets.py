@@ -7,21 +7,19 @@
 """
 
 import json
-import os
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import security
 from app.core.queue import enqueue
-from app.core.storage import join_root, resolve_asset_dir
+from app.core.storage import resolve_asset_dir
 from app.db import get_db
 from app.models import (
     AnalysisResult,
-    AssetFrame,
     Comment,
     ContentItem,
     ContentMetricSnapshot,
@@ -39,7 +37,7 @@ class ExportRequest(BaseModel):
 
 
 class ProcessRequest(BaseModel):
-    tier: str  # l2（抽帧）/ l3（视频理解）
+    tier: str  # basic（转录）/ advanced（视频理解）
     force_category: str | None = None
     use_cover: bool | None = None
 
@@ -143,7 +141,6 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
             "transcribe": asset.transcribe_status,
             "analyze": asset.analyze_status,
             "tier": asset.process_tier,
-            "frames": asset.frames_status,
             "understand": asset.understand_status,
             "error": asset.error,
         },
@@ -236,63 +233,9 @@ def enqueue_download(asset_id: int, db: Session = Depends(get_db)):
     return {"job_id": job.id}
 
 
-@router.get("/assets/{asset_id}/frames")
-def list_frames(asset_id: int, db: Session = Depends(get_db)):
-    """L2 抽帧结果：帧列表（相对 storage_root 的路径）+ 抽帧档位/状态。"""
-    asset = db.get(MediaAsset, asset_id)
-    if asset is None:
-        raise HTTPException(status_code=404, detail="素材不存在")
-    rows = db.scalars(
-        select(AssetFrame).where(AssetFrame.asset_id == asset_id).order_by(AssetFrame.scene_index)
-    ).all()
-    return {
-        "asset_id": asset_id,
-        "process_tier": asset.process_tier,
-        "frames_status": asset.frames_status,
-        "frames": [
-            {
-                "scene_index": f.scene_index,
-                "timestamp_sec": f.timestamp_sec,
-                "path": f.path,
-                "is_keyframe": f.is_keyframe,
-            }
-            for f in rows
-        ],
-    }
-
-
-def _asset_storage_root_path(db: Session, asset: MediaAsset) -> str:
-    """素材所属 storage_root 的物理根路径（未绑定则回退默认根）。"""
-    from app.core.storage import get_default_root
-    from app.models import StorageRoot
-
-    root = db.get(StorageRoot, asset.storage_root_id) if asset.storage_root_id is not None else None
-    if root is None:
-        root = get_default_root(db)
-    return root.path if root is not None else ""
-
-
-@router.get("/assets/{asset_id}/frames/{scene_index}/image")
-def get_frame_image(asset_id: int, scene_index: int, db: Session = Depends(get_db)):
-    """按 (asset_id, scene_index) 提供帧缩略图；路径由后端从库中解析，不接受外部路径。"""
-    asset = db.get(MediaAsset, asset_id)
-    if asset is None:
-        raise HTTPException(status_code=404, detail="素材不存在")
-    frame = db.scalar(
-        select(AssetFrame).where(AssetFrame.asset_id == asset_id, AssetFrame.scene_index == scene_index)
-    )
-    if frame is None or not frame.path:
-        raise HTTPException(status_code=404, detail="帧不存在")
-    root = _asset_storage_root_path(db, asset)
-    full = join_root(root, frame.path) if root else frame.path
-    if not os.path.isfile(full):
-        raise HTTPException(status_code=404, detail="帧文件缺失")
-    return FileResponse(full, media_type="image/jpeg")
-
-
 @router.get("/assets/{asset_id}/understanding")
 def get_understanding(asset_id: int, db: Session = Depends(get_db)):
-    """L3 视频理解结果；尚未生成时返回 status=pending（含素材当前状态）。"""
+    """高级档视频理解结果；尚未生成时返回 status=pending（含素材当前状态）。"""
     asset = db.get(MediaAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")
@@ -332,18 +275,18 @@ def _known_categories(db: Session) -> set[str]:
 
 @router.post("/assets/{asset_id}/process")
 def enqueue_process(asset_id: int, body: ProcessRequest, db: Session = Depends(get_db)):
-    """手动分档加工：l2 → 抽帧；l3 → 视频理解（可 force_category / use_cover 覆盖）。"""
+    """手动分档加工：basic → 转录；advanced → 视频理解（可 force_category / use_cover 覆盖）。"""
     asset = db.get(MediaAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")
     tier = (body.tier or "").strip().lower()
-    if tier not in ("l2", "l3"):
-        raise HTTPException(status_code=422, detail="tier 仅支持 l2 / l3")
+    if tier not in ("basic", "advanced"):
+        raise HTTPException(status_code=422, detail="tier 仅支持 basic / advanced")
 
-    if tier == "l2":
-        asset.frames_status = "pending"
+    if tier == "basic":
+        asset.transcribe_status = "pending"
         db.commit()
-        job = enqueue(db, "extract_frames", {"asset_id": asset_id})
+        job = enqueue(db, "transcribe", {"asset_id": asset_id})
         return {"job_id": job.id, "tier": tier}
 
     payload: dict = {"asset_id": asset_id}

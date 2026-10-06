@@ -1,9 +1,9 @@
-"""分档加工 API：系统设置读写校验 + 素材分档动作（帧/理解/入队/改类型重跑）。
+"""分档加工 API：系统设置读写校验 + 素材分档动作（理解/入队/改类型重跑）。
 
 覆盖计划 Task 8：
 - GET/PUT /api/system/process-settings（门控参数 + 类型目录 + 类型提示词，可读可编辑、非法 422）。
-- GET /api/assets/{id}/frames、GET /api/assets/{id}/understanding。
-- POST /api/assets/{id}/process（入队 extract_frames / understand_video）。
+- GET /api/assets/{id}/understanding。
+- POST /api/assets/{id}/process（basic → transcribe / advanced → understand_video）。
 - POST /api/assets/{id}/reclassify（入队判类重跑）。
 - 鉴权：无 token → 401。
 """
@@ -33,9 +33,8 @@ def test_process_endpoints_require_auth(anon_client, _engine):
     db.close()
 
     assert anon_client.get("/api/system/process-settings").status_code == 401
-    assert anon_client.get(f"/api/assets/{asset_id}/frames").status_code == 401
     assert anon_client.get(f"/api/assets/{asset_id}/understanding").status_code == 401
-    assert anon_client.post(f"/api/assets/{asset_id}/process", json={"tier": "l3"}).status_code == 401
+    assert anon_client.post(f"/api/assets/{asset_id}/process", json={"tier": "advanced"}).status_code == 401
     assert anon_client.post(f"/api/assets/{asset_id}/reclassify").status_code == 401
 
 
@@ -44,15 +43,17 @@ def test_process_endpoints_require_auth(anon_client, _engine):
 
 def test_get_process_settings_shape(client):
     body = client.get("/api/system/process-settings").json()
-    assert body["l3_min_heat"] > body["l2_min_heat"] >= 0
+    assert body["min_heat"] >= 0
     assert body["provider"] in ("qwen", "gemini")
     assert isinstance(body["taxonomy"], dict) and "commerce" in body["taxonomy"]
     assert isinstance(body["type_prompts"], dict) and "commerce" in body["type_prompts"]
     assert isinstance(body["common_dimensions"], list) and body["common_dimensions"]
+    # 两档简化：没有任何以 frame 命名的配置键残留。
+    assert all("frame" not in key for key in body)
 
 
 def test_put_process_settings_rejects_out_of_range(client):
-    r = client.put("/api/system/process-settings", json={"l3_min_heat": -1})
+    r = client.put("/api/system/process-settings", json={"min_heat": -1})
     assert r.status_code == 422
 
     r2 = client.put("/api/system/process-settings", json={"top_pct": 2})
@@ -94,7 +95,7 @@ def test_put_process_settings_rejects_empty_structure(client):
 
 def test_put_process_settings_roundtrip(client):
     payload = {
-        "l3_min_heat": 4242,
+        "min_heat": 4242,
         "use_cover": True,
         "provider": "gemini",
         "vision_model": "gemini-3.8-flash",
@@ -108,7 +109,7 @@ def test_put_process_settings_roundtrip(client):
     assert r.status_code == 200 and r.json()["ok"] is True
 
     body = client.get("/api/system/process-settings").json()
-    assert body["l3_min_heat"] == 4242
+    assert body["min_heat"] == 4242
     assert body["use_cover"] is True
     assert body["provider"] == "gemini"
     assert body["vision_model"] == "gemini-3.8-flash"
@@ -119,109 +120,14 @@ def test_put_process_settings_roundtrip(client):
 
 def test_put_process_settings_partial_does_not_wipe_others(client):
     before = client.get("/api/system/process-settings").json()
-    client.put("/api/system/process-settings", json={"l2_min_heat": 111})
+    client.put("/api/system/process-settings", json={"min_heat": 111})
     after = client.get("/api/system/process-settings").json()
-    assert after["l2_min_heat"] == 111
-    assert after["l3_min_heat"] == before["l3_min_heat"]
+    assert after["min_heat"] == 111
+    assert after["budget"] == before["budget"]
     assert after["taxonomy"] == before["taxonomy"]
 
 
-# --------------------------------------------------------------------------- 帧 / 理解 读
-
-
-def test_get_frames(client, _engine):
-    from sqlalchemy.orm import sessionmaker
-
-    from app.models import AssetFrame, MediaAsset
-
-    Session = sessionmaker(bind=_engine)
-    db = Session()
-    _, asset_id = _seed_asset(db)
-    db.add(AssetFrame(asset_id=asset_id, scene_index=0, timestamp_sec=0.0, path="douyin/a/1/frames/frame_001.jpg"))
-    db.add(AssetFrame(asset_id=asset_id, scene_index=1, timestamp_sec=1.5, path="douyin/a/1/frames/frame_002.jpg"))
-    a = db.get(MediaAsset, asset_id)
-    a.process_tier = "l2"
-    a.frames_status = "done"
-    db.commit()
-    db.close()
-
-    body = client.get(f"/api/assets/{asset_id}/frames").json()
-    assert body["frames_status"] == "done"
-    assert body["process_tier"] == "l2"
-    assert [f["scene_index"] for f in body["frames"]] == [0, 1]
-    assert body["frames"][0]["path"].endswith("frame_001.jpg")
-    assert body["frames"][0]["is_keyframe"] is True
-
-
-def test_get_frames_none(client, _engine):
-    from sqlalchemy.orm import sessionmaker
-
-    Session = sessionmaker(bind=_engine)
-    db = Session()
-    _, asset_id = _seed_asset(db)
-    db.close()
-    body = client.get(f"/api/assets/{asset_id}/frames").json()
-    assert body["frames"] == []
-
-
-def test_get_frames_unknown_asset(client):
-    assert client.get("/api/assets/999999/frames").status_code == 404
-
-
-def test_get_frame_image_serves_file(client, _engine, tmp_path):
-    from sqlalchemy.orm import sessionmaker
-
-    from app.models import AssetFrame, MediaAsset, StorageRoot
-
-    Session = sessionmaker(bind=_engine)
-    db = Session()
-    _, asset_id = _seed_asset(db, relative_path="douyin/a/1")
-    root = StorageRoot(name="t", path=str(tmp_path), is_default=True)
-    db.add(root)
-    db.flush()
-    asset = db.get(MediaAsset, asset_id)
-    asset.storage_root_id = root.id
-    fdir = tmp_path / "douyin" / "a" / "1" / "frames"
-    fdir.mkdir(parents=True)
-    (fdir / "frame_001.jpg").write_bytes(b"\xff\xd8\xff-jpeg")
-    db.add(
-        AssetFrame(
-            asset_id=asset_id,
-            scene_index=0,
-            timestamp_sec=0.0,
-            path="douyin/a/1/frames/frame_001.jpg",
-        )
-    )
-    db.commit()
-    db.close()
-
-    r = client.get(f"/api/assets/{asset_id}/frames/0/image")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("image/")
-
-
-def test_get_frame_image_missing_file_404(client, _engine):
-    from sqlalchemy.orm import sessionmaker
-
-    from app.models import AssetFrame
-
-    Session = sessionmaker(bind=_engine)
-    db = Session()
-    _, asset_id = _seed_asset(db)
-    db.add(AssetFrame(asset_id=asset_id, scene_index=0, path="douyin/a/1/frames/gone.jpg"))
-    db.commit()
-    db.close()
-    assert client.get(f"/api/assets/{asset_id}/frames/0/image").status_code == 404
-
-
-def test_get_frame_image_unknown_frame_404(client, _engine):
-    from sqlalchemy.orm import sessionmaker
-
-    Session = sessionmaker(bind=_engine)
-    db = Session()
-    _, asset_id = _seed_asset(db)
-    db.close()
-    assert client.get(f"/api/assets/{asset_id}/frames/0/image").status_code == 404
+# --------------------------------------------------------------------------- 理解 读
 
 
 def test_get_understanding_pending(client, _engine):
@@ -282,7 +188,7 @@ def _jobs(db, job_type):
     return db.query(JobQueue).filter(JobQueue.job_type == job_type).all()
 
 
-def test_post_process_enqueues_l3(client, _engine):
+def test_post_process_enqueues_advanced(client, _engine):
     from sqlalchemy.orm import sessionmaker
 
     Session = sessionmaker(bind=_engine)
@@ -290,7 +196,7 @@ def test_post_process_enqueues_l3(client, _engine):
     _, asset_id = _seed_asset(db)
     db.close()
 
-    r = client.post(f"/api/assets/{asset_id}/process", json={"tier": "l3"})
+    r = client.post(f"/api/assets/{asset_id}/process", json={"tier": "advanced"})
     assert r.status_code == 200
     assert r.json()["job_id"]
 
@@ -304,7 +210,7 @@ def test_post_process_enqueues_l3(client, _engine):
     db.close()
 
 
-def test_post_process_enqueues_l2_frames(client, _engine):
+def test_post_process_enqueues_basic_transcribe(client, _engine):
     from sqlalchemy.orm import sessionmaker
 
     Session = sessionmaker(bind=_engine)
@@ -312,12 +218,15 @@ def test_post_process_enqueues_l2_frames(client, _engine):
     _, asset_id = _seed_asset(db)
     db.close()
 
-    r = client.post(f"/api/assets/{asset_id}/process", json={"tier": "l2"})
+    r = client.post(f"/api/assets/{asset_id}/process", json={"tier": "basic"})
     assert r.status_code == 200
     db = Session()
-    jobs = _jobs(db, "extract_frames")
+    jobs = _jobs(db, "transcribe")
     assert len(jobs) == 1
     assert jobs[0].payload["asset_id"] == asset_id
+    from app.models import MediaAsset
+
+    assert db.get(MediaAsset, asset_id).transcribe_status == "pending"
     db.close()
 
 
@@ -329,10 +238,12 @@ def test_post_process_rejects_bad_tier(client, _engine):
     _, asset_id = _seed_asset(db)
     db.close()
     assert client.post(f"/api/assets/{asset_id}/process", json={"tier": "l9"}).status_code == 422
+    # 旧档位取值（非 basic/advanced）一律 422。
+    assert client.post(f"/api/assets/{asset_id}/process", json={"tier": "middle"}).status_code == 422
 
 
 def test_post_process_unknown_asset(client):
-    assert client.post("/api/assets/999999/process", json={"tier": "l3"}).status_code == 404
+    assert client.post("/api/assets/999999/process", json={"tier": "advanced"}).status_code == 404
 
 
 def test_post_process_force_category_validated(client, _engine):
@@ -343,11 +254,11 @@ def test_post_process_force_category_validated(client, _engine):
     _, asset_id = _seed_asset(db)
     db.close()
     # 合法枚举 → 入队并透传
-    r = client.post(f"/api/assets/{asset_id}/process", json={"tier": "l3", "force_category": "commerce"})
+    r = client.post(f"/api/assets/{asset_id}/process", json={"tier": "advanced", "force_category": "commerce"})
     assert r.status_code == 200
     # 非法枚举 → 422
     assert (
-        client.post(f"/api/assets/{asset_id}/process", json={"tier": "l3", "force_category": "nope"}).status_code
+        client.post(f"/api/assets/{asset_id}/process", json={"tier": "advanced", "force_category": "nope"}).status_code
         == 422
     )
 

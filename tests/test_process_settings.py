@@ -2,10 +2,12 @@
 
 
 def test_process_defaults(session):
-    from app.core.process_settings import get_process_settings
+    from app.core.process_settings import PROCESS_KEYS, get_process_settings
 
     s = get_process_settings(session)
-    assert s["l2_min_heat"] >= 0 and s["l3_min_heat"] > s["l2_min_heat"]
+    # 两档简化：返回的键集合与 PROCESS_KEYS 完全一致（抽帧相关键已彻底移除）。
+    assert set(s) == set(PROCESS_KEYS)
+    assert s["min_heat"] >= 0
     assert s["video_max_mb"] > 0 and s["provider"] in ("qwen", "gemini")
 
 
@@ -13,9 +15,9 @@ def test_process_override(session):
     from app.core.process_settings import get_process_settings
     from app.models import SystemSetting
 
-    session.add(SystemSetting(key="process_l3_min_heat", value="999"))
+    session.add(SystemSetting(key="process_min_heat", value="999"))
     session.commit()
-    assert get_process_settings(session)["l3_min_heat"] == 999
+    assert get_process_settings(session)["min_heat"] == 999
 
 
 def test_process_defaults_types(session):
@@ -23,7 +25,7 @@ def test_process_defaults_types(session):
     from app.core.process_settings import get_process_settings
 
     s = get_process_settings(session)
-    assert isinstance(s["l2_min_heat"], int) and isinstance(s["budget"], int)
+    assert isinstance(s["min_heat"], int) and isinstance(s["budget"], int)
     assert isinstance(s["top_pct"], float) and 0.0 <= s["top_pct"] <= 1.0
     assert isinstance(s["weight_comment"], float)
     assert isinstance(s["classify_enabled"], bool)
