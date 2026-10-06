@@ -222,6 +222,11 @@ async function refresh(force: boolean) {
       lastRefresh.value = new Date().toISOString()
     }
     await load()
+  } catch (e: any) {
+    // 429 = 风控冷却中（无缓存可展示）；标记冷却态并保留现有列表
+    if (e?.response?.status === 429) {
+      cooling.value = true
+    }
   } finally {
     refreshing.value = false
   }
