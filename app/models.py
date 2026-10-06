@@ -113,6 +113,13 @@ class Subscription(Base):
     auto_download: Mapped[bool] = mapped_column(Boolean, default=False)
     interval_minutes: Mapped[int] = mapped_column(Integer, default=360)
     subdir_template: Mapped[str] = mapped_column(String(256), default="{platform}/{creator}/{date}")
+    # 同步设置（迁移 0008）：过滤 / 截断 / 只新 / 画质 / 评论门控
+    min_play: Mapped[int] = mapped_column(Integer, default=0)  # 最低播放量门槛，0=不限
+    publish_after_days: Mapped[int] = mapped_column(Integer, default=0)  # 只同步最近 N 天，0=不限
+    max_items: Mapped[int] = mapped_column(Integer, default=50)  # 单次同步最多入库条数
+    only_new: Mapped[bool] = mapped_column(Boolean, default=True)  # 只入库新内容
+    download_quality: Mapped[str] = mapped_column(String(16), default="best")  # best/1080/720/audio
+    with_comments: Mapped[bool] = mapped_column(Boolean, default=False)  # 本批是否走评论门控
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
