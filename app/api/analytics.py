@@ -329,7 +329,7 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
         db.scalars(
             select(ContentItem)
             .where(ContentItem.platform == platform)
-            .order_by(ContentItem.id)
+            .order_by(ContentItem.id.desc())  # 取最近的内容做基准，避免大库下只扫到最旧一批而失真
             .limit(_PLATFORM_SCAN_LIMIT)
         ).all()
     )
