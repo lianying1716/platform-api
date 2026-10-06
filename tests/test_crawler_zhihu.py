@@ -102,15 +102,19 @@ async def test_search_zhihu_request_shape_and_normalization(monkeypatch):
     assert qs["limit"] == ["20"]
     assert qs["t"] == ["general"] and qs["search_source"] == ["Filter"]
 
-    # 签名器收到含查询串的完整 URL
-    assert sign_calls["url"] == calls[0]["url"]
-    assert "?" in sign_calls["url"] and "q=" in sign_calls["url"]
+    # 签名器收到的必须是「路径+查询串」（不含 host），与 MediaCrawler 一致
+    assert sign_calls["url"].startswith("/api/v4/search_v3?")
+    assert not sign_calls["url"].startswith("http")
+    assert "q=" in sign_calls["url"]
+    # 实际请求地址 = host + 已签名路径
+    assert calls[0]["url"] == "https://www.zhihu.com" + sign_calls["url"]
     assert sign_calls["cookies"] == "d_c0=abc;z_c0=def"
 
-    # 签名头与 Cookie/UA/Referer
+    # 签名头与 Cookie/UA/Referer + x-zse-93 等必备头
     headers = calls[0]["headers"]
     assert headers["x-zst-81"] == "ZST81"
     assert headers["x-zse-96"] == "ZSE96"
+    assert headers["x-zse-93"] == "101_3_3.0"
     assert headers["Cookie"] == "d_c0=abc;z_c0=def"
     assert headers["User-Agent"] and "Referer" in headers
 

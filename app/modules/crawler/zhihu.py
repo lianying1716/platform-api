@@ -17,6 +17,7 @@ import httpx
 from app.modules.crawler import zhihu_sign
 
 _SEARCH_URL = "https://www.zhihu.com/api/v4/search_v3"
+_SEARCH_PATH = "/api/v4/search_v3"  # 签名只覆盖路径+查询串（不含 host）
 
 # 与 client._UA 保持一致；各平台模块各自持有常量，避免与 client 相互 import。
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -113,6 +114,10 @@ async def search_zhihu(keyword: str, cookie: str, limit: int, sort: str) -> list
         "User-Agent": _UA,
         "Referer": "https://www.zhihu.com/search",
         "Cookie": cookie,
+        "x-zse-93": "101_3_3.0",
+        "x-api-version": "3.0.91",
+        "x-app-za": "OS=Web",
+        "x-requested-with": "fetch",
     }
     items: list[dict] = []
     page = 1
@@ -134,10 +139,12 @@ async def search_zhihu(keyword: str, cookie: str, limit: int, sort: str) -> list
                 "sort": sort_value,
                 "vertical": "",
             }
-            # 签名必须覆盖完整 URL（含查询串），故手工拼好再签，避免 httpx 重编码导致签名不一致。
-            full_url = f"{_SEARCH_URL}?{urlencode(params)}"
-            sig = zhihu_sign.sign(full_url, cookie)
-            resp = await c.get(full_url, headers={**headers, **sig})
+            # 签名覆盖「路径+查询串」（与 MediaCrawler help.py 一致；服务器按此重建签名字符串）。
+            # 手工拼查询串，避免 httpx 重编码导致签名与服务端不一致。
+            query = urlencode(params)
+            signed_url = f"{_SEARCH_PATH}?{query}"
+            sig = zhihu_sign.sign(signed_url, cookie)
+            resp = await c.get(f"https://www.zhihu.com{signed_url}", headers={**headers, **sig})
             try:
                 data = resp.json()
             except ValueError:
