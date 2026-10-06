@@ -193,8 +193,8 @@ class DouyinAdapter:
         """关注的博主**富列表**（供「关注博主」页）：真头像/昵称/签名/认证/主页。
 
         列表：``/aweme/v1/web/user/following/list`` 分页（offset/count）。
-        粉丝/获赞：需逐用户 ``profile/other``（要 a_bogus 签名），本函数 best-effort 留 0，
-        由「刷新」时单独补齐（避免 N 次签名调用拖慢列表）。字段缺失跳过；网络异常返回已拿到的部分。
+        粉丝/获赞：需逐用户 ``profile/other``（要 a_bogus 签名），留 0，由「刷新」时单独补齐。
+        字段缺失跳过；**认证失效/风控抛可读异常**（便于上层进入冷却）。
         """
         sec_user_id = (credential.get("sec_user_id") or "").strip()
         if not sec_user_id:
@@ -206,8 +206,12 @@ class DouyinAdapter:
         try:
             while len(out) < limit:
                 data = await following_list(cookie, sec_user_id, offset=str(offset), count=str(count))
-                if not data or data.get("status_code") != 0:
+                if data is None:
                     break
+                if data.get("status_code") not in (0, None):
+                    sc = data.get("status_code")
+                    # 抖音用 status_code 表示失败；带"风控/登录"语义的走异常
+                    raise RuntimeError(f"抖音关注列表拉取失败（status_code={sc}），可能登录失效或被风控")
                 followings = data.get("followings") or []
                 if not followings:
                     break

@@ -216,8 +216,9 @@ class BilibiliAdapter:
         """关注的 UP 主**富列表**（供「关注博主」页）：真头像/昵称/签名/主页 + 粉丝数。
 
         - 列表：``/x/relation/followings`` 分页（pn/ps，每页 50）。
-        - 粉丝：``/x/relation/stat?vmid=``（免登录，best-effort，失败留 0）。
-        缺少 dedeuserid 返回 []；网络异常返回已拿到的部分（不抛）。
+        - 粉丝：由 API 层带 24h 缓存补全（此处不逐条请求）。
+        缺少 dedeuserid 返回 []；**认证失效/风控抛可读异常**（便于上层进入冷却），
+        其余网络异常返回已拿到的部分。
         """
         mid = str(credential.get("dedeuserid") or "").strip()
         if not mid:
@@ -233,7 +234,15 @@ class BilibiliAdapter:
                         params={"mid": mid, "pn": str(page), "ps": str(page_size)},
                         cookies=_cookies(credential),
                     )
-                    data = resp.json().get("data") or {}
+                    if resp.status_code in (403, 412):
+                        raise RuntimeError(f"B站风控校验失败（HTTP {resp.status_code}），请稍后再试")
+                    payload = resp.json()
+                    code = payload.get("code")
+                    if code in (-352, -412, -509):
+                        raise RuntimeError(f"B站风控校验失败（{payload.get('message', code)}），请稍后再试")
+                    if code == -101:
+                        raise RuntimeError("B站账号未登录或登录已过期，请重新登录该账号")
+                    data = payload.get("data") or {}
                     rows = data.get("list") or []
                     if not rows:
                         break
