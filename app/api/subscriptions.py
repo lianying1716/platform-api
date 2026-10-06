@@ -5,6 +5,8 @@
 - 手动触发同步 / 查看同步历史。
 """
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
@@ -63,7 +65,7 @@ class SubscriptionOut(BaseModel):
     only_new: bool = True
     download_quality: str = "best"
     with_comments: bool = False
-    last_sync_at: str | None = None
+    last_sync_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

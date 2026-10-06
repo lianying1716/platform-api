@@ -128,3 +128,21 @@ def test_create_subscription_accepts_valid_settings(client, session):
     assert data["only_new"] is False
     assert data["with_comments"] is True
     assert data["max_items"] == 500
+
+
+def test_list_subscriptions_serializes_last_sync_at(client, session):
+    """回归：last_sync_at 为 datetime 时列表接口必须能序列化（此前 SubscriptionOut 声明为 str → 500）。"""
+    from datetime import datetime
+
+    acc = _make_account(session)
+    sub = Subscription(account_id=acc.id, platform="douyin", source_type="favorite", remote_id="fav-1")
+    session.add(sub)
+    session.commit()
+    sub.last_sync_at = datetime(2026, 10, 5, 23, 20, 0)
+    session.commit()
+
+    r = client.get("/api/subscriptions")
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert len(rows) == 1
+    assert rows[0]["last_sync_at"].startswith("2026-10-05T23:20:00")
