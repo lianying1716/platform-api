@@ -25,6 +25,7 @@ from app.models import (
     MediaAsset,
     Transcript,
     VideoUnderstanding,
+    ViralBreakdown,
 )
 
 router = APIRouter(prefix="/api", tags=["assets"], dependencies=[Depends(security.require_admin)])
@@ -45,6 +46,11 @@ class ReclassifyRequest(BaseModel):
     # 与 ProcessRequest 同样用 Pydantic 布尔归一（"false"/"0" -> False），避免裸 dict 的 bool() 误判。
     force_category: str | None = None
     use_cover: bool | None = None
+
+
+class BreakdownRequest(BaseModel):
+    # Pydantic 布尔归一（"false"/"0" -> False）；已 done 时 force=True 才重跑。
+    force: bool = False
 
 
 def _latest_metric(db: Session, content_id: int) -> ContentMetricSnapshot | None:
@@ -264,6 +270,69 @@ def get_understanding(asset_id: int, db: Session = Depends(get_db)):
         "usage": row.usage,
         "error": row.error or asset.error or "",
     }
+
+
+def _breakdown_payload(row: ViralBreakdown) -> dict:
+    """把 ViralBreakdown 行序列化为 API 响应（含报告全部字段）。"""
+    return {
+        "asset_id": row.asset_id,
+        "status": row.status,
+        "score": row.score,
+        "verdict": row.verdict,
+        "sections": row.sections or {},
+        "comment_insights": row.comment_insights or {},
+        "data_context": row.data_context or {},
+        "understanding_available": row.understanding_available,
+        "model": row.model,
+        "prompt_version": row.prompt_version,
+        "usage": row.usage or {},
+        "error": row.error or "",
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.post("/assets/{asset_id}/breakdown")
+def enqueue_breakdown(
+    asset_id: int, body: BreakdownRequest | None = None, db: Session = Depends(get_db)
+):
+    """入队爆款拆解（worker 消费）；素材不存在 404，force 非布尔 422。
+
+    - 无报告：建 pending 行并入队。
+    - 已 done 且 force=False：worker 会短路返回既有结果（不重复花 token），状态保持 done。
+    - force=True：置 pending 重跑。
+    """
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    force = bool(body.force) if body else False
+    row = db.scalar(select(ViralBreakdown).where(ViralBreakdown.asset_id == asset_id))
+    if row is None:
+        row = ViralBreakdown(asset_id=asset_id, status="pending")
+        db.add(row)
+    elif not (row.status == "done" and not force):
+        # 非「已完成且无需重跑」的既有行 → 立即置 pending，让 GET 立刻可读。
+        row.status = "pending"
+        row.error = ""
+    db.commit()
+    job = enqueue(db, "breakdown", {"asset_id": asset_id, "force": force})
+    return {"job_id": job.id, "status": "queued"}
+
+
+@router.get("/assets/{asset_id}/breakdown")
+def get_breakdown(asset_id: int, db: Session = Depends(get_db)):
+    """读取爆款拆解报告；素材不存在 404，尚未生成返回 ``{"status":"pending"}``。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    row = db.scalar(select(ViralBreakdown).where(ViralBreakdown.asset_id == asset_id))
+    if row is None or row.status != "done":
+        # 未生成 / 进行中 / 失败：给轻量状态（失败附 error），不返回半成品报告。
+        return {
+            "asset_id": asset_id,
+            "status": row.status if row is not None else "pending",
+            "error": (row.error or "") if row is not None else "",
+        }
+    return _breakdown_payload(row)
 
 
 def _known_categories(db: Session) -> set[str]:

@@ -122,8 +122,11 @@ def _data_context(db: Session, content: ContentItem, asset: MediaAsset) -> dict:
     m_share = int(getattr(me, "share", 0) or 0)
 
     # 该作者全部内容的最新播放/点赞（本条也含在内）。
-    plays = [float(getattr(latest.get(i), "play", 0) or 0) for i in ids]
-    likes = [float(getattr(latest.get(i), "like", 0) or 0) for i in ids]
+    # 中位数口径：只统计「有快照」的内容——未拍到的作品不以 0 计入分母，
+    # 否则会拉低中位数、虚高倍数/分位（T3 review Minor①，Task 4 定稿）。
+    snapshot_ids = [i for i in ids if latest.get(i) is not None]
+    plays = [float(getattr(latest.get(i), "play", 0) or 0) for i in snapshot_ids]
+    likes = [float(getattr(latest.get(i), "like", 0) or 0) for i in snapshot_ids]
     median_play = _median(plays)
     median_like = _median(likes)
 
