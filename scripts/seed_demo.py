@@ -45,6 +45,7 @@ from app.models import (  # noqa: E402
     CrawlRun,
     CrawlTask,
     CreatorProfile,
+    FollowedCreator,
     JobQueue,
     MediaAsset,
     PlatformAccount,
@@ -554,6 +555,7 @@ def _purge(session) -> None:
     session.query(CrawlTask).filter(CrawlTask.id.in_(tasks)).delete(**keep)
 
     # 账号
+    session.query(FollowedCreator).filter(FollowedCreator.account_id.in_(accs)).delete(**keep)
     session.query(AccountCredential).filter(AccountCredential.account_id.in_(accs)).delete(**keep)
     session.query(PlatformAccount).filter(PlatformAccount.id.in_(accs)).delete(**keep)
 
@@ -601,6 +603,9 @@ def _counts(session) -> dict[str, int]:
             session, ContentMetricSnapshot, ContentMetricSnapshot.content_id.in_(cids)
         ),
         "creator_profile": _cnt(session, CreatorProfile),
+        "followed_creator": _cnt(
+            session, FollowedCreator, FollowedCreator.account_id.in_(accs)
+        ),
         "raw_payload": _cnt(session, RawPayload),
         "task_log": _cnt(session, TaskLog),
         "media_asset": len(d["asset_ids"]),
@@ -802,6 +807,73 @@ def _create_creators(session, now) -> None:
                 )
             )
     session.flush()
+
+
+def _create_followed_creators(session, accounts, now, rng) -> list[FollowedCreator]:
+    """给抖音/B站 demo 账号种入关注博主（卡片页数据源）。
+
+    只挂到 active 的账号；头像/昵称直接用 _AUTHORS 的「真实感」演示值（脚本不联网）。
+    """
+    out: list[FollowedCreator] = []
+    for acc in accounts:
+        if acc.platform not in ("douyin", "bilibili"):
+            continue
+        if acc.status != "active":
+            continue
+        for idx, author in enumerate(_AUTHORS.get(acc.platform, [])):
+            followers = author["followers"]
+            out.append(
+                FollowedCreator(
+                    account_id=acc.id,
+                    platform=acc.platform,
+                    author_id=author["author_id"],
+                    author_name=author["author_name"],
+                    avatar=author["avatar"],
+                    home_url=(
+                        f"https://space.bilibili.com/{author['author_id']}"
+                        if acc.platform == "bilibili"
+                        else f"https://www.douyin.com/user/{author['author_id']}"
+                    ),
+                    signature=author["bio"],
+                    verified=author["verified"],
+                    follower_count=followers,
+                    like_count=followers * rng.randint(3, 9),
+                    # 第一个博主默认开启同步（演示两种开关状态）
+                    sync_enabled=idx == 0,
+                    full_sync=idx == 0,
+                    last_synced_at=now - timedelta(hours=rng.randint(1, 30)),
+                    raw={"demo": True},
+                )
+            )
+    session.add_all(out)
+    session.flush()
+    # 一致性：sync_enabled=True 的博主应有一条启用的 creator 订阅（与 API 语义一致）。
+    existing = {
+        (s.account_id, s.remote_id): s
+        for s in session.scalars(select(Subscription)).all()
+        if s.source_type == "creator"
+    }
+    for fc in out:
+        if not fc.sync_enabled:
+            continue
+        sub = existing.get((fc.account_id, fc.author_id))
+        if sub is None:
+            session.add(
+                Subscription(
+                    account_id=fc.account_id,
+                    platform=fc.platform,
+                    source_type="creator",
+                    remote_id=fc.author_id,
+                    title=f"{PREFIX} {fc.platform}·关注 {fc.author_name}",
+                    enabled=True,
+                    only_new=not fc.full_sync,
+                )
+            )
+        else:
+            sub.enabled = True
+            sub.only_new = not fc.full_sync
+    session.flush()
+    return out
 
 
 def _create_metrics(session, rng, now, contents) -> None:
@@ -1115,6 +1187,7 @@ def _create(session) -> None:
     tasks = _create_crawl_tasks(session, now, rng)
     contents = _create_contents(session, rng, now, subs, tasks)
     _create_creators(session, now)
+    _create_followed_creators(session, accounts, now, rng)
     _create_metrics(session, rng, now, contents)
     assets = _create_assets(session, rng, now, contents)
     _create_processing(session, rng, now, assets, contents)

@@ -14,6 +14,7 @@ from app.api import (
     assets,
     auth,
     crawl_tasks,
+    followed_creators,
     imports,
     pipeline,
     skills,
@@ -50,6 +51,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(subscriptions.router)
+app.include_router(followed_creators.router)
 app.include_router(assets.router)
 app.include_router(crawl_tasks.router)
 app.include_router(imports.router)

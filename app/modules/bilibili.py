@@ -32,6 +32,9 @@ _FAV_LIST_ALL = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"
 _SEASONS_SERIES = "https://api.bilibili.com/x/polymer/web-space/seasons_series_list"
 _FOLLOWINGS = "https://api.bilibili.com/x/relation/followings"
 
+# 关注列表里逐条补粉丝数的上限（超过部分留 0，避免刷新过慢）。
+_FOLLOWER_ENRICH_CAP = 60
+
 # 扫码 poll 的 data.code 含义
 _CODE_SUCCESS = 0
 _CODE_NOT_SCANNED = 86101
@@ -50,6 +53,14 @@ def _cookies(credential: dict) -> dict:
         "buvid3": credential.get("buvid3", ""),
         "DedeUserID": credential.get("dedeuserid", ""),
     }
+
+
+def _https(url) -> str:
+    """B站头像/封面常以 `//i0.hdslb.com/...` 返回，补全协议。"""
+    if not url:
+        return ""
+    url = str(url)
+    return "https:" + url if url.startswith("//") else url
 
 
 class BilibiliAdapter:
@@ -202,6 +213,76 @@ class BilibiliAdapter:
             for f in (data.get("list") or [])
             if f.get("mid") is not None
         ]
+
+    async def list_followings(self, credential: dict, limit: int = 200) -> list[dict]:
+        """关注的 UP 主**富列表**（供「关注博主」页）：真头像/昵称/签名/主页 + 粉丝数。
+
+        - 列表：``/x/relation/followings`` 分页（pn/ps，每页 50）。
+        - 粉丝：``/x/relation/stat?vmid=``（免登录，best-effort，失败留 0）。
+        缺少 dedeuserid 返回 []；网络异常返回已拿到的部分（不抛）。
+        """
+        mid = str(credential.get("dedeuserid") or "").strip()
+        if not mid:
+            return []
+        out: list[dict] = []
+        page_size = 50
+        page = 1
+        try:
+            async with _client() as client:
+                while len(out) < limit:
+                    resp = await client.get(
+                        _FOLLOWINGS,
+                        params={"mid": mid, "pn": str(page), "ps": str(page_size)},
+                        cookies=_cookies(credential),
+                    )
+                    data = resp.json().get("data") or {}
+                    rows = data.get("list") or []
+                    if not rows:
+                        break
+                    for f in rows:
+                        fm = f.get("mid")
+                        if fm is None:
+                            continue
+                        out.append(
+                            {
+                                "author_id": str(fm),
+                                "author_name": f.get("uname", ""),
+                                "avatar": _https(f.get("face", "")),
+                                "home_url": f"https://space.bilibili.com/{fm}",
+                                "signature": f.get("sign", ""),
+                                "verified": False,  # 关注列表接口不返回认证；由 prof 补充时再填
+                                "follower_count": 0,
+                                "like_count": 0,
+                                "raw": f,
+                            }
+                        )
+                        if len(out) >= limit:
+                            break
+                    total = int(data.get("total") or 0)
+                    # 以 total 为权威停止条件；缺 total 时靠「空页」兜底（下方 if not rows）。
+                    if total and len(out) >= total:
+                        break
+                    page += 1
+        except (httpx.HTTPError, ValueError):
+            pass
+        # 粉丝数 best-effort（逐条；失败不影响整表）。上限 _FOLLOWER_ENRICH_CAP，
+        # 避免关注几百人时逐条请求拖慢刷新；超出部分留 0（UI 显示为 —）。
+        for c in out[:_FOLLOWER_ENRICH_CAP]:
+            c["follower_count"] = await self._follower_count(c["author_id"], credential)
+        return out[:limit]
+
+    async def _follower_count(self, vmid: str, credential: dict) -> int:
+        try:
+            async with _client() as client:
+                resp = await client.get(
+                    "https://api.bilibili.com/x/relation/stat",
+                    params={"vmid": vmid},
+                    cookies=_cookies(credential),
+                )
+                data = resp.json().get("data") or {}
+            return int(data.get("follower") or 0)
+        except (httpx.HTTPError, ValueError, TypeError):
+            return 0
 
     async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
         """拉取一个收藏夹里的视频列表，规整为统一 item。"""
