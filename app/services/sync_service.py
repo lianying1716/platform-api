@@ -27,6 +27,7 @@ from app.models import (
     SyncRun,
 )
 from app.modules import get_adapter
+from app.services import foundation
 
 # 单次订阅同步的拉取上限（保守频率，避免触发平台风控）
 _SYNC_FETCH_LIMIT = 50
@@ -58,6 +59,7 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     touched: list[ContentItem] = []
     for item in items:
         content, is_new = _upsert_content(db, subscription, item)
+        _persist_foundation(db, subscription.platform, "subscription", content, item)
         _record_metric(db, content, item)
         touched.append(content)
         if is_new:
@@ -114,6 +116,36 @@ def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[Content
     db.add(content)
     db.flush()
     return content, True
+
+
+def _persist_foundation(
+    db: Session, platform: str, source: str, content: ContentItem, item: dict
+) -> None:
+    """地基写入（creator_profile + raw_payload）。
+
+    增强项：失败只记日志，**绝不翻转本次同步的成功状态**。隔离靠 foundation 内部
+    的 SAVEPOINT + 这里兜底的 try/except（防 helper 自身异常）。
+    """
+    try:
+        foundation.upsert_creator(
+            db,
+            platform,
+            item.get("author_id", ""),
+            author_name=item.get("author_name", ""),
+            avatar=item.get("avatar", ""),
+            bio=item.get("bio", ""),
+            follower_count=item.get("follower_count", 0),
+            following_count=item.get("following_count", 0),
+            verified=item.get("verified", False),
+            homepage_url=item.get("homepage_url", ""),
+            raw=item.get("author_raw") or item.get("extra") or {},
+        )
+        foundation.record_raw(
+            db, platform, source, item.get("external_id", ""), item, content_id=content.id
+        )
+    except Exception:  # noqa: BLE001 地基写入是增强项，失败不得翻转本次同步的成功状态
+        foundation.rollback_if_broken(db)
+        logging.getLogger("platform.sync").exception("地基写入失败，已忽略（不影响本次同步）")
 
 
 def _record_metric(db: Session, content: ContentItem, item: dict) -> None:

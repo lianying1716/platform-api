@@ -13,12 +13,26 @@ import signal
 from app.config import settings
 from app.core import queue
 from app.db import SessionLocal
+from app.services import foundation
 from app.workers.handlers import HANDLERS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("platform.worker")
 
 _stop = asyncio.Event()
+
+
+def _log(db, job, level: str, message: str, detail: dict | None = None) -> None:
+    """写一条结构化任务日志（claim/完成/失败）。
+
+    增强项：日志写入失败只记日志，**绝不影响任务结果**。
+    """
+    try:
+        foundation.log_task(db, job.id, job.job_type, level, message, detail=detail)
+        db.commit()
+    except Exception:  # noqa: BLE001 日志写入是增强项，失败不得翻转任务状态
+        foundation.rollback_if_broken(db)
+        logger.exception("任务日志写入失败，已忽略（不影响任务 #%s）", getattr(job, "id", None))
 
 
 async def _run_one() -> bool:
@@ -28,9 +42,11 @@ async def _run_one() -> bool:
         job = queue.claim(db, job_types=list(HANDLERS.keys()))
         if job is None:
             return False
+        _log(db, job, "info", f"领取任务 {job.job_type}")
         handler = HANDLERS.get(job.job_type)
         if handler is None:
             queue.fail(db, job, f"未知任务类型: {job.job_type}", retry_delay_seconds=0)
+            _log(db, job, "error", f"未知任务类型: {job.job_type}")
             return True
         logger.info("处理任务 #%s %s (第 %s 次)", job.id, job.job_type, job.attempts)
         try:
@@ -38,11 +54,14 @@ async def _run_one() -> bool:
         except queue.NonRetryableJobError as exc:
             logger.warning("任务 #%s 不可重试失败: %s", job.id, exc)
             queue.fail(db, job, str(exc), retry=False)
+            _log(db, job, "error", f"不可重试失败: {exc}", detail={"error": str(exc)[:2000]})
         except Exception as exc:  # noqa: BLE001 任务失败不应让 worker 崩
             logger.exception("任务 #%s 失败", job.id)
             queue.fail(db, job, str(exc))
+            _log(db, job, "error", f"任务失败: {exc}", detail={"error": str(exc)[:2000]})
         else:
             queue.complete(db, job)
+            _log(db, job, "info", f"任务完成 {job.job_type}")
         return True
     finally:
         db.close()
