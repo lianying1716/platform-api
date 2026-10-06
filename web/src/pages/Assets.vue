@@ -55,7 +55,7 @@
       </template>
     </el-dialog>
 
-    <el-drawer v-model="drawer" title="素材详情" size="50%" @close="stopProcPoll">
+    <el-drawer v-model="drawer" title="素材详情" size="50%" @close="closeDrawer">
       <div v-if="detail">
         <h3>{{ detail.content?.title }}</h3>
         <p class="meta">{{ detail.content?.platform }} · {{ detail.content?.author_name }}</p>
@@ -129,6 +129,111 @@
           <p v-if="understanding.error" class="err">{{ understanding.error }}</p>
         </div>
         <p v-else-if="proc.understand_status === 'error'" class="err">理解失败：{{ understandError || detail.status?.error }}</p>
+
+        <el-divider>爆款拆解</el-divider>
+        <div class="bd-actions">
+          <el-button size="small" type="primary" :loading="bdBusy" :disabled="bdBusy || isBdActive()" @click="runBreakdown(!!breakdown)">
+            {{ breakdown ? '重新拆解' : '生成爆款拆解' }}
+          </el-button>
+          <el-tag v-if="isBdActive()" size="small" type="warning">拆解中…</el-tag>
+          <el-tag v-else-if="bdStatus === 'error'" size="small" type="danger">失败</el-tag>
+          <span class="c-meta">复用转录 / 视频理解 / 评论 / 指标，产出「为什么火 + 怎么复刻」</span>
+        </div>
+        <p v-if="bdStatus === 'error' && bdError" class="err">{{ bdError }}</p>
+
+        <div v-if="breakdown" class="bd-report">
+          <div class="bd-head">
+            <el-progress type="dashboard" :percentage="Math.round(breakdown.score || 0)" :width="96" />
+            <div class="bd-verdict">
+              <p class="bd-verdict-text">{{ breakdown.verdict || '（无结论）' }}</p>
+              <p class="c-meta">
+                模型 {{ breakdown.model || '—' }} · 提示词 {{ breakdown.prompt_version || '—' }}
+                <el-tag v-if="breakdown.understanding_available === false" size="small" type="warning">无视频理解（降级报告）</el-tag>
+              </p>
+            </div>
+          </div>
+
+          <div v-if="breakdown.sections?.hook" class="bd-block">
+            <h4>开场钩子</h4>
+            <p v-if="breakdown.sections.hook.first_line"><b>首句台词：</b>{{ breakdown.sections.hook.first_line }}</p>
+            <p v-if="breakdown.sections.hook.first_frame"><b>首帧画面：</b>{{ breakdown.sections.hook.first_frame }}</p>
+            <p>
+              <el-tag v-if="breakdown.sections.hook.hook_type" size="small">{{ breakdown.sections.hook.hook_type }}</el-tag>
+              <span class="c-meta">{{ breakdown.sections.hook.why }}</span>
+            </p>
+          </div>
+
+          <div v-if="breakdown.sections?.structure?.length" class="bd-block">
+            <h4>内容结构</h4>
+            <el-table :data="breakdown.sections.structure" size="small" border>
+              <el-table-column prop="segment" label="时间段" width="110" />
+              <el-table-column prop="role" label="作用" width="90" />
+              <el-table-column prop="summary" label="概述" show-overflow-tooltip />
+            </el-table>
+          </div>
+
+          <div v-if="breakdown.sections?.pacing" class="bd-block">
+            <h4>节奏</h4>
+            <p v-if="breakdown.sections.pacing.emotion_curve"><b>情绪曲线：</b>{{ breakdown.sections.pacing.emotion_curve }}</p>
+            <p v-if="breakdown.sections.pacing.pattern_interrupts?.length">
+              <b>变化点：</b>
+              <template v-for="(x, i) in breakdown.sections.pacing.pattern_interrupts" :key="i">{{ x }}<template v-if="i < breakdown.sections.pacing.pattern_interrupts.length - 1">；</template></template>
+            </p>
+            <p v-if="breakdown.sections.pacing.re_engagement_points?.length">
+              <b>二次拉回：</b>{{ breakdown.sections.pacing.re_engagement_points.join('、') }} 秒
+            </p>
+          </div>
+
+          <div v-if="breakdown.sections?.script" class="bd-block">
+            <h4>文案</h4>
+            <p v-if="breakdown.sections.script.money_lines?.length"><b>金句：</b>{{ breakdown.sections.script.money_lines.join('；') }}</p>
+            <p v-if="breakdown.sections.script.reusable_phrases?.length"><b>可复用句式：</b>{{ breakdown.sections.script.reusable_phrases.join('；') }}</p>
+          </div>
+
+          <div v-if="breakdown.sections?.psych_triggers?.length" class="bd-block">
+            <h4>心理触发</h4>
+            <el-tag v-for="(p, i) in breakdown.sections.psych_triggers" :key="i" size="small" style="margin-right: 6px">{{ p }}</el-tag>
+          </div>
+
+          <div v-if="breakdown.sections?.cta" class="bd-block">
+            <h4>行动号召（CTA）</h4>
+            <p>
+              <el-tag v-if="breakdown.sections.cta.type" size="small">{{ breakdown.sections.cta.type }}</el-tag>
+              <span v-if="breakdown.sections.cta.placement" class="c-meta">位置：{{ breakdown.sections.cta.placement }}</span>
+            </p>
+          </div>
+
+          <div v-if="hasCommentInsights" class="bd-block">
+            <h4>评论洞察</h4>
+            <p v-if="breakdown.comment_insights.top_themes?.length"><b>热门话题：</b>{{ breakdown.comment_insights.top_themes.join('；') }}</p>
+            <p v-if="breakdown.comment_insights.controversies?.length"><b>争议点：</b>{{ breakdown.comment_insights.controversies.join('；') }}</p>
+            <p v-if="breakdown.comment_insights.questions?.length"><b>可回复问题：</b>{{ breakdown.comment_insights.questions.join('；') }}</p>
+          </div>
+
+          <div v-if="breakdown.data_context" class="bd-block">
+            <h4>数据上下文 <span class="c-meta">（后端确定性计算）</span></h4>
+            <div class="bd-metrics">
+              <div class="bd-metric"><span class="dim-k">播放</span><span>{{ fmtNum(breakdown.data_context.play) }}</span></div>
+              <div class="bd-metric"><span class="dim-k">点赞</span><span>{{ fmtNum(breakdown.data_context.like) }}</span></div>
+              <div class="bd-metric"><span class="dim-k">评论</span><span>{{ fmtNum(breakdown.data_context.comment) }}</span></div>
+              <div class="bd-metric"><span class="dim-k">播放 / 中位数</span><span>{{ fmtMult(breakdown.data_context.play_vs_median) }}</span></div>
+              <div class="bd-metric"><span class="dim-k">点赞 / 中位数</span><span>{{ fmtMult(breakdown.data_context.like_vs_median) }}</span></div>
+              <div class="bd-metric"><span class="dim-k">互动率</span><span>{{ fmtPct(breakdown.data_context.engagement_rate) }}</span></div>
+              <div class="bd-metric"><span class="dim-k">分位</span><span>{{ fmtPct(breakdown.data_context.percentile, 0) }}</span></div>
+            </div>
+          </div>
+
+          <div v-if="breakdown.sections?.blueprint?.length" class="bd-block">
+            <h4>复刻蓝图</h4>
+            <ol class="bd-list"><li v-for="(x, i) in breakdown.sections.blueprint" :key="i">{{ x }}</li></ol>
+          </div>
+
+          <div v-if="breakdown.sections?.replication_tips?.length" class="bd-block">
+            <h4>落地建议</h4>
+            <ul class="bd-list"><li v-for="(x, i) in breakdown.sections.replication_tips" :key="i">{{ x }}</li></ul>
+          </div>
+        </div>
+        <el-empty v-else-if="!isBdActive() && bdStatus !== 'error'" description="尚无拆解报告" :image-size="60" />
       </div>
     </el-drawer>
   </div>
@@ -136,7 +241,7 @@
 
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api } from '../api'
 
 const assets = ref<any[]>([])
@@ -168,6 +273,16 @@ const procBusy = ref(false)
 
 let procTimer: number | undefined
 
+// 爆款拆解：报告 / 状态 / 轮询。
+const breakdown = ref<any>(null)
+const bdStatus = ref('')
+const bdError = ref('')
+const bdBusy = ref(false)
+// 本次会话是否已点过「生成/重新拆解」。GET 对「从未生成」也返回 pending，
+// 靠它区分「排队中」与「尚未生成」，避免未请求就显示「拆解中」（UX 修正）。
+const bdRequested = ref(false)
+let bdTimer: number | undefined
+
 // 加工中状态：需轮询等待 worker 完成。
 const ACTIVE_STATUS = ['pending', 'doing']
 function isProcActive() {
@@ -181,6 +296,22 @@ function syncProcTimer() {
     if (!procTimer) procTimer = window.setInterval(() => loadProcess(detail.value.asset_id), 3000)
   } else {
     stopProcPoll()
+  }
+}
+
+// 是否在途：本地已请求（pending/doing）或服务端明确 doing 才轮询。
+function isBdActive() {
+  if (bdStatus.value === 'doing') return true
+  return bdRequested.value && bdStatus.value === 'pending'
+}
+function stopBdPoll() {
+  if (bdTimer) { clearInterval(bdTimer); bdTimer = undefined }
+}
+function syncBdTimer() {
+  if (drawer.value && detail.value && isBdActive()) {
+    if (!bdTimer) bdTimer = window.setInterval(() => loadBreakdown(detail.value.asset_id), 3000)
+  } else {
+    stopBdPoll()
   }
 }
 
@@ -271,6 +402,52 @@ async function runReclassify() {
   }
 }
 
+// ---- 爆款拆解 ----
+const hasCommentInsights = computed(() => {
+  const ci = breakdown.value?.comment_insights
+  if (!ci) return false
+  return ['top_themes', 'controversies', 'questions'].some((k) => ci[k]?.length)
+})
+
+async function loadBreakdown(assetId: number) {
+  const { data } = await api.get(`/api/assets/${assetId}/breakdown`)
+  bdStatus.value = data.status
+  if (data.status === 'done') {
+    breakdown.value = data
+    bdError.value = ''
+  } else {
+    breakdown.value = null
+    bdError.value = data.error || ''
+  }
+  syncBdTimer()
+}
+
+async function runBreakdown(force: boolean) {
+  if (!detail.value || bdBusy.value) return
+  bdBusy.value = true
+  bdRequested.value = true
+  try {
+    await api.post(`/api/assets/${detail.value.asset_id}/breakdown`, { force })
+    ElMessage.success('已加入拆解队列')
+    await loadBreakdown(detail.value.asset_id)
+  } finally {
+    bdBusy.value = false
+  }
+}
+
+function fmtNum(v: any) {
+  if (v === null || v === undefined) return '—'
+  return Number(v).toLocaleString('zh-CN')
+}
+function fmtMult(v: any) {
+  if (!v) return '—'
+  return `${Number(v).toFixed(2)}×`
+}
+function fmtPct(v: any, digits = 1) {
+  if (v === null || v === undefined) return '—'
+  return `${(Number(v) * 100).toFixed(digits)}%`
+}
+
 async function doImport() {
   if (!importUrl.value.trim()) return
   importing.value = true
@@ -312,6 +489,16 @@ async function openDetail(id: number) {
   drawer.value = true
   await loadComments(id)
   await loadProcess(id, { resetInputs: true })
+  breakdown.value = null
+  bdStatus.value = ''
+  bdError.value = ''
+  bdRequested.value = false
+  await loadBreakdown(id)
+}
+
+function closeDrawer() {
+  stopProcPoll()
+  stopBdPoll()
 }
 
 async function loadComments(assetId: number, reset = true) {
@@ -353,6 +540,7 @@ async function exportSel(format: string) {
 onMounted(load)
 onUnmounted(() => {
   stopProcPoll()
+  stopBdPoll()
 })
 </script>
 
@@ -374,4 +562,18 @@ onUnmounted(() => {
 .dim-k { color: #909399; min-width: 88px; }
 .dim-v { flex: 1; }
 .err { color: #f56c6c; font-size: 12px; }
+
+/* 爆款拆解 */
+.bd-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.bd-report { margin-top: 12px; }
+.bd-head { display: flex; gap: 16px; align-items: center; }
+.bd-verdict { flex: 1; }
+.bd-verdict-text { font-size: 15px; font-weight: 600; margin: 0 0 6px; }
+.bd-block { margin-top: 14px; }
+.bd-block h4 { margin: 0 0 6px; font-size: 13px; color: #303133; }
+.bd-block p { margin: 4px 0; font-size: 13px; }
+.bd-metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 16px; font-size: 13px; }
+.bd-metric { display: flex; gap: 8px; }
+.bd-list { margin: 4px 0; padding-left: 20px; font-size: 13px; }
+.bd-list li { margin: 2px 0; }
 </style>
