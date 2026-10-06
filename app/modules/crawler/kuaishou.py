@@ -68,6 +68,7 @@ async def search_kuaishou(keyword: str, cookie: str, limit: int, sort: str) -> l
     query = _search_query()
     items: list[dict] = []
     cursor = "1"
+    prev_cursor = ""
     session_id = ""
     async with httpx.AsyncClient(headers=headers, timeout=20) as c:
         while len(items) < limit:
@@ -101,6 +102,10 @@ async def search_kuaishou(keyword: str, cookie: str, limit: int, sort: str) -> l
             cursor = result.get("pcursor") or ""
             if not cursor or cursor == "no_more":
                 break
+            # 防死循环：游标原地不动（服务端软限流/异常）时立即停止，避免 worker 无限翻页。
+            if cursor == prev_cursor:
+                break
+            prev_cursor = cursor
             if len(items) < limit:
                 await asyncio.sleep(_PAGE_SLEEP)
     return items[:limit]

@@ -154,3 +154,26 @@ async def test_crawler_search_dispatches_kuaishou_native(monkeypatch):
 
     items = await crawler.search(platform="kuaishou", keyword="x", cookie="c", limit=1)
     assert [it["external_id"] for it in items] == ["v1"]
+
+
+def test_search_kuaishou_stops_on_repeating_cursor(monkeypatch):
+    """pcursor 原地不动时必须停止，不得无限翻页（worker 卡死防护）。"""
+    import app.modules.crawler.kuaishou as ks
+
+    calls = {"n": 0}
+
+    class Resp:
+        def json(self):
+            calls["n"] += 1
+            # result==1 且 feeds 非空，但 pcursor 永远返回同一个值
+            return {"data": {"visionSearchPhoto": {"result": 1, "feeds": [_feed("p1")], "pcursor": "same", "searchSessionId": "s"}}}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return Resp()
+
+    monkeypatch.setattr(ks.httpx, "AsyncClient", lambda **k: Client())
+    import asyncio
+    items = asyncio.run(ks.search_kuaishou("k", "cookie", limit=50, sort="popular"))
+    assert calls["n"] <= 3 and len(items) >= 1
