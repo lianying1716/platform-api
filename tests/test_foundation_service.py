@@ -487,3 +487,26 @@ def test_foundation_clamps_long_fields(session):
     assert p is not None
     session.commit()
     assert len(p.author_name) <= 128 and len(p.avatar) <= 512 and len(p.homepage_url) <= 512
+
+
+def test_analytics_creators_prefers_creator_profile(client, _engine):
+    """作者维度端点：有 creator_profile 时补粉丝/认证信息，无则回退 group-by。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import ContentItem, CreatorProfile
+
+    Session = sessionmaker(bind=_engine)
+    db = Session()
+    db.add(ContentItem(platform="douyin", external_id="c1", author_id="au1", author_name="原名", url="u1"))
+    db.add(ContentItem(platform="douyin", external_id="c2", author_id="au2", author_name="无档案", url="u2"))
+    db.add(CreatorProfile(platform="douyin", author_id="au1", author_name="官方名", follower_count=12345, verified=True))
+    db.commit()
+    db.close()
+
+    body = client.get("/api/analytics/creators").json()
+    by_id = {r["author_id"]: r for r in body}
+    assert by_id["au1"]["author_name"] == "官方名"
+    assert by_id["au1"]["follower_count"] == 12345 and by_id["au1"]["verified"] is True
+    # 无档案作者回退 group-by 的名字，字段取默认
+    assert by_id["au2"]["author_name"] == "无档案"
+    assert by_id["au2"]["follower_count"] == 0 and by_id["au2"]["profile_id"] is None

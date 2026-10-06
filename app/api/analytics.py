@@ -19,6 +19,7 @@ from app.models import (
     ContentItem,
     ContentMetricSnapshot,
     CrawlRun,
+    CreatorProfile,
     JobQueue,
     MediaAsset,
     PlatformAccount,
@@ -67,7 +68,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
 
 @router.get("/analytics/creators")
 def analytics_creators(db: Session = Depends(get_db), limit: int = 20):
-    """作者维度：发布量 + 最新累计互动。"""
+    """作者维度：发布量 + 最新累计互动。优先补 creator_profile 的粉丝/认证信息。"""
     rows = db.execute(
         select(
             ContentItem.author_id,
@@ -80,10 +81,30 @@ def analytics_creators(db: Session = Depends(get_db), limit: int = 20):
         .order_by(desc("cnt"))
         .limit(limit)
     ).all()
-    return [
-        {"author_id": aid, "author_name": name, "platform": plat, "content_count": cnt}
-        for aid, name, plat, cnt in rows
-    ]
+    profiles = {
+        (p.platform, p.author_id): p
+        for p in db.scalars(
+            select(CreatorProfile).where(
+                CreatorProfile.author_id.in_([aid for aid, *_ in rows]) if rows else False
+            )
+        ).all()
+    }
+    out = []
+    for aid, name, plat, cnt in rows:
+        p = profiles.get((plat, aid))
+        out.append(
+            {
+                "author_id": aid,
+                "author_name": (p.author_name if p and p.author_name else name),
+                "platform": plat,
+                "content_count": cnt,
+                "avatar": p.avatar if p else "",
+                "follower_count": p.follower_count if p else 0,
+                "verified": p.verified if p else False,
+                "profile_id": p.id if p else None,
+            }
+        )
+    return out
 
 
 @router.get("/analytics/keywords")
