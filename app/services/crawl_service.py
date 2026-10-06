@@ -1,8 +1,8 @@
 """关键词采集服务：调 modules/crawler 搜索内容，去重入库 content_item，
 存指标快照，按 to_candidate 决定是否给视频建下载素材。
 
-抓取已抽离为纯 Python（bilibili/douyin/xhs，见 modules/crawler/），用账号中心的 Cookie
-直接 HTTP 抓取，不依赖活浏览器。其余平台回退 MediaCrawler 子进程。
+抓取已全部抽离为纯 Python（bilibili/douyin/xhs/kuaishou/zhihu/weibo/tieba，见 modules/crawler/），
+用账号中心的 Cookie 直接 HTTP 抓取，不依赖活浏览器、不再依赖 MediaCrawler 子进程。
 没有可用账号或被风控时，crawl_run 记 error，不影响平台其他部分。
 """
 

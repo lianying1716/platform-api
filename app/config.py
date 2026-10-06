@@ -35,8 +35,7 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
-    # 关键词采集（P5）：MediaCrawler 目录与子进程超时
-    mediacrawler_dir: str = ""
+    # 关键词采集（P5）：单次抓取超时（全部平台已原生，不再依赖 MediaCrawler 子进程）
     crawl_timeout_seconds: int = 600
 
     model_config = {"env_prefix": "PLATFORM_", "env_file": ".env"}
