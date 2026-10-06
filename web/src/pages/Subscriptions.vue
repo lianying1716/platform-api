@@ -13,8 +13,10 @@
       <el-table-column label="来源" min-width="200">
         <template #default="{ row }">
           <div class="src">
+            <el-avatar v-if="row.from_followed_creator && row.creator_avatar" :size="24" :src="row.creator_avatar" />
             <span class="src-name">{{ row.title || row.remote_id }}</span>
             <el-tag size="small" type="info" effect="plain">{{ sourceText(row.source_type) }}</el-tag>
+            <el-tag v-if="row.from_followed_creator" size="small" type="success" effect="plain">关注博主</el-tag>
           </div>
           <div class="src-id">{{ row.remote_id }}</div>
         </template>
@@ -169,6 +171,8 @@ interface Subscription {
   download_quality: string
   with_comments: boolean
   last_sync_at: string | null
+  from_followed_creator: boolean
+  creator_avatar: string
 }
 
 interface SyncRunRow {

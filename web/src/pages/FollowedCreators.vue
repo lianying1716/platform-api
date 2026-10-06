@@ -1,12 +1,21 @@
 <template>
   <div>
     <div class="toolbar">
-      <el-button type="primary" :loading="refreshing" :disabled="!currentAccount" @click="refresh">
+      <el-button type="primary" :loading="refreshing" :disabled="!currentAccount" @click="refresh(false)">
         刷新关注列表
       </el-button>
+      <el-tooltip content="忽略缓存立即重拉（仍受平台风控冷却限制，请勿频繁点击）">
+        <el-button :loading="refreshing" :disabled="!currentAccount" @click="refresh(true)">强制刷新</el-button>
+      </el-tooltip>
       <span class="hint">
         头像/昵称来自平台真实数据，点击头像或昵称可跳转到博主主页。
       </span>
+      <el-tag v-if="lastRefresh" size="small" type="info" effect="plain">
+        数据更新于 {{ fmt(lastRefresh) }}
+      </el-tag>
+      <el-tag v-if="cooling" size="small" type="warning" effect="plain">
+        平台风控冷却中，展示缓存数据
+      </el-tag>
     </div>
 
     <!-- 一级 tab：平台 -->
@@ -116,6 +125,8 @@ const loading = ref(false)
 const refreshing = ref(false)
 const busy = ref<number | null>(null)
 const syncing = ref<number | null>(null)
+const lastRefresh = ref<string | null>(null)
+const cooling = ref(false)
 const activePlatform = ref('douyin')
 const activeAccountId = ref<string>('')
 
@@ -193,14 +204,23 @@ async function onAccountChange() {
   await load()
 }
 
-async function refresh() {
+async function refresh(force: boolean) {
   if (!currentAccount.value) return
   refreshing.value = true
   try {
     const { data } = await api.post('/api/followed-creators/refresh', {
       account_id: currentAccount.value.id,
+      force,
     })
-    ElMessage.success(`已更新 ${data.count} 位关注博主`)
+    cooling.value = !!data.cooling
+    if (data.cooling) {
+      ElMessage({ message: '平台风控冷却中，当前展示缓存数据', type: 'warning' })
+    } else if (data.cached) {
+      ElMessage.info(`使用了缓存（${data.count} 位）`)
+    } else {
+      ElMessage.success(`已更新 ${data.count} 位关注博主`)
+      lastRefresh.value = new Date().toISOString()
+    }
     await load()
   } finally {
     refreshing.value = false

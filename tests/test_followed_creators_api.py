@@ -277,3 +277,33 @@ def test_stats_enrichment_uses_24h_cache(client, session, monkeypatch):
     fc = session.query(FollowedCreator).one()
     session.refresh(fc)
     assert fc.follower_count == 12345
+
+
+def test_subscription_marks_from_followed_creator(client, session, monkeypatch):
+    """打通：开启同步后，订阅列表里该 creator 订阅带上 from_followed_creator + 头像。"""
+    from app.modules.bilibili import BilibiliAdapter
+
+    acc = _account(session)
+    monkeypatch.setattr(
+        BilibiliAdapter, "list_followings",
+        _fake_followings([{"author_id": "1001", "author_name": "老饭骨", "avatar": "http://a/1.jpg",
+                           "home_url": "u", "signature": "", "verified": False,
+                           "follower_count": 0, "like_count": 0, "raw": {}}]),
+    )
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    fc = session.query(FollowedCreator).one()
+    client.put(f"/api/followed-creators/{fc.id}", json={"sync_enabled": True})
+
+    subs = client.get("/api/subscriptions").json()
+    mine = [s for s in subs if s["source_type"] == "creator" and s["remote_id"] == "1001"]
+    assert mine, "应生成 creator 订阅"
+    assert mine[0]["from_followed_creator"] is True
+    assert mine[0]["creator_avatar"] == "http://a/1.jpg"
+
+    # 非关注博主的 creator 订阅不误标
+    session.add(Subscription(account_id=acc.id, platform="bilibili", source_type="creator",
+                             remote_id="9999", title="其他"))
+    session.commit()
+    subs = client.get("/api/subscriptions").json()
+    other = [s for s in subs if s["remote_id"] == "9999"][0]
+    assert other["from_followed_creator"] is False
