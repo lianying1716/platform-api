@@ -165,6 +165,23 @@
         </el-form>
       </el-tab-pane>
 
+      <!-- 爆款拆解 -->
+      <el-tab-pane label="爆款拆解" name="breakdown">
+        <p class="tip">爆款拆解报告使用的提示词，以及「对标账号」里判定爆款的热度倍数（播放 ≥ 该账号自身中位数 × 倍数）。</p>
+        <el-form label-width="140px" style="max-width: 720px">
+          <el-form-item label="拆解提示词">
+            <el-input v-model="bd.prompt" type="textarea" :rows="14" />
+          </el-form-item>
+          <el-form-item label="爆款倍数 viral_multiple">
+            <el-input-number v-model="bd.viral_multiple" :min="0.1" :step="0.5" :precision="1" />
+            <span class="detail">必须为正数</span>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="saveBreakdownSettings">保存</el-button>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
       <!-- 诊断 -->
       <el-tab-pane label="依赖诊断" name="diag">
         <el-button @click="loadDiag">重新检测</el-button>
@@ -264,6 +281,25 @@ const proc = reactive<any>({
   taxonomyText: '{}',
   typePromptsText: '{}',
 })
+
+const bd = reactive<any>({ prompt: '', viral_multiple: 3 })
+
+async function loadBreakdownSettings() {
+  const { data } = await api.get('/api/system/breakdown-settings')
+  bd.prompt = data.prompt ?? ''
+  bd.viral_multiple = data.viral_multiple ?? 3
+}
+
+async function saveBreakdownSettings() {
+  if (!bd.prompt || !bd.prompt.trim()) return ElMessage.warning('提示词不能为空')
+  if (!(bd.viral_multiple > 0)) return ElMessage.warning('爆款倍数必须为正数')
+  await api.put('/api/system/breakdown-settings', {
+    prompt: bd.prompt,
+    viral_multiple: bd.viral_multiple,
+  })
+  ElMessage.success('已保存')
+  await loadBreakdownSettings()
+}
 
 async function loadRoots() {
   loadingRoots.value = true
@@ -378,6 +414,7 @@ onMounted(() => {
   loadDiag()
   loadCommentSettings()
   loadProcessSettings()
+  loadBreakdownSettings()
 })
 </script>
 

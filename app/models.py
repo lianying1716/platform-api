@@ -388,3 +388,35 @@ class VideoUnderstanding(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/doing/done/error
     error: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# ============================================================
+# P6：爆款拆解报告
+# ============================================================
+
+
+class ViralBreakdown(Base):
+    """爆款拆解报告：一素材一行（asset_id 唯一）。
+
+    LLM 只产出定性字段（verdict/sections/comment_insights），
+    data_context 等数字由后端确定性计算后一并落库。
+    """
+
+    __tablename__ = "viral_breakdown"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("media_asset.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    score: Mapped[float] = mapped_column(Float, default=0)  # 0-100，LLM 评分
+    verdict: Mapped[str] = mapped_column(Text, default="")  # 一句话结论：为什么火
+    sections: Mapped[dict] = mapped_column(JSON, default=dict)  # 钩子/结构/节奏/文案/触发/CTA/复刻
+    comment_insights: Mapped[dict] = mapped_column(JSON, default=dict)  # 评论洞察（主题/争议/提问）
+    data_context: Mapped[dict] = mapped_column(JSON, default=dict)  # 确定性计算的互动上下文
+    understanding_available: Mapped[bool] = mapped_column(Boolean, default=False)  # 是否复用了 L3 理解
+    model: Mapped[str] = mapped_column(String(64), default="")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="")
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/doing/done/error
+    error: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

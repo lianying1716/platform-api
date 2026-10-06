@@ -248,6 +248,20 @@ async def handle_understand_video(db: Session, payload: dict) -> None:
         raise queue.NonRetryableJobError(str(exc)) from exc
 
 
+async def handle_breakdown(db: Session, payload: dict) -> None:
+    """爆款拆解：拼装转录/L3/评论/确定性数字 → 调 LLM → 写 ViralBreakdown。"""
+    from app.services.breakdown_service import BreakdownInputError, run_breakdown
+
+    asset_id = payload["asset_id"]
+    if db.get(MediaAsset, asset_id) is None:
+        return
+    try:
+        await run_breakdown(db, asset_id, force=bool(payload.get("force", False)))
+    except BreakdownInputError as exc:
+        # 数据问题（素材/内容缺失）不可重试，直接置 error，避免无谓重试。
+        raise queue.NonRetryableJobError(str(exc)) from exc
+
+
 HANDLERS = {
     "download": handle_download,
     "transcribe": handle_transcribe,
@@ -256,4 +270,5 @@ HANDLERS = {
     "crawl": handle_crawl,
     "fetch_comments": handle_fetch_comments,
     "understand_video": handle_understand_video,
+    "breakdown": handle_breakdown,
 }
