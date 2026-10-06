@@ -5,6 +5,7 @@ import AiAccess from './pages/AiAccess.vue'
 import Analytics from './pages/Analytics.vue'
 import Assets from './pages/Assets.vue'
 import Crawl from './pages/Crawl.vue'
+import FollowedCreators from './pages/FollowedCreators.vue'
 import Login from './pages/Login.vue'
 import Overview from './pages/Overview.vue'
 import Pipeline from './pages/Pipeline.vue'
@@ -24,6 +25,7 @@ export const router = createRouter({
         { path: 'accounts', component: Accounts, meta: { title: '账号中心' } },
         { path: 'crawl', component: Crawl, meta: { title: '关键词采集' } },
         { path: 'subscriptions', component: Subscriptions, meta: { title: '订阅同步' } },
+        { path: 'followed-creators', component: FollowedCreators, meta: { title: '关注博主' } },
         { path: 'assets', component: Assets, meta: { title: '素材库' } },
         { path: 'pipeline', component: Pipeline, meta: { title: '处理队列' } },
         { path: 'analytics', component: Analytics, meta: { title: '数据看板' } },

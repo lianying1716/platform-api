@@ -37,6 +37,7 @@ import {
   Odometer,
   Search,
   Setting,
+  Star,
   User,
 } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -49,6 +50,7 @@ const menu = [
   { path: '/accounts', title: '账号中心', icon: User },
   { path: '/crawl', title: '关键词采集', icon: Search },
   { path: '/subscriptions', title: '订阅同步', icon: Connection },
+  { path: '/followed-creators', title: '关注博主', icon: Star },
   { path: '/assets', title: '素材库', icon: Files },
   { path: '/pipeline', title: '处理队列', icon: Monitor },
   { path: '/analytics', title: '数据看板', icon: DataAnalysis },
