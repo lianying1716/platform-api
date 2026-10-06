@@ -10,7 +10,7 @@ sync_run 记 error，不影响平台其他部分。
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -55,6 +55,9 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     except Exception as exc:  # noqa: BLE001 网络/风控异常不应让平台崩
         return _finish(db, run, "error", error=f"拉取失败: {exc}")
 
+    fetched_count = len(items)
+    items = _apply_sync_settings(items, subscription)
+
     added = 0
     touched: list[ContentItem] = []
     for item in items:
@@ -74,7 +77,13 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     from app.services.comment_gate import enqueue_comment_jobs
 
     try:
-        enqueue_comment_jobs(db, touched, platform=subscription.platform, settings=get_comment_settings(db))
+        enqueue_comment_jobs(
+            db,
+            touched,
+            platform=subscription.platform,
+            settings=get_comment_settings(db),
+            bypass_gate=bool(subscription.with_comments),
+        )
     except Exception:  # noqa: BLE001 评论富集是增强项，失败不得翻转本次同步的成功状态
         db.rollback()
         logging.getLogger("platform.sync").exception("评论入队失败，已忽略（不影响本次同步）")
@@ -88,7 +97,70 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     except Exception:  # noqa: BLE001 分档加工是增强项，失败不得翻转本次同步的成功状态
         db.rollback()
         logging.getLogger("platform.sync").exception("分档入队失败，已忽略（不影响本次同步）")
-    return _finish(db, run, "success", fetched=len(items), added=added)
+    return _finish(db, run, "success", fetched=fetched_count, added=added)
+
+
+def _apply_sync_settings(items: list[dict], sub: Subscription) -> list[dict]:
+    """按订阅设置过滤 + 截断本次拉取结果（确定性逻辑，便于测试）。
+
+    - ``min_play``：有指标且播放量低于门槛的丢弃（无指标的条目保留）。
+    - ``publish_after_days``：>0 且条目带可解析发布时间时，丢弃早于 N 天前的条目。
+    - ``max_items``：截断到 1..500（越界值按边界钳制，防脏数据绕过上限）。
+    """
+    min_play = sub.min_play or 0
+    if min_play > 0:
+        items = [
+            it
+            for it in items
+            if not (it.get("metrics") and it["metrics"].get("play", 0) < min_play)
+        ]
+    days = sub.publish_after_days or 0
+    if days > 0:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        kept = []
+        for it in items:
+            published = _parse_published_at(it.get("published_at"))
+            if published is not None and published < cutoff:
+                continue
+            kept.append(it)
+        items = kept
+    limit = min(max(sub.max_items or 0, 1), 500)
+    return items[:limit]
+
+
+def _parse_published_at(value) -> datetime | None:
+    """把 ISO/date 发布时间解析为 naive UTC；无法解析返回 None（tz-safe）。"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            dt = None
+            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except ValueError:
+                    continue
+        if dt is None:
+            return None
+    else:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+# only_new=False 时允许被本次拉取值刷新的可变字段。
+_REFRESH_FIELDS = ("title", "url", "cover_url", "author_name")
 
 
 def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[ContentItem, bool]:
@@ -98,6 +170,12 @@ def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[Content
         )
     )
     if existing:
+        if not sub.only_new:
+            # 覆盖更新：用本次拉到的值刷新可变字段（空值不覆盖，避免拉取缺字段时清空）。
+            for field in _REFRESH_FIELDS:
+                value = item.get(field)
+                if value:
+                    setattr(existing, field, value)
         return existing, False
     content = ContentItem(
         platform=sub.platform,
@@ -108,7 +186,7 @@ def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[Content
         author_id=item.get("author_id", ""),
         url=item.get("url", ""),
         cover_url=item.get("cover_url", ""),
-        published_at=item.get("published_at"),
+        published_at=_parse_published_at(item.get("published_at")),
         source_kind="subscription",
         source_id=sub.id,
         extra=item.get("extra", {}),

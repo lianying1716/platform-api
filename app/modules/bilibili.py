@@ -9,12 +9,28 @@ import httpx
 
 from app.modules.base import CheckResult, QrPoll, QrStart, make_qr_png_b64, register
 
+
+def _ts_to_iso(value) -> str | None:
+    """Unix 秒 -> ISO 字符串；缺失/非法返回 None（同步侧 _parse_published_at 可解析）。"""
+    try:
+        from datetime import datetime, timezone
+
+        ts = int(value)
+        if ts <= 0:
+            return None
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _QR_GENERATE = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 _QR_POLL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
 _COOKIE_INFO = "https://passport.bilibili.com/x/passport-login/web/cookie/info"
 _GET_BUVID = "https://api.bilibili.com/x/web-frontend/getbuvid"
 _NAV = "https://api.bilibili.com/x/web-interface/nav"
+_FAV_LIST_ALL = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"
+_SEASONS_SERIES = "https://api.bilibili.com/x/polymer/web-space/seasons_series_list"
+_FOLLOWINGS = "https://api.bilibili.com/x/relation/followings"
 
 # 扫码 poll 的 data.code 含义
 _CODE_SUCCESS = 0
@@ -122,20 +138,70 @@ class BilibiliAdapter:
             )
 
     async def list_sources(self, credential: dict, source_type: str) -> list[dict]:
-        """列出可订阅的源。source_type: favorite（收藏夹）/ collection（合集，需 UP主）。
-        这里实现收藏夹列表（需 dedeuserid）。返回 [{remote_id, title}]。
+        """列出可订阅的源，返回 [{remote_id, title}]。
+
+        source_type：
+        - favorite：自己创建的收藏夹（需 dedeuserid）
+        - collection：自己创建的合集/系列（需 dedeuserid）
+        - creator：自己关注的 UP 主（需 dedeuserid）
+        缺少必需凭证字段或类型不支持时返回 []（不抛异常）。
         """
-        mid = credential.get("dedeuserid", "")
-        if source_type != "favorite" or not mid:
+        mid = str(credential.get("dedeuserid") or "").strip()
+        if not mid:
             return []
+        try:
+            if source_type == "favorite":
+                return await self._list_favorites(credential, mid)
+            if source_type == "collection":
+                return await self._list_collections(credential, mid)
+            if source_type == "creator":
+                return await self._list_followings(credential, mid)
+        except (httpx.HTTPError, ValueError):
+            # 网络/解析异常一律降级为空列表，由调用方决定如何提示
+            return []
+        return []
+
+    async def _list_favorites(self, credential: dict, mid: str) -> list[dict]:
+        async with _client() as client:
+            resp = await client.get(_FAV_LIST_ALL, params={"up_mid": mid}, cookies=_cookies(credential))
+            data = resp.json().get("data") or {}
+        return [
+            {"remote_id": str(f["id"]), "title": f.get("title", "")}
+            for f in (data.get("list") or [])
+            if f.get("id") is not None
+        ]
+
+    async def _list_collections(self, credential: dict, mid: str) -> list[dict]:
+        """合集/系列列表。返回结构不稳定，解析防御式，拿不到就返回 []。"""
         async with _client() as client:
             resp = await client.get(
-                "https://api.bilibili.com/x/v3/fav/folder/created/list-all",
-                params={"up_mid": mid},
+                _SEASONS_SERIES,
+                params={"mid": mid, "page_num": "1", "page_size": "20"},
                 cookies=_cookies(credential),
             )
             data = resp.json().get("data") or {}
-            return [{"remote_id": str(f["id"]), "title": f.get("title", "")} for f in (data.get("list") or [])]
+        items_lists = data.get("items_lists") or {}
+        out: list[dict] = []
+        for id_key, list_key in (("season_id", "seasons_list"), ("series_id", "series_list")):
+            for item in items_lists.get(list_key) or []:
+                meta = item.get("meta") or item
+                rid = meta.get(id_key) or item.get(id_key)
+                if rid is None:
+                    continue
+                out.append({"remote_id": str(rid), "title": meta.get("name", "")})
+        return out
+
+    async def _list_followings(self, credential: dict, mid: str) -> list[dict]:
+        async with _client() as client:
+            resp = await client.get(
+                _FOLLOWINGS, params={"mid": mid, "pn": "1", "ps": "20"}, cookies=_cookies(credential)
+            )
+            data = resp.json().get("data") or {}
+        return [
+            {"remote_id": str(f["mid"]), "title": f.get("uname", "")}
+            for f in (data.get("list") or [])
+            if f.get("mid") is not None
+        ]
 
     async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
         """拉取一个收藏夹里的视频列表，规整为统一 item。"""
@@ -164,6 +230,8 @@ class BilibiliAdapter:
                             "author_id": str((m.get("upper") or {}).get("mid", "")),
                             "url": f"https://www.bilibili.com/video/{m.get('bvid', '')}",
                             "cover_url": m.get("cover", ""),
+                            # pubtime 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
+                            "published_at": _ts_to_iso(m.get("pubtime")),
                             "metrics": {
                                 "play": (m.get("cnt_info") or {}).get("play", 0),
                                 "favorite": (m.get("cnt_info") or {}).get("collect", 0),
