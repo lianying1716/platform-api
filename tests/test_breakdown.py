@@ -1,8 +1,12 @@
 """爆款拆解（viral_breakdown）测试。
 
 Task 1：数据模型 + 迁移 0006 —— 表存在、asset_id 唯一。
-后续 Task 2/3 会在此文件追加提示词/服务相关用例。
+Task 2：拆解配置 + 提示词模块 —— 默认值/覆盖、prompt 维度与禁编造、run_llm 解析。
+后续 Task 3 会在此文件追加服务相关用例。
 """
+import asyncio
+
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 
@@ -59,3 +63,145 @@ def test_viral_breakdown_unique_asset(_engine):
         db.rollback()
     finally:
         db.close()
+
+
+# ============================================================
+# Task 2：拆解配置 + 提示词模块
+# ============================================================
+
+
+def test_breakdown_settings_defaults(session):
+    from app.core.breakdown_settings import DEFAULT_BREAKDOWN_PROMPT, get_breakdown_settings
+
+    s = get_breakdown_settings(session)
+    assert set(s) == {"prompt", "viral_multiple"}
+    assert isinstance(s["prompt"], str) and s["prompt"].strip()
+    assert s["prompt"] == DEFAULT_BREAKDOWN_PROMPT
+    assert isinstance(s["viral_multiple"], float) and s["viral_multiple"] > 1.0
+
+
+def test_breakdown_settings_override(session):
+    from app.core.breakdown_settings import get_breakdown_settings
+    from app.models import SystemSetting
+
+    session.add(SystemSetting(key="breakdown_prompt", value="自定义提示词"))
+    session.add(SystemSetting(key="breakdown_viral_multiple", value="5"))
+    session.commit()
+    s = get_breakdown_settings(session)
+    assert s["prompt"] == "自定义提示词"
+    assert s["viral_multiple"] == 5.0
+
+
+def test_breakdown_settings_bad_value_falls_back(session):
+    from app.core.breakdown_settings import DEFAULT_BREAKDOWN_PROMPT, get_breakdown_settings
+    from app.models import SystemSetting
+
+    session.add(SystemSetting(key="breakdown_viral_multiple", value="not-a-number"))
+    session.add(SystemSetting(key="breakdown_prompt", value=""))
+    session.commit()
+    s = get_breakdown_settings(session)
+    # 非法阈值回退默认；空提示词回退默认（不可用空提示词退化提示质量）。
+    assert s["viral_multiple"] == 3.0
+    assert s["prompt"] == DEFAULT_BREAKDOWN_PROMPT
+
+
+def test_build_breakdown_prompt_contains_dimensions_and_guardrails():
+    from app.modules.breakdown import build_breakdown_prompt
+
+    payload = {
+        "platform": "douyin",
+        "title": "这条裙子我回购5次",
+        "author": "小红",
+        "duration_sec": 32,
+        "published_at": "2026-10-01",
+        "play": 12000,
+        "like": 800,
+        "comment": 120,
+        "data_context": {"play_vs_median": 4.2, "engagement_rate": 0.076},
+        "transcript": "姐妹们这条裙子我回购五次真的不挑人",
+        "timeline": [{"t": 1, "event": "展示裙子"}],
+        "understanding": {"summary": "一条带货视频", "dimensions": {"product": "裙子"}},
+        "comments": ["求链接", "多少钱"],
+    }
+    system, user = build_breakdown_prompt(payload)
+
+    assert isinstance(system, str) and system.strip()
+    assert isinstance(user, str) and user.strip()
+    # 报告各维度在提示词中被要求（结论/评分/钩子/结构/节奏/文案/触发/CTA/评论洞察/复刻）。
+    for token in (
+        "verdict", "score", "hook", "structure", "pacing", "script",
+        "psych_triggers", "cta", "comment_insights", "blueprint",
+    ):
+        assert token in system
+    # 禁编造：看不到的字段填 null/空，不许杜撰（红线：数字不让 LLM 算）。
+    assert "编造" in system or "杜撰" in system or "不许" in system
+    # 输入被带进 user：标题、转录、评论、确定性数字。
+    assert "这条裙子我回购5次" in user
+    assert "姐妹们这条裙子" in user
+    assert "求链接" in user
+    assert "4.2" in user  # 相对中位数倍数（后端算好，交给 LLM 只做定性引用）
+
+
+def test_build_breakdown_prompt_without_understanding_and_comments():
+    """降级输入（无 L3、无评论）不抛异常，且如实标注缺失。"""
+    from app.modules.breakdown import build_breakdown_prompt
+
+    payload = {"title": "T", "transcript": "abc", "understanding": None, "comments": []}
+    system, user = build_breakdown_prompt(payload)
+    assert isinstance(system, str) and system
+    assert "abc" in user
+
+
+def _fake_llm(content: str, *, capture: dict | None = None):
+    async def fake_post(url, headers, body, timeout):
+        if capture is not None:
+            capture["url"] = url
+            capture["headers"] = headers
+            capture["body"] = body
+            capture["timeout"] = timeout
+        return {"choices": [{"message": {"content": content}}], "usage": {"total_tokens": 7}}
+
+    return fake_post
+
+
+def test_run_llm_parses_json(monkeypatch):
+    import app.modules.breakdown as b
+
+    cap: dict = {}
+    monkeypatch.setattr(b, "_post_json", _fake_llm('{"verdict":"火","score":88}', capture=cap))
+    out = asyncio.run(
+        b.run_llm("sys", "usr", base_url="http://x/v1/", api_key="k", model="m")
+    )
+    assert out["verdict"] == "火" and out["score"] == 88
+    # 端点、鉴权头、body 结构
+    assert cap["url"] == "http://x/v1/chat/completions"
+    assert cap["headers"]["Authorization"] == "Bearer k"
+    assert cap["body"]["model"] == "m"
+    assert cap["body"]["response_format"] == {"type": "json_object"}
+    assert cap["body"]["messages"][0] == {"role": "system", "content": "sys"}
+    assert cap["body"]["messages"][1] == {"role": "user", "content": "usr"}
+
+
+def test_run_llm_strips_code_fence(monkeypatch):
+    import app.modules.breakdown as b
+
+    monkeypatch.setattr(b, "_post_json", _fake_llm("```json\n{\"verdict\":\"x\"}\n```"))
+    out = asyncio.run(b.run_llm("s", "u", base_url="http://x/v1", api_key="k", model="m"))
+    assert out["verdict"] == "x"
+
+
+def test_run_llm_invalid_json_raises(monkeypatch):
+    import app.modules.breakdown as b
+
+    monkeypatch.setattr(b, "_post_json", _fake_llm("不是 JSON"))
+    with pytest.raises(ValueError):  # 非法输出必须抛，由 worker 落 error / 重试，不静默
+        asyncio.run(b.run_llm("s", "u", base_url="http://x/v1", api_key="k", model="m"))
+
+
+def test_run_llm_passes_timeout(monkeypatch):
+    import app.modules.breakdown as b
+
+    cap: dict = {}
+    monkeypatch.setattr(b, "_post_json", _fake_llm('{"ok":1}', capture=cap))
+    asyncio.run(b.run_llm("s", "u", base_url="http://x/v1", api_key="k", model="m", timeout=42))
+    assert cap["timeout"] == 42
