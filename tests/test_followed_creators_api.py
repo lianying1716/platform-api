@@ -159,8 +159,12 @@ def test_no_drift_when_deleted_from_subscriptions_api(client, session, monkeypat
     assert client.get("/api/followed-creators").json() == []
 
 
-def test_refresh_unfollows_removed_creators(client, session, monkeypatch):
-    """平台上取关后，刷新应把该博主同步关掉（保留记录，避免误删历史内容归属）。"""
+def test_refresh_does_not_touch_sync_switch(client, session, monkeypatch):
+    """刷新**不能**擅自改同步开关。
+
+    平台关注列表可能因分页/风控只返回一部分，若据此判"取关"并关同步，
+    会把用户明明开着的同步误关掉。要停止跟踪必须显式移除。
+    """
     from app.modules.bilibili import BilibiliAdapter
 
     acc = _account(session)
@@ -169,13 +173,34 @@ def test_refresh_unfollows_removed_creators(client, session, monkeypatch):
     sub1 = session.query(Subscription).filter_by(remote_id="1001").one()
     client.put(f"/api/followed-creators/{sub1.id}", json={"sync_enabled": True})
 
-    # 平台上取关了 1001
+    # 平台上取关了 1001（本次列表里没有它）
     monkeypatch.setattr(BilibiliAdapter, "list_followings", _fake_followings([_author("1002", "影视飓风")]))
-    r = client.post("/api/followed-creators/refresh", json={"account_id": acc.id, "force": True})
-    assert r.json()["unfollowed"] == 1
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id, "force": True})
     session.refresh(sub1)
-    assert sub1.enabled is False
-    assert session.query(Subscription).filter_by(remote_id="1001").count() == 1  # 记录保留
+    assert sub1.enabled is True, "刷新不得关闭用户已开启的同步"
+    assert session.query(Subscription).filter_by(remote_id="1001").count() == 1
+
+
+def test_refresh_partial_page_keeps_existing_sync(client, session, monkeypatch):
+    """平台分页只回一部分（真实常见）时，未出现的人也不能被关掉同步。"""
+    from app.modules.bilibili import BilibiliAdapter
+
+    acc = _account(session)
+    monkeypatch.setattr(
+        BilibiliAdapter, "list_followings",
+        _fake_followings([_author("1001"), _author("1002", "影视飓风"), _author("1003", "科技美学")]),
+    )
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    for rid in ("1001", "1002", "1003"):
+        s = session.query(Subscription).filter_by(remote_id=rid).one()
+        client.put(f"/api/followed-creators/{s.id}", json={"sync_enabled": True})
+
+    # 第二页没拉到，只回了第一个人
+    monkeypatch.setattr(BilibiliAdapter, "list_followings", _fake_followings([_author("1001")]))
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id, "force": True})
+    session.expire_all()          # 读库里的真实状态，避免身份映射里的旧值
+    enabled = {s.remote_id: s.enabled for s in session.query(Subscription).all()}
+    assert enabled == {"1001": True, "1002": True, "1003": True}
 
 
 def test_unfollow_deletes_creator_subscription(client, session, monkeypatch):

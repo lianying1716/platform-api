@@ -108,6 +108,17 @@
       <div class="qr-box">
         <img v-if="qrImage" :src="`data:image/png;base64,${qrImage}`" alt="二维码" class="qr-img" />
         <p class="qr-status" :class="qrStatus">{{ qrMessage }}</p>
+        <p v-if="qrStatus === 'expired' || qrStatus === 'error'" class="qr-hint">
+          二维码已失效，点下方按钮重新获取
+        </p>
+        <button
+          v-if="qrStatus === 'expired' || qrStatus === 'error'"
+          class="ui-btn primary sm"
+          :disabled="submitting"
+          @click="startQr"
+        >
+          重新获取二维码
+        </button>
       </div>
     </el-dialog>
   </div>
@@ -134,6 +145,7 @@ const qrImage = ref('')
 const qrMessage = ref('')
 const qrStatus = ref('pending')
 let pollTimer: number | undefined
+let pollErrors = 0
 
 const form = reactive<{ platform: string; display_name: string; credential: Record<string, string> }>({
   platform: 'bilibili',
@@ -229,6 +241,7 @@ async function startQr() {
     qrMessage.value = '请用手机 App 扫码'
     qrStatus.value = 'pending'
     qrDialog.value = true
+    pollErrors = 0
     pollTimer = window.setInterval(() => poll(data.session_id), 3000)
   } finally {
     submitting.value = false
@@ -236,8 +249,10 @@ async function startQr() {
 }
 
 async function poll(sessionId: string) {
+  // 连续失败才停：偶发一次网络抖动不该中断整个扫码流程
   try {
     const { data } = await api.get(`/api/accounts/qr-login/${sessionId}`)
+    pollErrors = 0
     qrMessage.value = data.message
     qrStatus.value = data.status
     if (data.status === 'success') {
@@ -247,9 +262,17 @@ async function poll(sessionId: string) {
       await load()
     } else if (data.status === 'expired' || data.status === 'error') {
       stopPolling()
+      if (data.status === 'expired') {
+        ElMessage.warning('二维码已超时，请重新获取')
+      }
     }
-  } catch {
-    stopPolling()
+  } catch (e: any) {
+    pollErrors += 1
+    if (pollErrors >= 3) {
+      stopPolling()
+      qrStatus.value = 'error'
+      qrMessage.value = e?.response?.data?.detail || '轮询失败，请关闭后重新获取二维码'
+    }
   }
 }
 
@@ -419,6 +442,13 @@ onUnmounted(stopPolling)
 
 .qr-status.scanned {
   color: var(--warn);
+  font-weight: 700;
+}
+
+.qr-hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 4px 0 10px;
 }
 
 .qr-status.success {

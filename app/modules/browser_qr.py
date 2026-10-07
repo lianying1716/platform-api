@@ -42,8 +42,24 @@ _PLATFORM_CONF = {
         "panel_selector": "xpath=//div[@id='login-panel-new']",
         "login_button": "xpath=//p[text() = '登录']",
         "cookie_domain": "douyin.com",
-        "login_cookie": "LOGIN_STATUS",
-        "login_value": "1",
+        # 登录信号（任一命中即算成功）：
+        # 1. localStorage.HasUserLogin —— 抖音 PC 端登录后主要写这里
+        #    来源：MediaCrawler media_platform/douyin/client.py:pong()
+        # 2. LOGIN_STATUS cookie —— 部分路径只写 cookie
+        # 3. sessionid / sid_tt —— 登录会话 cookie，作为兜底
+        # 4. 页面已跳到用户主页/个人页
+        "login_cookies": [
+            {"name": "LOGIN_STATUS", "value": "1"},
+            {"name": "sessionid"},
+            {"name": "sid_tt"},
+        ],
+        "login_local_storage": [{"key": "HasUserLogin", "value": "1"}],
+        "login_url_contains": ["/user/self", "/user/", "passport"],
+        "logged_out_cookie": {"name": "LOGIN_STATUS", "value": "0"},
+        # 扫码进度以平台的 check_qrconnect 为准（实测返回 status: new/scanned/confirmed）。
+        # 不要用 passport_csrf_token 之类去猜"已扫码"——它进登录页就有，会误报。
+        "qr_status_url": "check_qrconnect",
+        "qr_status_map": {"new": "pending", "scanned": "scanned", "confirmed": "success"},
         "needs_display": False,
     },
     "xhs": {
@@ -52,8 +68,7 @@ _PLATFORM_CONF = {
         "panel_selector": "",
         "login_button": "",
         "cookie_domain": "xiaohongshu.com",
-        "login_cookie": "web_session",
-        "login_value": None,
+        "login_cookies": [{"name": "web_session"}],
         "needs_display": False,
     },
     "kuaishou": {
@@ -67,7 +82,7 @@ _PLATFORM_CONF = {
         # 默认可能是手机号/验证码登录，需切到「扫码」标签页。
         "login_button": "text=扫码",
         "cookie_domain": "kuaishou.com",
-        "login_cookie": "passToken",
+        "login_cookies": [{"name": "passToken"}],
         "login_value": None,
         # 无头会被 captcha.zt.kuaishou.com 拦截；需真实/虚拟显示 + stealth。
         "needs_display": True,
@@ -78,7 +93,7 @@ _PLATFORM_CONF = {
         "panel_selector": "",
         "login_button": "",
         "cookie_domain": "zhihu.com",
-        "login_cookie": "z_c0",
+        "login_cookies": [{"name": "z_c0"}],
         "login_value": None,
         "needs_display": False,
         "qr_kind": "canvas",
@@ -96,14 +111,49 @@ class BrowserQrUnavailable(RuntimeError):
     pass
 
 
-def _is_logged_in(platform: str, cookie_map: dict) -> bool:
-    """按平台成功标志判断登录态（cookie 名 + 可选期望值）。"""
+def _cookie_hit(cookie_map: dict, rules: list[dict]) -> bool:
+    """cookie 规则：命中任一即算（value 未声明时只要存在即可）。"""
+    for rule in rules:
+        v = cookie_map.get(rule["name"])
+        if v is None or v == "":
+            continue
+        if "value" not in rule or v == rule["value"]:
+            return True
+    return False
+
+
+def _is_logged_in(
+    platform: str, cookie_map: dict, local_storage: dict | None = None, url: str = ""
+) -> bool:
+    """多信号判断登录态。
+
+    抖音的登录态不一定写 LOGIN_STATUS cookie（PC 端主要写 localStorage.HasUserLogin），
+    所以不能只看一个 cookie，否则扫完码也永远判为未登录、一直停在 pending。
+    """
     conf = _PLATFORM_CONF[platform]
-    value = cookie_map.get(conf["login_cookie"])
-    expected = conf["login_value"]
-    if expected is None:
-        return bool(value)
-    return value == expected
+
+    # 明确登出信号优先：LOGIN_STATUS=0 时即使有 sessionid 也视为未登录
+    out = conf.get("logged_out_cookie")
+    if out and cookie_map.get(out["name"]) == out.get("value", "0"):
+        return False
+
+    if cookie_map and _cookie_hit(cookie_map, conf.get("login_cookies", [])):
+        return True
+
+    ls = local_storage or {}
+    for rule in conf.get("login_local_storage", []):
+        v = ls.get(rule["key"])
+        if v is None or v == "":
+            continue
+        if "value" not in rule or str(v) == str(rule["value"]):
+            return True
+
+    # 已经跳到个人页也算登录（部分平台登录后直接跳转，cookie 写入有延迟）
+    if url:
+        for frag in conf.get("login_url_contains", []):
+            if frag in url and "login" not in url.split("?")[0]:
+                return True
+    return False
 
 
 def _extra_credential(platform: str) -> dict:
@@ -277,6 +327,7 @@ async def browser_qr_start(platform: str) -> QrStart:
 
         qr_b64 = await _qr_image_b64(page, conf["qr_selector"])
         session_id = uuid.uuid4().hex
+        state: dict = {"qr_status": ""}
         _live[session_id] = {
             "pw": pw,
             "browser": browser,
@@ -284,7 +335,9 @@ async def browser_qr_start(platform: str) -> QrStart:
             "page": page,
             "created": time.time(),
             "xvfb": xvfb_proc,
+            "state": state,
         }
+        _attach_qr_status_listener(page, conf, state)
         return QrStart(session_data={"browser_session": session_id}, qr_image_b64=qr_b64)
     except BrowserQrUnavailable:
         if xvfb_proc is not None:
@@ -300,6 +353,47 @@ async def browser_qr_start(platform: str) -> QrStart:
         raise
 
 
+def _attach_qr_status_listener(page, conf: dict, state: dict) -> None:
+    """监听平台的扫码状态端点，把最新 status 记进 state。
+
+    抖音的 check_qrconnect 会返回 status: new（未扫）/ scanned（已扫待确认）/
+    confirmed（已确认）。这是最权威的扫码进度来源，比自己猜 cookie 可靠得多。
+    """
+    token = conf.get("qr_status_url")
+    if not token:
+        return
+    import asyncio as _asyncio
+
+    async def _on_response(resp):
+        if token not in resp.url:
+            return
+        try:
+            data = await resp.json()
+        except Exception:  # noqa: BLE001 非 JSON/已关闭，忽略
+            return
+        st = ((data or {}).get("data") or {}).get("status")
+        if st:
+            state["qr_status"] = str(st)
+
+    def _hook(resp):
+        # 响应体只能异步读，这里起个 task，不阻塞页面
+        _asyncio.create_task(_on_response(resp))
+
+    try:
+        page.on("response", _hook)
+    except Exception:  # noqa: BLE001 挂不上监听不影响主流程（退化为 cookie 判定）
+        pass
+
+
+async def _read_local_storage(page) -> dict:
+    """读页面 localStorage；页面正在跳转/跨域时可能失败，失败当空处理。"""
+    try:
+        ls = await page.evaluate("() => Object.fromEntries(Object.entries(window.localStorage))")
+        return ls if isinstance(ls, dict) else {}
+    except Exception:  # noqa: BLE001 读不到就当作没有，不影响判定
+        return {}
+
+
 async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
     conf = _PLATFORM_CONF[platform]
     session_id = session_data.get("browser_session", "")
@@ -311,18 +405,46 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
         return QrPoll(status="expired", message="二维码已超时，请重新发起")
 
     context = sess["context"]
+    page = sess["page"]
     cookies = await context.cookies()
     cookie_map = {c["name"]: c["value"] for c in cookies if conf["cookie_domain"] in c.get("domain", "")}
+    local_storage = await _read_local_storage(page)
 
-    if not _is_logged_in(platform, cookie_map):
-        return QrPoll(status="pending", message="等待扫码（扫码后请在手机上确认）")
+    if not _is_logged_in(platform, cookie_map, local_storage, page.url):
+        # 扫码进度优先用平台自己的状态端点（抖音 check_qrconnect），
+        # 比猜 cookie 准确：passport_csrf_token 进页面就有，用它判"已扫码"会误报。
+        remote = (sess.get("state") or {}).get("qr_status", "")
+        mapped = (conf.get("qr_status_map") or {}).get(remote, "")
+        if mapped == "scanned":
+            return QrPoll(status="scanned", message="已扫码，请在手机上点击确认")
+        if remote in ("expired", "canceled", "cancelled"):
+            await _close(session_id)
+            return QrPoll(status="expired", message="二维码已失效，请重新获取")
+        return QrPoll(status="pending", message="等待扫码（请用手机 App 扫描二维码）")
 
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_map.items())
     credential = {"cookie": cookie_str}
-    # 抖音：sec_user_id 体检时非必需（无 sec_user_id 走收藏列表探活），后续同步模块再回填
     credential.update(_extra_credential(platform))
+    # 抖音：登录后从 localStorage 取自己的 uid，回填 my_user_id / sec_user_id，
+    # 这样同步博主投稿时不必再让用户手填。
+    if platform == "douyin":
+        credential.update(_douyin_identity(local_storage, cookie_map))
     await _close(session_id)
     return QrPoll(status="success", message="登录成功，已自动提取 Cookie", credential=credential)
+
+
+def _douyin_identity(local_storage: dict, cookie_map: dict) -> dict:
+    """从 localStorage / cookie 里捞出抖音自己的用户标识（取不到就留空，不报错）。"""
+    def pick(*keys):
+        for k in keys:
+            v = local_storage.get(k)
+            if v:
+                return str(v)
+        return ""
+
+    sec = pick("user_sec_id", "sec_user_id", "userIdSec")
+    uid = pick("user_id", "uid", "userId") or str(cookie_map.get("uid_tt") or "")
+    return {"sec_user_id": sec, "my_user_id": uid}
 
 
 async def cleanup_expired() -> None:

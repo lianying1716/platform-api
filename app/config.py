@@ -23,8 +23,9 @@ class Settings(BaseSettings):
     credential_key_file: Path | None = None
     # 账号定时体检间隔（分钟），0 表示关闭
     account_check_interval: int = 15
-    # 扫码会话有效期（秒）
-    qr_session_ttl: int = 180
+    # 扫码会话有效期（秒）。抖音扫码后常有"手机上二次确认"步骤，180s 偏紧，
+    # 用户还没点确认就超时了，所以给到 5 分钟。
+    qr_session_ttl: int = 300
     # worker 并发槽数（下载/转录重活，单机几十条/天，低并发即可）
     worker_concurrency: int = 2
     # 转录默认模型与设备（faster-whisper）

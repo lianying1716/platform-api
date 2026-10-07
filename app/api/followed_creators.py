@@ -6,7 +6,7 @@
 - 博主资料（头像/昵称/简介/粉丝）按 ``(platform, author_id)`` 存 ``creator_profile``，
   与「同步开关」这类关系状态分表，各存一份，因此不可能出现两处开关互相漂移。
 - 刷新关注列表 = 把平台上"我关注的人" upsert 成 creator 订阅（默认**不开启同步**，
-  用户想同步哪个再打开），并回收已取关的人。
+  用户想同步哪个再打开）。刷新不会改动已有记录的同步开关。
 
 接口：
 - GET    /api/followed-creators            列出我关注的博主（按账号/平台过滤）
@@ -151,8 +151,9 @@ async def _enrich_stats(db: Session, adapter, account, credential, items: list[d
 async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
     """刷新关注列表：默认走 6h 缓存（不频繁拉取）；风控冷却期内只读缓存。
 
-    会做三件事：新建没见过的关注、更新已有关注、**软回收已取关的人**（置 enabled=False，
-    但保留记录，避免误删用户已入库的内容归属）。返回 ``cached``/``cooling`` 供 UI 提示。
+    只做「新增没见过的关注」+「更新已有关注的资料」，**不碰用户的同步开关**：
+    平台列表可能因分页/风控只返回一部分，据此判取关会误关用户开着的同步。
+    返回 ``cached``/``cooling`` 供 UI 提示。
     """
     account = db.get(PlatformAccount, body.account_id)
     if account is None:
@@ -207,6 +208,7 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
         fetch_cache.set_cache(db, cache_key, {"items": items}, ttl_seconds=fetch_cache.TTL_FOLLOWINGS)
         db.commit()
 
+    # 已入库的 creator 订阅：按 remote_id 索引，用于判断"新增还是更新"
     existing = {
         s.remote_id: s
         for s in db.scalars(
@@ -216,13 +218,11 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
         ).all()
     }
 
-    seen: set[str] = set()
     count = 0
     for item in items:
         author_id = str(item.get("author_id") or "").strip()
         if not author_id:
             continue
-        seen.add(author_id)
         count += 1
         sub = existing.get(author_id)
         if sub is None:
@@ -255,14 +255,11 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
             raw=item.get("raw") or {},
         )
 
-    # 回收已取关：只关同步、保留记录（避免误删历史内容的归属）
-    un_followed = 0
-    for author_id, sub in existing.items():
-        if author_id not in seen and sub.enabled:
-            sub.enabled = False
-            un_followed += 1
+    # 不再回收已取关的人：刷新只负责"新增 + 更新"，**绝不动用户设置的同步开关**。
+    # 原因：平台关注列表可能因为分页/风控只返回一部分，若据此判定"取关了"并关闭同步，
+    # 会把用户明明开着的同步误关掉。要停止跟踪某个人，请显式「移除」。
     db.commit()
-    return {"count": count, "cached": from_cache, "cooling": cooling, "unfollowed": un_followed}
+    return {"count": count, "cached": from_cache, "cooling": cooling}
 
 
 class ToggleIn(BaseModel):
