@@ -77,14 +77,24 @@ function logout() {
 <style scoped>
 .ui-brand .bt { white-space: nowrap; }
 
-/* V3：左侧栏顶部加一条砖红色块，呼应包豪斯原色 */
+/* V3：左侧栏顶部加一条砖红色块，呼应包豪斯原色。
+   用绝对定位，不参与 flex 流，避免把侧栏内容顶出视口。 */
+.ui-side { position: sticky; box-sizing: border-box; }
 .ui-side::before {
   content: '';
-  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   height: 6px;
-  margin: calc(-1 * var(--sp-5)) 0 var(--sp-5);
   background: var(--accent);
 }
+
+/* 侧栏内边距留出顶部色块的位置 */
+.ui-side { padding-top: calc(var(--sp-5) + 6px); }
+
+/* 导航可滚动，底部操作区始终贴底可见 */
+.ui-nav { overflow-y: auto; min-height: 0; }
 
 .ui-nav-item { text-decoration: none; }
 .ui-nav-item .ic {
