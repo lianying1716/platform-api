@@ -171,21 +171,12 @@ def list_assets(
     stmt = stmt.order_by(MediaAsset.id.desc()).limit(min(limit, 200)).offset(offset)
     rows = db.execute(stmt).all()
 
-    # 作者头像/主页：一次性查关注列表 + 创作者档案，避免逐条查询
-    from app.models import CreatorProfile, FollowedCreator
+    # 作者头像/主页：统一走 creator_profile（关注博主资料也写在这里，只此一处）
+    from app.models import CreatorProfile
 
     authors = {(c.platform, c.author_id) for _a, c in rows if c.author_id}
     author_meta: dict[tuple[str, str], dict] = {}
     if authors:
-        for fc in db.scalars(
-            select(FollowedCreator).where(
-                FollowedCreator.author_id.in_([aid for _p, aid in authors])
-            )
-        ).all():
-            author_meta.setdefault(
-                (fc.platform, fc.author_id),
-                {"avatar": fc.avatar, "home_url": fc.home_url, "name": fc.author_name},
-            )
         for cp in db.scalars(
             select(CreatorProfile).where(
                 CreatorProfile.author_id.in_([aid for _p, aid in authors])

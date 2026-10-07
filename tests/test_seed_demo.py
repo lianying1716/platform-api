@@ -25,7 +25,6 @@ _KEY_MODELS = [
     "ContentItem",
     "ContentMetricSnapshot",
     "CreatorProfile",
-    "FollowedCreator",
     "RawPayload",
     "TaskLog",
     "MediaAsset",

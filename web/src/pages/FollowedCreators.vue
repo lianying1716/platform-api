@@ -2,178 +2,161 @@
   <div class="ui-page">
     <div class="ui-head">
       <h1>关注列表</h1>
-      <span class="sub">关注博主与订阅源统一在这里管理</span>
+      <span class="sub">这里是我跟踪的所有来源 —— 博主、收藏夹、合集。一条记录就是一个同步目标。</span>
       <div class="grow" />
       <span v-if="cooling" class="ui-badge warn">风控冷却中 · 展示缓存</span>
     </div>
 
-    <!-- 顶层 tab：关注博主 / 订阅源 -->
-    <div class="ui-tabs">
-      <button class="ui-tab" :class="{ on: topTab === 'creators' }" @click="topTab = 'creators'">关注博主</button>
-      <button class="ui-tab" :class="{ on: topTab === 'sources' }" @click="openSources">订阅源</button>
+    <div class="bar">
+      <button class="ui-btn primary" @click="openCreate">新建跟踪</button>
+      <el-tooltip content="从平台拉取「我关注的人」，拉回后默认不开启同步，你想同步哪个再打开">
+        <button class="ui-btn" :loading="refreshing" :disabled="!currentAccount" @click="refresh(false)">
+          {{ refreshing ? '拉取中…' : '导入我的关注' }}
+        </button>
+      </el-tooltip>
+      <el-tooltip content="忽略缓存立即重拉（仍受平台风控冷却限制，请勿频繁点击）">
+        <button class="ui-btn" :disabled="refreshing || !currentAccount" @click="refresh(true)">强制刷新</button>
+      </el-tooltip>
+      <span class="grow" />
+      <span class="ui-badge">跟踪中 {{ rows.length }}</span>
+      <span class="ui-badge ok">已开启同步 {{ enabledCount }}</span>
     </div>
 
-    <!-- ============ 关注博主 ============ -->
-    <template v-if="topTab === 'creators'">
-      <div class="bar">
-        <button class="ui-btn primary" :loading="refreshing" :disabled="!currentAccount" @click="refresh(false)">
-          {{ refreshing ? '拉取中…' : '刷新关注列表' }}
-        </button>
-        <el-tooltip content="忽略缓存立即重拉（仍受平台风控冷却限制，请勿频繁点击）">
-          <button class="ui-btn" :disabled="refreshing || !currentAccount" @click="refresh(true)">强制刷新</button>
-        </el-tooltip>
-        <span class="hint">头像 / 昵称来自平台真实数据，点击可跳转博主主页。</span>
-        <span class="grow" />
-        <span v-if="lastRefresh" class="ui-badge">更新于 {{ fmt(lastRefresh) }}</span>
+    <!-- 一级 tab：平台（只在有账号的平台里出现） -->
+    <div class="ui-tabs">
+      <button
+        v-for="p in platformsWithAccounts"
+        :key="p.platform"
+        class="ui-tab"
+        :class="{ on: activePlatform === p.platform }"
+        @click="switchPlatform(p.platform)"
+      >
+        <PlatformMark :platform="p.platform" :show-label="false" size="sm" />
+        {{ p.label }}
+        <span v-if="countFor(p.platform)" class="tab-n">{{ countFor(p.platform) }}</span>
+      </button>
+    </div>
+
+    <!-- 二级：账号 -->
+    <div v-if="accountsForPlatform.length > 1" class="ui-chips">
+      <button
+        v-for="a in accountsForPlatform"
+        :key="a.id"
+        class="ui-chip"
+        :class="{ on: activeAccountId === String(a.id) }"
+        @click="switchAccount(String(a.id))"
+      >
+        {{ a.display_name || a.platform_label }}
+      </button>
+    </div>
+
+    <!-- 类型筛选 -->
+    <div class="ui-chips">
+      <button
+        v-for="t in typeFilters"
+        :key="t.value"
+        class="ui-chip"
+        :class="{ on: activeType === t.value }"
+        @click="activeType = t.value"
+      >
+        {{ t.label }}
+        <span v-if="t.value !== 'all' && typeCount(t.value)" class="chip-n">{{ typeCount(t.value) }}</span>
+      </button>
+    </div>
+
+    <div v-loading="loading" class="grid-wrap">
+      <div v-if="!loading && !visibleRows.length" class="ui-empty">
+        <div class="big">这个账号下还没有跟踪任何来源</div>
+        <p>
+          用「导入我的关注」把平台上的关注博主拉进来，或点「新建跟踪」手动添加收藏夹 / 合集 / 博主。
+        </p>
       </div>
 
-      <!-- 一级 tab：平台 -->
-      <div class="ui-tabs">
-        <button
-          v-for="p in platformsWithAccounts"
-          :key="p.platform"
-          class="ui-tab"
-          :class="{ on: activePlatform === p.platform }"
-          @click="switchPlatform(p.platform)"
-        >
-          <PlatformMark :platform="p.platform" :show-label="false" size="sm" />
-          {{ p.label }}
-          <span v-if="countFor(p.platform)" class="tab-n">{{ countFor(p.platform) }}</span>
-        </button>
-      </div>
-
-      <!-- 二级 tab：账号 -->
-      <div v-if="accountsForPlatform.length > 1" class="ui-chips">
-        <button
-          v-for="a in accountsForPlatform"
-          :key="a.id"
-          class="ui-chip"
-          :class="{ on: activeAccountId === String(a.id) }"
-          @click="switchAccount(String(a.id))"
-        >
-          {{ a.display_name || a.platform_label }}
-        </button>
-      </div>
-      <div v-else-if="accountsForPlatform.length === 1" class="single-account">
-        账号：{{ accountsForPlatform[0].display_name || accountsForPlatform[0].platform_label }}
-      </div>
-
-      <div v-loading="loading" class="grid-wrap">
-        <div v-if="!loading && !visibleCreators.length" class="ui-empty">
-          <div class="big">暂无关注博主</div>
-          <p>{{ emptyText }}</p>
-        </div>
-        <div v-else class="ui-grid">
-          <article v-for="c in visibleCreators" :key="c.id" class="ui-card">
-            <div class="row">
-              <Avatar class="ava" :src="c.avatar" :name="c.author_name || c.author_id" :size="54" @click="openHome(c)" />
-              <div style="min-width: 0">
-                <div class="name">
-                  <a v-if="c.home_url" :href="c.home_url" target="_blank" rel="noopener">
-                    {{ c.author_name || c.author_id }}
-                  </a>
-                  <span v-else>{{ c.author_name || c.author_id }}</span>
-                  <span v-if="c.verified" class="ui-badge">认证</span>
-                </div>
-                <div class="stats">
-                  粉丝 {{ c.follower_count > 0 ? compact(c.follower_count) : '—' }} ·
-                  获赞 {{ c.like_count > 0 ? compact(c.like_count) : '—' }}
-                </div>
+      <!-- 一个列表：每条 = 一个我跟踪的来源。博主显示头像，收藏夹/合集显示类型图标。 -->
+      <div v-else class="ui-grid">
+        <article v-for="row in visibleRows" :key="row.id" class="ui-card" :class="{ off: !row.enabled }">
+          <div class="row">
+            <Avatar
+              v-if="isCreator(row)"
+              class="ava"
+              :src="row.creator_avatar"
+              :name="row.author_name || row.title || row.remote_id"
+              :size="54"
+              @click="openHome(row)"
+            />
+            <span v-else class="ava src-ava" :title="sourceText(row.source_type)">
+              {{ sourceGlyph(row.source_type) }}
+            </span>
+            <div style="min-width: 0">
+              <div class="name">
+                <a v-if="isCreator(row) && row.home_url" :href="row.home_url" target="_blank" rel="noopener">
+                  {{ row.author_name || row.title || row.remote_id }}
+                </a>
+                <span v-else>{{ row.author_name || row.title || row.remote_id }}</span>
+                <span v-if="row.verified" class="ui-badge">认证</span>
+                <span class="ui-badge type">{{ sourceText(row.source_type) }}</span>
               </div>
-              <div class="grow" />
-              <PlatformMark :platform="c.platform" :show-label="false" size="sm" muted />
-              <button class="ui-icon-btn" title="立即同步" @click="syncNow(c)">↻</button>
+              <div class="stats">
+                <template v-if="isCreator(row)">
+                  粉丝 {{ (row.follower_count || 0) > 0 ? compact(row.follower_count || 0) : '—' }}
+                </template>
+                <template v-else>
+                  {{ row.remote_id }} · 每 {{ row.interval_minutes }} 分
+                </template>
+              </div>
             </div>
-            <p v-if="c.signature" class="sig">{{ c.signature }}</p>
-            <div class="foot">
-              <span class="ui-toggle">
-                <span>开启同步</span>
-                <button class="ui-switch" :class="{ on: c.sync_enabled }" @click="toggle(c, 'sync_enabled', !c.sync_enabled)">
-                  <i />
-                </button>
-              </span>
-              <span v-if="c.sync_enabled" class="ui-toggle">
-                <span>全量</span>
-                <button class="ui-switch sm" :class="{ on: c.full_sync }" @click="toggle(c, 'full_sync', !c.full_sync)">
-                  <i />
-                </button>
-              </span>
-              <span v-else class="ui-badge">仅新发布</span>
-              <span class="grow" />
-              <span class="last">{{ c.last_synced_at ? `上次 ${fmt(c.last_synced_at)}` : '未同步' }}</span>
-            </div>
-          </article>
-        </div>
+            <div class="grow" />
+            <PlatformMark :platform="row.platform" :show-label="false" size="sm" muted />
+            <button class="ui-icon-btn" title="立即同步" @click="syncRow(row)">↻</button>
+          </div>
+
+          <p v-if="isCreator(row) && row.signature" class="sig">{{ row.signature }}</p>
+          <p v-else-if="!isCreator(row)" class="sig">{{ filterSummary(row) }}</p>
+
+          <div class="foot">
+            <span class="ui-toggle">
+              <span>开启同步</span>
+              <button class="ui-switch" :class="{ on: row.enabled }" @click="toggleEnabled(row)">
+                <i />
+              </button>
+            </span>
+            <span v-if="row.enabled" class="ui-toggle">
+              <span>全量</span>
+              <button class="ui-switch sm" :class="{ on: !row.only_new }" @click="toggleFull(row)">
+                <i />
+              </button>
+            </span>
+            <span v-else class="ui-badge">仅收藏</span>
+            <span class="grow" />
+            <button class="ui-btn ghost sm" @click="openRuns(row)">历史</button>
+            <button class="ui-btn ghost sm" @click="openEdit(row)">设置</button>
+            <button class="ui-btn ghost sm danger" @click="confirmRemove(row)">移除</button>
+          </div>
+          <div class="foot-meta">
+            <span class="last">{{ row.last_sync_at ? `上次同步 ${fmt(row.last_sync_at)}` : '未同步' }}</span>
+          </div>
+        </article>
       </div>
-    </template>
+    </div>
 
-    <!-- ============ 订阅源 ============ -->
-    <template v-else>
-      <div class="bar">
-        <button class="ui-btn primary" @click="openCreate">新建订阅</button>
-        <button class="ui-btn" :loading="subLoading" @click="loadSubs">刷新</button>
-        <span class="hint">订阅按周期自动同步；B站 / 抖音支持拉取收藏夹、合集与关注列表。</span>
-      </div>
-
-      <section class="ui-panel" v-loading="subLoading">
-        <div v-if="!subLoading && !subs.length" class="ui-empty">
-          <div class="big">还没有订阅源</div>
-          <p>点「新建订阅」选收藏夹 / 合集 / 博主，或直接在「关注博主」里开启同步。</p>
-        </div>
-        <table v-else class="ui-table">
-          <thead>
-            <tr>
-              <th>来源</th><th>平台</th><th>周期</th><th>筛选</th>
-              <th>上次同步</th><th style="text-align: right">启用</th><th style="text-align: right">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in subs" :key="row.id">
-              <td class="strong">
-                <span class="src">
-                  <Avatar v-if="row.from_followed_creator" class="mini-ava"
-                    :src="row.creator_avatar" :name="row.title || row.remote_id" :size="18" />
-                  {{ row.title || row.remote_id }}
-                </span>
-                <span class="src-id">{{ sourceText(row.source_type) }} · {{ row.remote_id }}</span>
-              </td>
-              <td><PlatformMark :platform="row.platform" size="sm" /></td>
-              <td class="num">{{ row.interval_minutes }} 分</td>
-              <td class="src-id">{{ filterSummary(row) }}</td>
-              <td class="src-id">{{ row.last_sync_at ? fmt(row.last_sync_at) : '未同步' }}</td>
-              <td style="text-align: right">
-                <button class="ui-switch" :class="{ on: row.enabled }" @click="toggleSub(row)"><i /></button>
-              </td>
-              <td style="text-align: right">
-                <button class="ui-btn ghost sm" @click="syncSub(row)">同步</button>
-                <button class="ui-btn ghost sm" @click="openRuns(row)">历史</button>
-                <button class="ui-btn ghost sm" @click="openEdit(row)">编辑</button>
-                <button class="ui-btn ghost sm danger" @click="removeSub(row)">删除</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-    </template>
-
-    <!-- 新建 / 编辑订阅 -->
-    <el-dialog v-model="dialog" :title="editing ? '编辑订阅' : '新建订阅'" width="580px" destroy-on-close>
+    <!-- 新建 / 编辑 -->
+    <el-dialog v-model="dialog" :title="editing ? '编辑跟踪' : '新建跟踪'" width="580px" destroy-on-close>
       <el-form label-width="110px">
-        <el-form-item label="账号">
+        <el-form-item label="账号" v-if="!editing">
           <el-select v-model="form.account_id" placeholder="选择已登录账号" style="width: 100%" @change="onFormAccountChange">
             <el-option v-for="a in accounts" :key="a.id" :label="`${a.platform_label} - ${a.display_name || a.id}`" :value="a.id">
               <PlatformMark :platform="a.platform" size="sm" />
             </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="来源类型">
+        <el-form-item label="来源类型" v-if="!editing">
           <el-select v-model="form.source_type" style="width: 100%" @change="onSourceTypeChange">
             <el-option label="收藏夹" value="favorite" />
             <el-option label="合集" value="collection" />
-            <el-option label="关注博主" value="creator" />
+            <el-option label="博主" value="creator" />
           </el-select>
         </el-form-item>
-        <el-form-item label="来源">
+        <el-form-item label="来源" v-if="!editing">
           <div style="width: 100%">
             <el-radio-group v-model="subPickMode" size="small" style="margin-bottom: 6px" @change="onPickModeChange">
               <el-radio-button value="list">从列表选择</el-radio-button>
@@ -194,7 +177,7 @@
           </div>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.title" placeholder="例如：技术收藏夹（可留空）" /></el-form-item>
-        <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
+        <el-form-item label="启用同步"><el-switch v-model="form.enabled" /></el-form-item>
         <el-form-item label="自动下载"><el-switch v-model="form.auto_download" /></el-form-item>
         <el-form-item label="周期(分钟)"><el-input-number v-model="form.interval_minutes" :min="10" :step="10" /></el-form-item>
         <el-form-item label="最低播放量">
@@ -229,20 +212,39 @@
       </template>
     </el-dialog>
 
+    <!-- 移除确认 -->
+    <div v-if="removeTarget" class="ui-modal" @click.self="removeTarget = null">
+      <div class="ui-modal-box narrow">
+        <div class="ui-panel-head"><h2>移除跟踪</h2></div>
+        <div class="ui-modal-body">
+          <p>
+            确定移除「{{ removeTarget.title || removeTarget.remote_id }}」？
+            已同步入库的内容不受影响，只是不再自动同步。
+          </p>
+        </div>
+        <div class="ui-modal-foot">
+          <button class="ui-btn" @click="removeTarget = null">取消</button>
+          <button class="ui-btn danger" @click="doRemove">确认移除</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 同步历史 -->
     <el-drawer v-model="runsDrawer" :title="`同步历史 · ${runsTitle}`" size="50%">
       <el-table :data="runs" v-loading="runsLoading">
         <el-table-column label="时间" width="170">
-          <template #default="{ row }">{{ fmt(row.started_at) }}</template>
+          <template #default="{ row }">{{ row.started_at ? fmt(row.started_at) : '—' }}</template>
         </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
-            <el-tag size="small" :type="runStatusType(row.status)">{{ runStatusText(row.status) }}</el-tag>
+            <el-tag :type="runStatusType(row.status)" size="small">{{ runStatusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="fetched" label="抓取" width="80" />
-        <el-table-column prop="added" label="新增" width="80" />
-        <el-table-column prop="error" label="错误" show-overflow-tooltip />
+        <el-table-column prop="fetched" label="抓取" width="70" />
+        <el-table-column prop="added" label="新增" width="70" />
+        <el-table-column label="错误">
+          <template #default="{ row }">{{ row.error || '—' }}</template>
+        </el-table-column>
       </el-table>
     </el-drawer>
   </div>
@@ -255,163 +257,8 @@ import Avatar from '../components/Avatar.vue'
 import PlatformMark from '../components/PlatformMark.vue'
 import { api, type Account } from '../api'
 
-const topTab = ref<'creators' | 'sources'>('creators')
-
-interface FollowedCreator {
-  id: number
-  account_id: number
-  platform: string
-  author_id: string
-  author_name: string
-  avatar: string
-  home_url: string
-  signature: string
-  verified: boolean
-  follower_count: number
-  like_count: number
-  sync_enabled: boolean
-  full_sync: boolean
-  last_synced_at: string | null
-}
-
-const PLATFORM_LABELS: Record<string, string> = { douyin: '抖音', bilibili: 'B站' }
-// 关注列表页只覆盖已支持拉取的平台
-const SUPPORTED = ['douyin', 'bilibili']
-
-const accounts = ref<Account[]>([])
-const allCreators = ref<FollowedCreator[]>([])
-const loading = ref(false)
-const refreshing = ref(false)
-const busy = ref<number | null>(null)
-const syncing = ref<number | null>(null)
-const lastRefresh = ref<string | null>(null)
-const cooling = ref(false)
-const activePlatform = ref('douyin')
-const activeAccountId = ref<string>('')
-
-const platformsWithAccounts = computed(() =>
-  SUPPORTED.filter((p) => accounts.value.some((a) => a.platform === p)).map((p) => ({
-    platform: p,
-    label: PLATFORM_LABELS[p] ?? p,
-  })),
-)
-
-const accountsForPlatform = computed(() =>
-  accounts.value.filter((a) => a.platform === activePlatform.value),
-)
-
-const currentAccount = computed(() =>
-  accountsForPlatform.value.find((a) => String(a.id) === activeAccountId.value),
-)
-
-const emptyText = computed(() => {
-  if (!currentAccount.value) return '该平台暂无可用的已登录账号'
-  return '暂无关注博主，点「刷新关注列表」从平台拉取'
-})
-
-const visibleCreators = computed(() =>
-  allCreators.value.filter(
-    (c) => c.platform === activePlatform.value && c.account_id === currentAccount.value?.id,
-  ),
-)
-
-function countFor(platform: string) {
-  return allCreators.value.filter((c) => c.platform === platform).length
-}
-function compact(n: number) {
-  return n >= 10000 ? `${(n / 10000).toFixed(n % 10000 === 0 ? 0 : 1)}万` : `${n}`
-}
-function fmt(v: string) {
-  return new Date(v.endsWith('Z') ? v : v + 'Z').toLocaleString('zh-CN', { hour12: false })
-}
-function openHome(c: FollowedCreator) {
-  if (c.home_url) window.open(c.home_url, '_blank', 'noopener')
-}
-
-async function loadAccounts() {
-  accounts.value = (await api.get('/api/accounts')).data
-  // 选中第一个有账号的平台
-  const first = platformsWithAccounts.value[0]
-  if (first) activePlatform.value = first.platform
-  pickAccount()
-}
-
-function pickAccount() {
-  const list = accountsForPlatform.value
-  if (!activeAccountId.value || !list.some((a) => String(a.id) === activeAccountId.value)) {
-    activeAccountId.value = list.length ? String(list[0].id) : ''
-  }
-}
-
-async function load() {
-  // 一次性拉全量（所有已入库的关注博主），前端按平台/账号过滤，保证 tab 计数准确。
-  loading.value = true
-  try {
-    allCreators.value = (await api.get('/api/followed-creators')).data
-  } finally {
-    loading.value = false
-  }
-}
-
-async function refresh(force: boolean) {
-  if (!currentAccount.value) return
-  refreshing.value = true
-  try {
-    const { data } = await api.post('/api/followed-creators/refresh', {
-      account_id: currentAccount.value.id,
-      force,
-    })
-    cooling.value = !!data.cooling
-    if (data.cooling) {
-      ElMessage({ message: '平台风控冷却中，当前展示缓存数据', type: 'warning' })
-    } else if (data.cached) {
-      ElMessage.info(`使用了缓存（${data.count} 位）`)
-    } else {
-      ElMessage.success(`已更新 ${data.count} 位关注博主`)
-      lastRefresh.value = new Date().toISOString()
-    }
-    await load()
-  } catch (e: any) {
-    // 429 = 风控冷却中（无缓存可展示）；标记冷却态并保留现有列表
-    if (e?.response?.status === 429) {
-      cooling.value = true
-    }
-  } finally {
-    refreshing.value = false
-  }
-}
-
-async function toggle(c: FollowedCreator, field: 'sync_enabled' | 'full_sync', value: boolean) {
-  busy.value = c.id
-  try {
-    const payload: Record<string, boolean> = {
-      sync_enabled: field === 'sync_enabled' ? value : c.sync_enabled,
-      full_sync: field === 'full_sync' ? value : c.full_sync,
-    }
-    const { data } = await api.put(`/api/followed-creators/${c.id}`, payload)
-    Object.assign(c, data)
-  } finally {
-    busy.value = null
-  }
-}
-
-async function syncNow(c: FollowedCreator) {
-  syncing.value = c.id
-  try {
-    const { data } = await api.post(`/api/followed-creators/${c.id}/sync`)
-    if (data.status === 'success') {
-      ElMessage.success(`同步完成：抓取 ${data.fetched} 条，新增 ${data.added} 条`)
-    } else {
-      ElMessage({ message: data.error || `同步未完成（${data.status}）`, type: 'warning' })
-    }
-    await load()
-  } finally {
-    syncing.value = null
-  }
-}
-
-/* ---------- 订阅源（原「订阅同步」页，合并进关注列表） ---------- */
-interface Subscription {
+/** 统一后的"我跟踪的来源"：博主 = creator 来源，收藏夹/合集 = 其他来源。 */
+interface TrackRow {
   id: number
   account_id: number
   platform: string
@@ -429,32 +276,42 @@ interface Subscription {
   download_quality: string
   with_comments: boolean
   last_sync_at: string | null
-  from_followed_creator: boolean
   creator_avatar: string
-}
-interface RemoteSource {
-  remote_id: string
-  title: string
-}
-interface SyncRunRow {
-  id: number
-  started_at: string | null
-  status: string
-  fetched: number
-  added: number
-  error: string
+  // creator 专属（由后端从 creator_profile 合成）
+  author_name?: string
+  home_url?: string
+  signature?: string
+  verified?: boolean
+  follower_count?: number
 }
 
-const SOURCE_TYPES: Record<string, string> = { favorite: '收藏夹', collection: '合集', creator: '关注博主', like: '点赞' }
-const QUALITY_LABELS: Record<string, string> = { best: '最佳', '1080': '1080P', '720': '720P', audio: '仅音频' }
+interface RemoteSource { remote_id: string; title: string }
+interface SyncRunRow {
+  id: number; started_at: string | null; status: string
+  fetched: number; added: number; error: string
+}
+
+const PLATFORM_LABELS: Record<string, string> = { douyin: '抖音', bilibili: 'B站' }
+const SUPPORTED = ['douyin', 'bilibili']
+const SOURCE_TYPES: Record<string, string> = {
+  favorite: '收藏夹', collection: '合集', creator: '博主', like: '点赞',
+}
 const DEFAULT_SUBDIR = '{platform}/{creator}/{date}'
 
-const subs = ref<Subscription[]>([])
-const subLoading = ref(false)
-const subSyncing = ref<number | null>(null)
+const accounts = ref<Account[]>([])
+const rows = ref<TrackRow[]>([])
+const loading = ref(false)
+const refreshing = ref(false)
+const cooling = ref(false)
+const activePlatform = ref('douyin')
+const activeAccountId = ref('')
+const activeType = ref<'all' | 'creator' | 'source'>('all')
+const syncing = ref<number | null>(null)
+
 const dialog = ref(false)
-const editing = ref<Subscription | null>(null)
+const editing = ref<TrackRow | null>(null)
 const submitting = ref(false)
+const removeTarget = ref<TrackRow | null>(null)
 const subPickMode = ref<'list' | 'manual'>('list')
 const sources = ref<RemoteSource[]>([])
 const sourcesLoading = ref(false)
@@ -464,7 +321,6 @@ const runsDrawer = ref(false)
 const runsTitle = ref('')
 const runs = ref<SyncRunRow[]>([])
 const runsLoading = ref(false)
-let runsSubId: number | null = null
 
 const form = reactive({
   account_id: null as number | null,
@@ -483,18 +339,56 @@ const form = reactive({
   with_comments: false,
 })
 
+const platformsWithAccounts = computed(() =>
+  SUPPORTED.filter((p) => accounts.value.some((a) => a.platform === p)).map((p) => ({
+    platform: p, label: PLATFORM_LABELS[p] ?? p,
+  })),
+)
+const accountsForPlatform = computed(() =>
+  accounts.value.filter((a) => a.platform === activePlatform.value),
+)
+const currentAccount = computed(() =>
+  accountsForPlatform.value.find((a) => String(a.id) === activeAccountId.value),
+)
+
+/** 当前账号下的行 */
+const accountRows = computed(() =>
+  rows.value.filter((r) => String(r.account_id) === activeAccountId.value),
+)
+const creatorRows = computed(() =>
+  accountRows.value.filter((r) => r.source_type === 'creator' && activeType.value !== 'source'),
+)
+const sourceRows = computed(() =>
+  accountRows.value.filter((r) => r.source_type !== 'creator' && activeType.value !== 'creator'),
+)
+const visibleRows = computed(() => [...creatorRows.value, ...sourceRows.value])
+function isCreator(row: TrackRow) { return row.source_type === 'creator' }
+/** 收藏夹/合集没有头像，用一个几何符号代替，保证卡片结构一致。 */
+function sourceGlyph(t: string) {
+  return ({ favorite: '☆', collection: '▤', like: '♥' } as Record<string, string>)[t] ?? '▦'
+}
+const enabledCount = computed(() => rows.value.filter((r) => r.enabled).length)
+
+const typeFilters = [
+  { value: 'all' as const, label: '全部' },
+  { value: 'creator' as const, label: '博主' },
+  { value: 'source' as const, label: '收藏夹 / 合集' },
+]
+function typeCount(v: 'creator' | 'source') {
+  return accountRows.value.filter((r) =>
+    v === 'creator' ? r.source_type === 'creator' : r.source_type !== 'creator').length
+}
+function countFor(platform: string) {
+  return rows.value.filter((r) => r.platform === platform).length
+}
 const sourceEmptyText = computed(() => {
   if (!form.account_id) return '请先选择账号'
   if (sourcesError.value) return sourcesError.value
-  return '该账号在此类型下没有可订阅的源'
+  return '该账号在此类型下没有可跟踪的源'
 })
 
 function sourceText(v: string) { return SOURCE_TYPES[v] ?? v }
-function subPlatformLabel(row: Subscription) {
-  const acc = accounts.value.find((a) => a.id === row.account_id)
-  return acc?.platform_label || PLATFORM_LABELS[row.platform] || row.platform
-}
-function filterSummary(row: Subscription) {
+function filterSummary(row: TrackRow) {
   const play = row.min_play > 0 ? `播放≥${compact(row.min_play)}` : '播放不限'
   const days = row.publish_after_days > 0 ? `最近${row.publish_after_days}天` : '时间不限'
   return `${play} · ${days} · 上限${row.max_items}`
@@ -506,17 +400,176 @@ function runStatusText(s: string) {
   return ({ success: '成功', error: '失败', running: '进行中' } as Record<string, string>)[s] ?? s
 }
 
-async function openSources() {
-  topTab.value = 'sources'
-  if (!subs.value.length) await loadSubs()
+async function load() {
+  loading.value = true
+  try {
+    // 一次拿全量：关注博主（由后端从订阅+资料合成）与订阅源本来就是同一批数据
+    const [subs, creators] = await Promise.all([
+      api.get('/api/subscriptions'),
+      api.get('/api/followed-creators'),
+    ])
+    const byId = new Map<number, TrackRow>()
+    for (const s of subs.data as TrackRow[]) byId.set(s.id, { ...s })
+    // 用 creator 视图补上博主资料字段（头像/主页/签名/粉丝）
+    for (const c of creators.data as TrackRow[]) {
+      const row = byId.get(c.id)
+      if (row) Object.assign(row, c, { source_type: 'creator' })
+    }
+    rows.value = [...byId.values()]
+  } finally {
+    loading.value = false
+  }
 }
 
-async function loadSubs() {
-  subLoading.value = true
+async function loadAccounts() {
+  accounts.value = (await api.get('/api/accounts')).data
+  syncAccountSelection()
+}
+
+function syncAccountSelection() {
+  const list = accountsForPlatform.value
+  if (!activeAccountId.value || !list.some((a) => String(a.id) === activeAccountId.value)) {
+    activeAccountId.value = list.length ? String(list[0].id) : ''
+  }
+}
+
+function switchPlatform(platform: string) {
+  activePlatform.value = platform
+  syncAccountSelection()
+}
+function switchAccount(id: string) { activeAccountId.value = id }
+
+async function refresh(force: boolean) {
+  if (!currentAccount.value) return
+  refreshing.value = true
   try {
-    subs.value = (await api.get('/api/subscriptions')).data
+    const { data } = await api.post('/api/followed-creators/refresh', {
+      account_id: currentAccount.value.id, force,
+    })
+    cooling.value = !!data.cooling
+    if (data.cooling) ElMessage({ message: '平台风控冷却中，当前展示缓存数据', type: 'warning' })
+    else if (data.cached) ElMessage.info(`使用了缓存（${data.count} 位）`)
+    else ElMessage.success(`已导入 ${data.count} 位关注博主`
+      + (data.unfollowed ? `，其中 ${data.unfollowed} 位已取关并关闭同步` : ''))
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '拉取失败')
   } finally {
-    subLoading.value = false
+    refreshing.value = false
+  }
+}
+
+/** 开关只有一份状态：无论从哪个入口改，都写同一行 */
+async function toggleEnabled(row: TrackRow) {
+  const next = !row.enabled
+  row.enabled = next            // 乐观更新
+  try {
+    if (row.source_type === 'creator') {
+      await api.put(`/api/followed-creators/${row.id}`, {
+        sync_enabled: next, full_sync: !row.only_new,
+      })
+    } else {
+      await api.put(`/api/subscriptions/${row.id}`, subPayload(row, { enabled: next }))
+    }
+  } catch (e: any) {
+    row.enabled = !next
+    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  }
+}
+
+async function toggleFull(row: TrackRow) {
+  const nextFull = row.only_new      // 当前是"只新"→ 打开全量
+  row.only_new = !nextFull
+  try {
+    await api.put(`/api/followed-creators/${row.id}`, {
+      sync_enabled: row.enabled, full_sync: nextFull,
+    })
+  } catch (e: any) {
+    row.only_new = nextFull
+    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  }
+}
+
+async function syncRow(row: TrackRow) {
+  syncing.value = row.id
+  try {
+    const url = row.source_type === 'creator'
+      ? `/api/followed-creators/${row.id}/sync`
+      : `/api/subscriptions/${row.id}/sync`
+    const { data } = await api.post(url)
+    if (data.status === 'success') {
+      ElMessage.success(`同步完成：抓取 ${data.fetched} 条，新增 ${data.added} 条`)
+    } else {
+      ElMessage({ message: data.error || `同步未完成（${data.status}）`, type: 'warning' })
+    }
+    await load()
+  } finally {
+    syncing.value = null
+  }
+}
+
+function openHome(row: TrackRow) {
+  if (row.home_url) window.open(row.home_url, '_blank', 'noopener')
+}
+
+async function openRuns(row: TrackRow) {
+  runsDrawer.value = true
+  runsTitle.value = row.title || row.author_name || row.remote_id
+  runsLoading.value = true
+  try {
+    runs.value = (await api.get(`/api/subscriptions/${row.id}/runs`)).data
+  } finally {
+    runsLoading.value = false
+  }
+}
+
+function openCreate() {
+  editing.value = null
+  resetForm()
+  if (currentAccount.value) form.account_id = currentAccount.value.id
+  dialog.value = true
+}
+
+function openEdit(row: TrackRow) {
+  editing.value = row
+  Object.assign(form, {
+    account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
+    title: row.title, enabled: row.enabled, auto_download: row.auto_download,
+    interval_minutes: row.interval_minutes, subdir_template: row.subdir_template,
+    min_play: row.min_play, publish_after_days: row.publish_after_days,
+    max_items: row.max_items, only_new: row.only_new,
+    download_quality: row.download_quality, with_comments: row.with_comments,
+  })
+  dialog.value = true
+}
+
+function confirmRemove(row: TrackRow) { removeTarget.value = row }
+
+async function doRemove() {
+  const row = removeTarget.value
+  if (!row) return
+  try {
+    const url = row.source_type === 'creator'
+      ? `/api/followed-creators/${row.id}`
+      : `/api/subscriptions/${row.id}`
+    await api.delete(url)
+    ElMessage.success('已移除')
+    removeTarget.value = null
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '移除失败')
+  }
+}
+
+function subPayload(row: TrackRow, extra: Record<string, unknown> = {}) {
+  return {
+    account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
+    title: row.title, enabled: row.enabled, auto_download: row.auto_download,
+    interval_minutes: row.interval_minutes, subdir_template: row.subdir_template,
+    min_play: row.min_play, publish_after_days: row.publish_after_days,
+    max_items: row.max_items, only_new: row.only_new,
+    download_quality: row.download_quality, with_comments: row.with_comments,
+    ...extra,
   }
 }
 
@@ -529,172 +582,78 @@ function resetForm() {
   })
   sources.value = []
   sourcesError.value = ''
-}
-
-function openCreate() {
-  editing.value = null
-  resetForm()
   subPickMode.value = 'list'
-  dialog.value = true
 }
 
-function openEdit(row: Subscription) {
-  editing.value = row
-  Object.assign(form, {
-    account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
-    title: row.title, enabled: row.enabled, auto_download: row.auto_download,
-    interval_minutes: row.interval_minutes, subdir_template: row.subdir_template || DEFAULT_SUBDIR,
-    min_play: row.min_play, publish_after_days: row.publish_after_days, max_items: row.max_items,
-    only_new: row.only_new, download_quality: row.download_quality, with_comments: row.with_comments,
-  })
-  subPickMode.value = 'manual'
-  sources.value = []
-  sourcesError.value = ''
-  dialog.value = true
-}
+function onPickModeChange() { sources.value = []; sourcesError.value = '' }
 
 function onFormAccountChange() {
-  form.remote_id = ''
   sources.value = []
-  sourcesError.value = ''
   if (subPickMode.value === 'list') loadSources()
 }
-
 function onSourceTypeChange() {
   form.remote_id = ''
   sources.value = []
-  sourcesError.value = ''
-  if (subPickMode.value === 'list') loadSources()
-}
-
-function onPickModeChange() {
   if (subPickMode.value === 'list') loadSources()
 }
 
 async function loadSources() {
-  if (!form.account_id) {
-    sources.value = []
-    return
-  }
+  const accountId = form.account_id
+  if (!accountId) return
   const seq = ++sourcesSeq
   sourcesLoading.value = true
   sourcesError.value = ''
   try {
-    const { data } = await api.get(`/api/accounts/${form.account_id}/remote-sources`, {
+    const { data } = await api.get(`/api/accounts/${accountId}/remote-sources`, {
       params: { source_type: form.source_type },
     })
     if (seq !== sourcesSeq) return
-    sources.value = Array.isArray(data) ? data : []
-    if (!sources.value.length) sourcesError.value = '没拉到可订阅的源，可切「手动填 ID」'
-  } catch {
+    sources.value = data
+  } catch (e: any) {
     if (seq !== sourcesSeq) return
-    sources.value = []
-    sourcesError.value = '加载失败，可切「手动填 ID」'
+    sourcesError.value = e?.response?.data?.detail || '拉取列表失败'
   } finally {
     if (seq === sourcesSeq) sourcesLoading.value = false
   }
 }
 
-function validate(): string | null {
-  if (!form.account_id) return '请选择账号'
-  if (!form.remote_id || !form.remote_id.trim()) return subPickMode.value === 'list' ? '请选择来源' : '请填写来源 ID'
-  const interval = Number(form.interval_minutes)
-  if (!Number.isFinite(interval) || interval < 10) return '同步周期至少 10 分钟'
-  if (!(form.download_quality in QUALITY_LABELS)) return '下载画质不合法'
-  const maxItems = Number(form.max_items)
-  if (!Number.isFinite(maxItems) || maxItems < 1 || maxItems > 500) return '单次上限需在 1~500 之间'
-  return null
-}
-
 async function submit() {
-  const err = validate()
-  if (err) {
-    ElMessage.warning(err)
-    return
-  }
+  if (!editing.value && !form.account_id) return ElMessage.warning('请选择账号')
+  if (!editing.value && !form.remote_id.trim()) return ElMessage.warning('请选择或填写来源')
   submitting.value = true
   try {
-    const payload = { ...form, remote_id: form.remote_id.trim() }
     if (editing.value) {
-      await api.put(`/api/subscriptions/${editing.value.id}`, payload)
-      ElMessage.success('已保存')
+      await api.put(`/api/subscriptions/${editing.value.id}`, subPayload(editing.value, {
+        title: form.title, enabled: form.enabled, auto_download: form.auto_download,
+        interval_minutes: form.interval_minutes, subdir_template: form.subdir_template,
+        min_play: form.min_play, publish_after_days: form.publish_after_days,
+        max_items: form.max_items, only_new: form.only_new,
+        download_quality: form.download_quality, with_comments: form.with_comments,
+      }))
     } else {
-      await api.post('/api/subscriptions', payload)
-      ElMessage.success('已创建')
+      await api.post('/api/subscriptions', { ...form })
     }
+    ElMessage.success('已保存')
     dialog.value = false
-    await loadSubs()
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
     submitting.value = false
   }
 }
 
-function rowPayload(row: Subscription, patch: Partial<Subscription> = {}) {
-  return {
-    account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
-    title: row.title, enabled: row.enabled, auto_download: row.auto_download,
-    interval_minutes: row.interval_minutes, subdir_template: row.subdir_template,
-    min_play: row.min_play, publish_after_days: row.publish_after_days, max_items: row.max_items,
-    only_new: row.only_new, download_quality: row.download_quality, with_comments: row.with_comments,
-    ...patch,
-  }
+function compact(v: number) {
+  const n = Number(v || 0)
+  if (n >= 1e8) return `${(n / 1e8).toFixed(1)}亿`
+  if (n >= 1e4) return `${(n / 1e4).toFixed(1)}万`
+  return n.toLocaleString('zh-CN')
 }
-
-async function syncSub(row: Subscription) {
-  subSyncing.value = row.id
-  try {
-    const { data } = await api.post(`/api/subscriptions/${row.id}/sync`)
-    if (data.status === 'success' && !data.error) {
-      ElMessage.success(`同步完成：抓取 ${data.fetched} 条，新增 ${data.added} 条`)
-    } else {
-      ElMessage({ message: data.error || `同步未完成（${data.status}）`, type: 'warning' })
-    }
-    await loadSubs()
-  } finally {
-    subSyncing.value = null
-  }
-}
-
-async function toggleSub(row: Subscription) {
-  await api.put(`/api/subscriptions/${row.id}`, rowPayload(row, { enabled: !row.enabled }))
-  await loadSubs()
-}
-
-async function removeSub(row: Subscription) {
-  if (!window.confirm(`删除订阅「${row.title || row.remote_id}」？同步历史会一并删除。`)) return
-  await api.delete(`/api/subscriptions/${row.id}`)
-  ElMessage.success('已删除')
-  if (runsSubId === row.id) runsDrawer.value = false
-  await loadSubs()
-}
-
-async function loadRuns(subId: number) {
-  runsLoading.value = true
-  try {
-    runs.value = (await api.get(`/api/subscriptions/${subId}/runs`)).data
-  } finally {
-    runsLoading.value = false
-  }
-}
-
-async function openRuns(row: Subscription) {
-  runsSubId = row.id
-  runsTitle.value = row.title || row.remote_id
-  runs.value = []
-  runsDrawer.value = true
-  await loadRuns(row.id)
-}
-
-async function switchPlatform(platform: string) {
-  activePlatform.value = platform
-  activeAccountId.value = ''
-  pickAccount()
-  await load()
-}
-
-async function switchAccount(id: string) {
-  activeAccountId.value = id
-  await load()
+function fmt(v: string | null) {
+  if (!v) return '—'
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 onMounted(async () => {
@@ -704,66 +663,39 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.ui-page { display: flex; flex-direction: column; gap: var(--sp-5); }
-.bar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
-.bar .grow { margin-left: auto; }
+.bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .hint { font-size: var(--fs-sm); color: var(--muted); }
-
-.tab-n {
-  margin-left: 6px; font-size: var(--fs-xs); font-weight: 700;
-  background: var(--accent); color: var(--accent-ink); padding: 0 5px;
+.grid-wrap { display: flex; flex-direction: column; gap: 16px; }
+.ui-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+.ui-card { display: flex; flex-direction: column; gap: 8px; }
+.ui-card .row { display: flex; align-items: center; gap: 10px; }
+.ui-card .ava { cursor: pointer; }
+.ui-card.off { opacity: .72; }
+.ui-card.off:hover { opacity: 1; }
+.src-ava {
+  display: grid; place-items: center; cursor: default;
+  background: var(--surface-3); border: 1px solid var(--ink);
+  font-size: 22px; color: var(--ink-2);
 }
-
-.ui-chips { display: flex; gap: 8px; flex-wrap: wrap; }
-.single-account { font-size: var(--fs-sm); color: var(--muted); }
-
-/* 关注博主卡片（复用 ui.css 的 .ui-card，这里只调细节） */
-.grid-wrap { min-height: 120px; }
-.ui-card .ava {
-  cursor: pointer;
-}
-.ui-card .name { display: flex; align-items: center; gap: 6px; font-weight: 650; }
+.ui-card .name .type { font-weight: 600; }
+.ui-card .name { display: flex; align-items: center; gap: 6px; font-weight: 700; min-width: 0; }
 .ui-card .name a { color: inherit; text-decoration: none; }
-.ui-card .name a:hover { color: var(--accent); text-decoration: underline; }
-.ui-card .stats { color: var(--muted); font-size: var(--fs-sm); margin-top: 2px; }
-.ui-card .sig {
-  margin: 11px 0 0; font-size: var(--fs-sm); color: var(--ink-2);
-  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; min-height: 34px;
+.ui-card .name a:hover { text-decoration: underline; }
+.ui-card .stats { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
+.sig {
+  font-size: var(--fs-sm); color: var(--ink-2); margin: 0;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden;
 }
-.ui-card .foot {
-  margin-top: 12px; padding-top: 11px; border-top: 2px solid var(--ink);
-  display: flex; align-items: center; gap: 14px; font-size: var(--fs-sm); color: var(--muted);
-}
-.ui-card .foot .grow { margin-left: auto; }
-.ui-toggle { display: inline-flex; align-items: center; gap: 7px; }
-.ui-icon-btn {
-  width: 30px; height: 30px; display: grid; place-items: center;
-  border: 1px solid var(--ink); background: var(--surface); color: var(--ink-2);
-  cursor: pointer; font-size: 15px;
-}
-.ui-icon-btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.ui-switch {
-  width: 36px; height: 20px; border-radius: 999px; background: var(--surface-3);
-  border: 1px solid var(--ink); position: relative; cursor: pointer; padding: 0; flex: none;
-  transition: background .16s ease-out;
-}
-.ui-switch i {
-  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 999px;
-  background: var(--surface); border: 1px solid var(--ink);
-  transition: transform .16s cubic-bezier(.16,1,.3,1);
-}
-.ui-switch.on { background: var(--accent); }
-.ui-switch.on i { transform: translateX(16px); }
-.ui-switch.sm { width: 30px; height: 17px; }
-.ui-switch.sm i { width: 11px; height: 11px; }
-.ui-switch.sm.on i { transform: translateX(13px); }
-.last { font-variant-numeric: tabular-nums; }
-
-/* 订阅源表格 */
-.src { display: flex; align-items: center; gap: 6px; }
+.foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.foot-meta { display: flex; gap: 6px; font-size: var(--fs-xs); color: var(--muted); }
+.ui-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
+.last { font-size: var(--fs-xs); color: var(--muted); }
+.src { display: block; }
 .src-id { font-size: var(--fs-xs); color: var(--muted); }
-.mini-ava { flex: none; }
-.ui-btn.danger { color: var(--danger); }
+.chip-n {
+  margin-left: 5px; font-size: 11px; font-weight: 700;
+  padding: 0 4px; background: var(--accent-soft); color: var(--accent);
+}
 .detail { margin-left: 8px; font-size: var(--fs-sm); color: var(--muted); }
 </style>

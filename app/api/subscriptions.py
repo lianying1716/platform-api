@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core import security
 from app.core.crypto import decrypt_credential
 from app.db import get_db
-from app.models import FollowedCreator, PlatformAccount, Subscription, SyncRun
+from app.models import CreatorProfile, PlatformAccount, Subscription, SyncRun
 from app.modules import get_adapter
 from app.services.sync_service import run_subscription_sync
 
@@ -66,8 +66,7 @@ class SubscriptionOut(BaseModel):
     download_quality: str = "best"
     with_comments: bool = False
     last_sync_at: datetime | None = None
-    # 打通「关注博主」：该订阅是否来自关注博主列表 + 其头像（供前端打标签/显示）
-    from_followed_creator: bool = False
+    # creator 订阅即"关注的博主"；其头像供列表直接显示
     creator_avatar: str = ""
 
     model_config = {"from_attributes": True}
@@ -95,18 +94,19 @@ async def remote_sources(account_id: int, source_type: str = "favorite", db: Ses
 @router.get("/subscriptions", response_model=list[SubscriptionOut])
 def list_subscriptions(db: Session = Depends(get_db)):
     subs = db.scalars(select(Subscription).order_by(Subscription.id)).all()
-    # 反查关注博主（同账号 + 同 remote_id + creator 来源）→ 打标签与头像
-    fc_map = {
-        (fc.account_id, fc.author_id): fc
-        for fc in db.scalars(select(FollowedCreator)).all()
-    }
-    for sub in subs:
-        if sub.source_type != "creator":
-            continue
-        fc = fc_map.get((sub.account_id, sub.remote_id))
-        if fc is not None:
-            sub.from_followed_creator = True
-            sub.creator_avatar = fc.avatar
+    # creator 订阅补博主头像（资料在 creator_profile；关系状态就在 subscription 本身）
+    creator_subs = [s for s in subs if s.source_type == "creator"]
+    if creator_subs:
+        profiles = db.scalars(
+            select(CreatorProfile).where(
+                CreatorProfile.author_id.in_([s.remote_id for s in creator_subs])
+            )
+        ).all()
+        pmap = {(p.platform, p.author_id): p for p in profiles}
+        for sub in creator_subs:
+            p = pmap.get((sub.platform, sub.remote_id))
+            if p is not None:
+                sub.creator_avatar = p.avatar
     return subs
 
 

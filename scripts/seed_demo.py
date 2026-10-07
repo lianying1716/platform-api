@@ -45,7 +45,6 @@ from app.models import (  # noqa: E402
     CrawlRun,
     CrawlTask,
     CreatorProfile,
-    FollowedCreator,
     JobQueue,
     MediaAsset,
     PlatformAccount,
@@ -177,38 +176,6 @@ _SUBSCRIPTIONS = [
         "with_comments": True,
     },
     {
-        "account_index": 0,
-        "source_type": "creator",
-        "remote_id": "MS4wLjABAAAADEMOchef0001",
-        "title": f"{PREFIX} 抖音·关注 老饭骨",
-        "enabled": True,
-        "auto_download": True,
-        "interval_minutes": 180,
-        "subdir_template": "{platform}/{creator}/{date}_{title}",
-        "min_play": 10000,
-        "publish_after_days": 0,
-        "max_items": 50,
-        "only_new": True,
-        "download_quality": "best",
-        "with_comments": False,
-    },
-    {
-        "account_index": 1,
-        "source_type": "creator",
-        "remote_id": "MS4wLjABAAAADEMOfit0002",
-        "title": f"{PREFIX} 抖音·关注 帕梅拉",
-        "enabled": False,
-        "auto_download": False,
-        "interval_minutes": 720,
-        "subdir_template": "{platform}/{date}",
-        "min_play": 0,
-        "publish_after_days": 7,
-        "max_items": 20,
-        "only_new": False,
-        "download_quality": "720",
-        "with_comments": False,
-    },
-    {
         "account_index": 2,
         "source_type": "favorite",
         "remote_id": "fav_bili_tech_001",
@@ -238,22 +205,6 @@ _SUBSCRIPTIONS = [
         "max_items": 50,
         "only_new": True,
         "download_quality": "best",
-        "with_comments": False,
-    },
-    {
-        "account_index": 3,
-        "source_type": "creator",
-        "remote_id": "10000002",
-        "title": f"{PREFIX} B站·UP主 程序员鱼皮",
-        "enabled": True,
-        "auto_download": False,
-        "interval_minutes": 1440,
-        "subdir_template": "{platform}/{creator}/{date}",
-        "min_play": 0,
-        "publish_after_days": 0,
-        "max_items": 10,
-        "only_new": True,
-        "download_quality": "audio",
         "with_comments": False,
     },
 ]
@@ -556,7 +507,6 @@ def _purge(session) -> None:
     session.query(CrawlTask).filter(CrawlTask.id.in_(tasks)).delete(**keep)
 
     # 账号
-    session.query(FollowedCreator).filter(FollowedCreator.account_id.in_(accs)).delete(**keep)
     session.query(AccountCredential).filter(AccountCredential.account_id.in_(accs)).delete(**keep)
     session.query(PlatformAccount).filter(PlatformAccount.id.in_(accs)).delete(**keep)
 
@@ -605,7 +555,9 @@ def _counts(session) -> dict[str, int]:
         ),
         "creator_profile": _cnt(session, CreatorProfile),
         "followed_creator": _cnt(
-            session, FollowedCreator, FollowedCreator.account_id.in_(accs)
+            session,
+            Subscription,
+            Subscription.account_id.in_(accs) & (Subscription.source_type == "creator"),
         ),
         "raw_payload": _cnt(session, RawPayload),
         "task_log": _cnt(session, TaskLog),
@@ -810,69 +762,42 @@ def _create_creators(session, now) -> None:
     session.flush()
 
 
-def _create_followed_creators(session, accounts, now, rng) -> list[FollowedCreator]:
-    """给抖音/B站 demo 账号种入关注博主（卡片页数据源）。
+def _create_followed_creators(session, accounts, now, rng) -> list[Subscription]:
+    """给抖音/B站 demo 账号种入"我关注的博主"。
 
-    只挂到 active 的账号；头像/昵称直接用 _AUTHORS 的「真实感」演示值（脚本不联网）。
+    现在是**一份数据**：一条 creator 订阅 = 关注关系 + 同步开关；
+    博主资料复用上面 _create_creators 已写入的 creator_profile
+    （与线上 API 同构：关系进 subscription，资料进 creator_profile）。
     """
-    out: list[FollowedCreator] = []
+    existing = {
+        (s.account_id, s.remote_id): s
+        for s in session.scalars(select(Subscription)).all()
+        if s.source_type == "creator"
+    }
+    out: list[Subscription] = []
     for acc in accounts:
         if acc.platform not in ("douyin", "bilibili"):
             continue
         if acc.status != "active":
             continue
         for idx, author in enumerate(_AUTHORS.get(acc.platform, [])):
-            followers = author["followers"]
-            out.append(
-                FollowedCreator(
+            sub = existing.get((acc.id, author["author_id"]))
+            if sub is None:
+                sub = Subscription(
                     account_id=acc.id,
                     platform=acc.platform,
-                    author_id=author["author_id"],
-                    author_name=author["author_name"],
-                    avatar=author["avatar"],
-                    home_url=(
-                        f"https://space.bilibili.com/{author['author_id']}"
-                        if acc.platform == "bilibili"
-                        else f"https://www.douyin.com/user/{author['author_id']}"
-                    ),
-                    signature=author["bio"],
-                    verified=author["verified"],
-                    follower_count=followers,
-                    like_count=followers * rng.randint(3, 9),
-                    # 第一个博主默认开启同步（演示两种开关状态）
-                    sync_enabled=idx == 0,
-                    full_sync=idx == 0,
-                    last_synced_at=now - timedelta(hours=rng.randint(1, 30)),
-                    raw={"demo": True},
-                )
-            )
-    session.add_all(out)
-    session.flush()
-    # 一致性：sync_enabled=True 的博主应有一条启用的 creator 订阅（与 API 语义一致）。
-    existing = {
-        (s.account_id, s.remote_id): s
-        for s in session.scalars(select(Subscription)).all()
-        if s.source_type == "creator"
-    }
-    for fc in out:
-        if not fc.sync_enabled:
-            continue
-        sub = existing.get((fc.account_id, fc.author_id))
-        if sub is None:
-            session.add(
-                Subscription(
-                    account_id=fc.account_id,
-                    platform=fc.platform,
                     source_type="creator",
-                    remote_id=fc.author_id,
-                    title=f"{PREFIX} {fc.platform}·关注 {fc.author_name}",
-                    enabled=True,
-                    only_new=not fc.full_sync,
+                    remote_id=author["author_id"],
+                    # 带哨兵前缀，--reset 才认得出来并清理
+                    title=f"{PREFIX} {acc.platform}·关注 {author['author_name']}",
+                    # 第一个博主默认开启同步（演示两种开关状态）
+                    enabled=idx == 0,
+                    only_new=idx != 0,
+                    last_sync_at=now - timedelta(hours=rng.randint(1, 30)),
                 )
-            )
-        else:
-            sub.enabled = True
-            sub.only_new = not fc.full_sync
+                session.add(sub)
+                existing[(acc.id, author["author_id"])] = sub
+            out.append(sub)
     session.flush()
     return out
 

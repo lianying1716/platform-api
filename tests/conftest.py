@@ -27,6 +27,27 @@ def _fresh_key() -> str:
     return base64.b64encode(os.urandom(32)).decode()
 
 
+# ---------------------------------------------------------------- 网络隔离
+# 测试必须离线：曾出现过 followings 富化静默走真实 B站接口、把线上粉丝数
+# 写进断言的情况（结果随机、还依赖外网）。这里在 socket 层直接掐断，
+# 任何漏网的联网都会立刻报错，而不是安静地拿到真实数据。
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    import socket
+
+    class _Blocked(RuntimeError):
+        pass
+
+    def _deny(*args, **kwargs):
+        raise _Blocked("测试禁止真实网络访问：请 mock httpx/适配器，不要连外网")
+
+    # 只拦"对外连接"，放行本地回环（TestClient 用的是 ASGI 直连，不走 socket）
+    monkeypatch.setattr(socket.socket, "connect", _deny, raising=False)
+    monkeypatch.setattr(socket.socket, "connect_ex", _deny, raising=False)
+    monkeypatch.setattr(socket, "create_connection", _deny, raising=False)
+    yield
+
+
 @pytest.fixture()
 def _db_env(monkeypatch):
     """随机密钥 + 重置加密单例，保证测试之间不串。"""
