@@ -1,7 +1,9 @@
 <template>
   <div class="login-wrap">
     <el-card class="login-card">
-      <h2>素材采集工作台</h2>
+      <img class="brand-mark" src="/logo-symbol.svg" alt="星采 Stargather" width="56" height="56" />
+      <h2>星采 <span class="en">Stargather</span></h2>
+      <p class="tagline">自媒体创作的自动化素材管理加工</p>
       <p class="sub" v-if="initialized === false">首次使用，请设置管理员密码（至少 6 位）</p>
       <p class="sub" v-else>请输入管理员密码登录</p>
       <el-form @submit.prevent="submit">
@@ -62,21 +64,58 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(160deg, #1d2129 0%, #2b3245 100%);
+  /* V3 包豪斯：米白底 + 顶部粗黑边，不用渐变 */
+  background: var(--bg);
+  border-top: 6px solid var(--ink);
 }
 
 .login-card {
   width: 360px;
   padding: 8px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  box-shadow: var(--shadow-2);
 }
 
 h2 {
   margin: 4px 0 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  letter-spacing: -0.01em;
+}
+h2 .en {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.brand-mark {
+  display: block;
+  margin: 0 auto 12px;
+}
+
+.tagline {
+  margin: 0 0 14px;
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+
+.login-card :deep(.el-input__wrapper) {
+  border-radius: 0;
+  box-shadow: 0 0 0 1px var(--ink) inset;
+}
+
+.login-card :deep(.el-button--primary) {
+  border-radius: 0;
+  box-shadow: var(--shadow-1);
 }
 
 .sub {
-  color: #909399;
-  font-size: 13px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
   margin-bottom: 18px;
 }
 </style>

@@ -1,7 +1,11 @@
 <template>
   <div class="ui-app">
     <aside class="ui-side">
-      <div class="ui-brand"><span class="mark">素</span><span class="bt">素材采集工作台</span></div>
+      <div class="ui-brand">
+        <img class="mark" src="/logo-symbol-dark.svg" alt="" width="26" height="26" />
+        <span class="bt">星采</span>
+        <span class="bt-en">Stargather</span>
+      </div>
       <nav class="ui-nav">
         <router-link
           v-for="item in menu"
@@ -75,7 +79,18 @@ function logout() {
 </script>
 
 <style scoped>
-.ui-brand .bt { white-space: nowrap; }
+.ui-brand .bt { white-space: nowrap; font-size: 15px; }
+.ui-brand .bt-en {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sidebar-ink-dim);
+  align-self: flex-end;
+  padding-bottom: 1px;
+}
+/* 标志是位图化的 SVG，去掉 .ui-brand .mark 的色块底 */
+.ui-brand .mark { background: none; width: 26px; height: 26px; flex: none; display: block; }
 
 /* V3：左侧栏顶部加一条砖红色块，呼应包豪斯原色。
    用绝对定位，不参与 flex 流，避免把侧栏内容顶出视口。 */
