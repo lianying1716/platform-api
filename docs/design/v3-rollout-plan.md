@@ -78,3 +78,20 @@
 - 前端：`npm run build` 通过
 - 浏览器：Playwright 逐页点按钮、确认图表渲染、视频 Range 请求返回 206、控制台零报错
 - 全部走局域网 `127.0.0.1:9100`
+
+### 实测结果（Playwright，1440×900，局域网）
+
+| 项 | 结果 |
+|---|---|
+| 8 个页面页头 + 横向溢出 | 全部有 V3 页头，`scrollWidth == clientWidth == 1440` |
+| 控制台报错 | 0（仅 ECharts autoresize 的 ResizeObserver 良性提示） |
+| `/analytics` → `/overview` | 重定向正确，侧栏高亮跟随 |
+| `/subscriptions` → `/followed-creators` | 重定向正确 |
+| 视频播放 | `readyState=4`、`duration=3`、`videoWidth=320`、播放推进到 1.16s、无错误 |
+| 视频 Range | `206` + `Content-Range: bytes 0-999/31255` |
+| 文章筛选 + 阅读 | 2 条文章，阅读弹层渲染正文（188 字） |
+| 素材详情抽屉 | 转录 / AI 分析 / 评论 / 分档加工 / 爆款拆解 全在 |
+| 订阅新建弹窗 | 14 项设置项完整 |
+| 关注开关落库 | UI 切换后 `/api/followed-creators` 返回一致 |
+| 同步按钮 | 真实调用返回风控冷却错误并提示（演示账号无凭证） |
+| 样张页三方向 | grotesk/nocturne/bauhaus 令牌与图表仍各自生效 |
