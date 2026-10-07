@@ -36,6 +36,7 @@
           :class="{ on: activePlatform === p.platform }"
           @click="switchPlatform(p.platform)"
         >
+          <PlatformMark :platform="p.platform" :show-label="false" size="sm" />
           {{ p.label }}
           <span v-if="countFor(p.platform)" class="tab-n">{{ countFor(p.platform) }}</span>
         </button>
@@ -65,9 +66,7 @@
         <div v-else class="ui-grid">
           <article v-for="c in visibleCreators" :key="c.id" class="ui-card">
             <div class="row">
-              <span class="ava" :style="c.avatar ? { backgroundImage: `url(${c.avatar})` } : {}" @click="openHome(c)">
-                {{ c.avatar ? '' : (c.author_name || '?').slice(0, 1) }}
-              </span>
+              <Avatar class="ava" :src="c.avatar" :name="c.author_name || c.author_id" :size="54" @click="openHome(c)" />
               <div style="min-width: 0">
                 <div class="name">
                   <a v-if="c.home_url" :href="c.home_url" target="_blank" rel="noopener">
@@ -82,6 +81,7 @@
                 </div>
               </div>
               <div class="grow" />
+              <PlatformMark :platform="c.platform" :show-label="false" size="sm" muted />
               <button class="ui-icon-btn" title="立即同步" @click="syncNow(c)">↻</button>
             </div>
             <p v-if="c.signature" class="sig">{{ c.signature }}</p>
@@ -131,13 +131,13 @@
             <tr v-for="row in subs" :key="row.id">
               <td class="strong">
                 <span class="src">
-                  <span v-if="row.from_followed_creator && row.creator_avatar" class="mini-ava"
-                    :style="{ backgroundImage: `url(${row.creator_avatar})` }" />
+                  <Avatar v-if="row.from_followed_creator" class="mini-ava"
+                    :src="row.creator_avatar" :name="row.title || row.remote_id" :size="18" />
                   {{ row.title || row.remote_id }}
                 </span>
                 <span class="src-id">{{ sourceText(row.source_type) }} · {{ row.remote_id }}</span>
               </td>
-              <td>{{ subPlatformLabel(row) }}</td>
+              <td><PlatformMark :platform="row.platform" size="sm" /></td>
               <td class="num">{{ row.interval_minutes }} 分</td>
               <td class="src-id">{{ filterSummary(row) }}</td>
               <td class="src-id">{{ row.last_sync_at ? fmt(row.last_sync_at) : '未同步' }}</td>
@@ -161,7 +161,9 @@
       <el-form label-width="110px">
         <el-form-item label="账号">
           <el-select v-model="form.account_id" placeholder="选择已登录账号" style="width: 100%" @change="onFormAccountChange">
-            <el-option v-for="a in accounts" :key="a.id" :label="`${a.platform_label} - ${a.display_name || a.id}`" :value="a.id" />
+            <el-option v-for="a in accounts" :key="a.id" :label="`${a.platform_label} - ${a.display_name || a.id}`" :value="a.id">
+              <PlatformMark :platform="a.platform" size="sm" />
+            </el-option>
           </el-select>
         </el-form-item>
         <el-form-item label="来源类型">
@@ -249,6 +251,8 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
+import Avatar from '../components/Avatar.vue'
+import PlatformMark from '../components/PlatformMark.vue'
 import { api, type Account } from '../api'
 
 const topTab = ref<'creators' | 'sources'>('creators')
@@ -716,10 +720,7 @@ onMounted(async () => {
 /* 关注博主卡片（复用 ui.css 的 .ui-card，这里只调细节） */
 .grid-wrap { min-height: 120px; }
 .ui-card .ava {
-  width: 54px; height: 54px; border-radius: 0; flex: none; cursor: pointer;
-  display: grid; place-items: center; color: #fff; font-weight: 700; font-size: var(--fs-lg);
-  background-color: var(--surface-3); background-size: cover; background-position: center;
-  border: 1px solid var(--ink);
+  cursor: pointer;
 }
 .ui-card .name { display: flex; align-items: center; gap: 6px; font-weight: 650; }
 .ui-card .name a { color: inherit; text-decoration: none; }
@@ -762,10 +763,7 @@ onMounted(async () => {
 /* 订阅源表格 */
 .src { display: flex; align-items: center; gap: 6px; }
 .src-id { font-size: var(--fs-xs); color: var(--muted); }
-.mini-ava {
-  width: 18px; height: 18px; flex: none; border: 1px solid var(--ink);
-  background-size: cover; background-position: center;
-}
+.mini-ava { flex: none; }
 .ui-btn.danger { color: var(--danger); }
 .detail { margin-left: 8px; font-size: var(--fs-sm); color: var(--muted); }
 </style>

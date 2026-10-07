@@ -25,7 +25,7 @@
       <div v-else class="task-grid">
         <article v-for="row in tasks" :key="row.id" class="task" :class="{ off: !row.enabled }">
           <div class="task-top">
-            <span class="plat">{{ platformLabel(row.platform) }}</span>
+            <PlatformMark :platform="row.platform" size="md" />
             <span class="ui-badge">{{ row.sort === 'popular' ? '热门优先' : '最新优先' }}</span>
             <span class="grow" />
             <button class="ui-switch" :class="{ on: row.enabled }" @click="toggle(row, !row.enabled)">
@@ -139,6 +139,7 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
+import PlatformMark from '../components/PlatformMark.vue'
 import { api } from '../api'
 
 const platforms = [

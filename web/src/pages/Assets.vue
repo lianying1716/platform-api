@@ -48,9 +48,12 @@
       <div v-else class="asset-grid">
         <article v-for="a in assets" :key="a.asset_id" class="asset" :class="{ picked: isPicked(a) }">
           <!-- 封面/预览：视频悬浮播放键，文章显示正文摘要入口 -->
-          <div class="cover" :style="a.cover_url ? { backgroundImage: `url(${a.cover_url})` } : {}">
-            <span v-if="!a.cover_url" class="ph">{{ typeLabel(a.content_type) }}</span>
-            <span class="badge-plat">{{ platformLabel(a.platform) }}</span>
+          <div class="cover">
+            <!-- 封面用真实 <img>：加载失败时自动退回占位符，避免留下空白/破图 -->
+            <img v-if="a.cover_url && !coverFailed(a.asset_id)" :src="a.cover_url" alt=""
+              loading="lazy" @error="markCoverFailed(a.asset_id)" />
+            <span v-else class="ph">{{ typeLabel(a.content_type) }}</span>
+            <span class="badge-plat"><PlatformMark :platform="a.platform" :show-label="false" size="sm" :colored="false" /></span>
             <span class="badge-type">{{ typeLabel(a.content_type) }}</span>
             <span v-if="a.duration_sec" class="badge-dur">{{ mmss(a.duration_sec) }}</span>
             <button
@@ -139,7 +142,8 @@
           />
         </div>
         <div class="player-meta">
-          <span>{{ platformLabel(player.platform) }} · {{ player.author_name || '未知博主' }}</span>
+          <PlatformMark :platform="player.platform" size="sm" />
+          <span>· {{ player.author_name || '未知博主' }}</span>
           <span>{{ fmtDate(player.published_at) }} 发布 · {{ bytes(player.size_bytes) }}</span>
         </div>
       </div>
@@ -174,7 +178,7 @@
     <el-drawer v-model="drawer" title="素材详情" size="50%" @close="closeDrawer">
       <div v-if="detail">
         <h3>{{ detail.content?.title }}</h3>
-        <p class="meta">{{ detail.content?.platform }} · {{ detail.content?.author_name }}</p>
+        <p class="meta"><PlatformMark :platform="detail.content?.platform" size="sm" /> · {{ detail.content?.author_name }}</p>
         <el-descriptions :column="1" border size="small">
           <el-descriptions-item label="文件目录">{{ detail.file?.full_dir || '—' }}</el-descriptions-item>
           <el-descriptions-item label="视频文件">{{ detail.file?.video_file || '—' }}</el-descriptions-item>
@@ -358,6 +362,7 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import PlatformMark from '../components/PlatformMark.vue'
 import { api } from '../api'
 
 const assets = ref<any[]>([])
@@ -366,6 +371,11 @@ const loading = ref(false)
 const drawer = ref(false)
 const detail = ref<any>(null)
 const filters = reactive({ platform: '', transcribe_status: '', content_type: '', category: '' })
+
+/** 封面加载失败的素材 id：失败后退回类型占位符，不再显示破图。 */
+const failedCovers = reactive(new Set<string>())
+function coverFailed(id: string) { return failedCovers.has(id) }
+function markCoverFailed(id: string) { failedCovers.add(id) }
 
 const typeTabs = [
   { k: '', label: '全部' },
@@ -766,6 +776,9 @@ onUnmounted(() => {
 .asset .cover {
   position: relative;
   aspect-ratio: 16 / 9;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
   background-color: var(--surface-3);
   background-size: cover;
   background-position: center;
@@ -774,6 +787,14 @@ onUnmounted(() => {
   place-items: center;
 }
 .asset .cover .ph { font-size: var(--fs-2xl); font-weight: 800; color: var(--muted); letter-spacing: .08em; }
+.asset .cover > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
 .asset .cover .badge-plat,
 .asset .cover .badge-type,
 .asset .cover .badge-dur,

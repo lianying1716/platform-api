@@ -21,7 +21,7 @@
       <div v-else class="acc-grid">
         <article v-for="row in accounts" :key="row.id" class="acc">
           <div class="acc-top">
-            <span class="plat">{{ row.platform_label }}</span>
+            <PlatformMark :platform="row.platform" size="md" />
             <span class="ui-badge" :class="statusTone(row.status)">
               <span class="ui-dot" :class="statusTone(row.status)" />
               {{ statusText(row.status) }}
@@ -62,9 +62,21 @@
     <el-dialog v-model="dialog" :title="editing ? '更新凭证' : '新建账号'" width="520px" destroy-on-close>
       <el-form label-width="90px">
         <el-form-item label="平台" v-if="!editing">
-          <el-select v-model="form.platform" @change="onPlatformChange">
-            <el-option v-for="p in platforms" :key="p.platform" :label="p.label" :value="p.platform" />
-          </el-select>
+          <!-- 平台卡片选择器：图标 + 名称 + 能力标签，比纯下拉更容易分辨 -->
+          <div class="plat-picker">
+            <button
+              v-for="p in platforms"
+              :key="p.platform"
+              type="button"
+              class="plat-opt"
+              :class="{ on: form.platform === p.platform }"
+              @click="form.platform = p.platform; onPlatformChange()"
+            >
+              <PlatformMark :platform="p.platform" :show-label="false" size="md" />
+              <span class="po-name">{{ p.label }}</span>
+              <span v-if="p.supports_qr" class="po-tag">扫码</span>
+            </button>
+          </div>
         </el-form-item>
         <el-form-item label="备注" v-if="!editing">
           <el-input v-model="form.display_name" placeholder="例如：主号 / 运营号（可留空，自动取昵称）" />
@@ -105,6 +117,7 @@
 import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import PlatformMark from '../components/PlatformMark.vue'
 import { api, type Account, type PlatformInfo } from '../api'
 
 const accounts = ref<Account[]>([])
@@ -306,16 +319,53 @@ onUnmounted(stopPolling)
   transition: transform .14s ease-out, box-shadow .14s ease-out;
 }
 .acc:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
-.acc-top { display: flex; align-items: center; gap: 8px; }
-.acc .plat {
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  padding: 1px 7px;
-  background: var(--ink);
-  color: var(--surface);
+
+/* 平台卡片选择器 */
+.plat-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 8px;
+  width: 100%;
 }
+.plat-opt {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  background: var(--surface);
+  border: 2px solid var(--line-soft);
+  box-shadow: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  min-width: 0;
+}
+.plat-opt:hover { border-color: var(--ink-2); }
+.plat-opt.on {
+  border-color: var(--accent);
+  box-shadow: 3px 3px 0 var(--accent);
+}
+.po-name {
+  font-weight: 700;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.po-tag {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-left: 1px solid var(--accent-line);
+  border-bottom: 1px solid var(--accent-line);
+}
+.acc-top { display: flex; align-items: center; gap: 8px; }
 .acc-top .ui-badge { margin-left: auto; }
 .acc-name {
   font-size: var(--fs-lg);

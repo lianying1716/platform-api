@@ -96,7 +96,7 @@
         </thead>
         <tbody>
           <tr v-for="p in platforms" :key="p.platform" @click="go(`/assets?platform=${p.platform}`)">
-            <td class="strong">{{ platformLabel(p.platform) }}</td>
+            <td><PlatformMark :platform="p.platform" size="sm" /></td>
             <td class="num">{{ num(p.total) }}</td>
             <td class="num">{{ num(p.video) }}</td>
             <td class="num">{{ num(p.article) }}</td>
@@ -161,7 +161,7 @@
           <tbody>
             <tr v-for="c in creators" :key="c.author_id + c.platform">
               <td class="strong">{{ c.author_name || c.author_id }}</td>
-              <td>{{ platformLabel(c.platform) }}</td>
+              <td><PlatformMark :platform="c.platform" size="sm" :show-label="false" /></td>
               <td class="num">{{ num(c.content_count) }}</td>
               <td style="text-align: right">
                 <button class="ui-btn ghost sm" @click="openReport(c)">拆解</button>
@@ -245,6 +245,7 @@
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import PlatformMark from '../components/PlatformMark.vue'
 import { api } from '../api'
 import EChart from '../components/charts/EChart.vue'
 
