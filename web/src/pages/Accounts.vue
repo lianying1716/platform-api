@@ -6,45 +6,57 @@
     </div>
 
     <div class="toolbar">
-      <el-button type="primary" @click="openCreate">新建账号</el-button>
-      <el-button @click="load">刷新</el-button>
+      <button class="ui-btn primary" @click="openCreate">新建账号</button>
+      <button class="ui-btn" :disabled="loading" @click="load">刷新</button>
+      <span class="grow" />
+      <span class="ui-badge" :class="{ ok: stats.active }">在线 {{ stats.active }}</span>
+      <span class="ui-badge" :class="{ bad: stats.down }">掉线/异常 {{ stats.down }}</span>
     </div>
 
-    <el-table :data="accounts" v-loading="loading" style="margin-top: 14px">
-      <el-table-column label="平台" width="110">
-        <template #default="{ row }">{{ row.platform_label }}</template>
-      </el-table-column>
-      <el-table-column prop="display_name" label="备注/昵称" min-width="120">
-        <template #default="{ row }">{{ row.display_name || '—' }}</template>
-      </el-table-column>
-      <el-table-column label="状态" width="160">
-        <template #default="{ row }">
-          <el-tag :type="statusType(row.status)" effect="dark" size="small">{{ statusText(row.status) }}</el-tag>
-          <el-tooltip v-if="row.status_message" :content="row.status_message">
-            <el-icon style="margin-left: 6px; color: #909399">
-              <InfoFilled />
-            </el-icon>
-          </el-tooltip>
-        </template>
-      </el-table-column>
-      <el-table-column label="到期时间" width="170">
-        <template #default="{ row }">{{ fmt(row.expires_at) }}</template>
-      </el-table-column>
-      <el-table-column label="上次体检" width="170">
-        <template #default="{ row }">{{ fmt(row.last_checked_at) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" :loading="checking === row.id" @click="check(row)">体检</el-button>
-          <el-button size="small" @click="openUpdate(row)">更新凭证</el-button>
-          <el-popconfirm title="确定删除这个账号？凭证将一并删除" @confirm="remove(row)">
-            <template #reference>
-              <el-button size="small" type="danger" plain>删除</el-button>
-            </template>
-          </el-popconfirm>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div v-loading="loading">
+      <div v-if="!loading && !accounts.length" class="ui-empty">
+        <div class="big">还没有接入账号</div>
+        <p>点「新建账号」用扫码或 Cookie 接入抖音 / B站等平台，之后即可同步关注列表与素材。</p>
+      </div>
+      <div v-else class="acc-grid">
+        <article v-for="row in accounts" :key="row.id" class="acc">
+          <div class="acc-top">
+            <span class="plat">{{ row.platform_label }}</span>
+            <span class="ui-badge" :class="statusTone(row.status)">
+              <span class="ui-dot" :class="statusTone(row.status)" />
+              {{ statusText(row.status) }}
+            </span>
+          </div>
+          <div class="acc-name">{{ row.display_name || row.external_id || '未命名账号' }}</div>
+          <dl class="acc-meta">
+            <div><dt>到期</dt><dd>{{ fmt(row.expires_at) }}</dd></div>
+            <div><dt>上次体检</dt><dd>{{ fmt(row.last_checked_at) }}</dd></div>
+          </dl>
+          <p v-if="row.status_message" class="acc-msg" :title="row.status_message">{{ row.status_message }}</p>
+          <div class="acc-acts">
+            <button class="ui-btn sm" :disabled="checking === row.id" @click="check(row)">
+              {{ checking === row.id ? '体检中…' : '体检' }}
+            </button>
+            <button class="ui-btn sm" @click="openUpdate(row)">更新凭证</button>
+            <button class="ui-btn sm danger" @click="confirmRemove(row)">删除</button>
+          </div>
+        </article>
+      </div>
+    </div>
+
+    <!-- 删除确认（不用 el-popconfirm，保持与卡片一致的硬边风格） -->
+    <div v-if="removeTarget" class="ui-modal" @click.self="removeTarget = null">
+      <div class="ui-modal-box narrow">
+        <div class="ui-panel-head"><h2>删除账号</h2></div>
+        <div class="ui-modal-body">
+          <p>确定删除「{{ removeTarget.display_name || removeTarget.platform_label }}」？该账号的凭证会一并删除，且不可恢复。</p>
+        </div>
+        <div class="ui-modal-foot">
+          <button class="ui-btn" @click="removeTarget = null">取消</button>
+          <button class="ui-btn danger" @click="doRemove">确认删除</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 新建/更新账号弹窗 -->
     <el-dialog v-model="dialog" :title="editing ? '更新凭证' : '新建账号'" width="520px" destroy-on-close>
@@ -118,8 +130,14 @@ const form = reactive<{ platform: string; display_name: string; credential: Reco
 
 const currentPlatform = computed(() => platforms.value.find((p) => p.platform === form.platform))
 
-function statusType(s: string) {
-  return ({ active: 'success', expired: 'danger', error: 'warning' } as Record<string, string>)[s] ?? 'info'
+const stats = computed(() => ({
+  active: accounts.value.filter((a) => a.status === 'active').length,
+  down: accounts.value.filter((a) => a.status === 'expired' || a.status === 'error').length,
+}))
+
+// 状态 → V3 徽标/圆点色调（active / expired / error / unchecked）
+function statusTone(s: string) {
+  return ({ active: 'ok', expired: 'bad', error: 'warn' } as Record<string, string>)[s] ?? ''
 }
 function statusText(s: string) {
   return ({ active: '在线', expired: '已掉线', error: '异常', unchecked: '未体检' } as Record<string, string>)[s] ?? s
@@ -240,8 +258,16 @@ async function check(row: Account) {
   }
 }
 
-async function remove(row: Account) {
-  await api.delete(`/api/accounts/${row.id}`)
+const removeTarget = ref<Account | null>(null)
+
+function confirmRemove(row: Account) {
+  removeTarget.value = row
+}
+
+async function doRemove() {
+  if (!removeTarget.value) return
+  await api.delete(`/api/accounts/${removeTarget.value.id}`)
+  removeTarget.value = null
   ElMessage.success('已删除')
   await load()
 }
@@ -257,7 +283,73 @@ onUnmounted(stopPolling)
 <style scoped>
 .toolbar {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.toolbar .grow { margin-left: auto; }
+
+/* 账号卡片 */
+.acc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--sp-3);
+}
+.acc {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow-1);
+  transition: transform .14s ease-out, box-shadow .14s ease-out;
+}
+.acc:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
+.acc-top { display: flex; align-items: center; gap: 8px; }
+.acc .plat {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: 1px 7px;
+  background: var(--ink);
+  color: var(--surface);
+}
+.acc-top .ui-badge { margin-left: auto; }
+.acc-name {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.acc-meta { display: flex; flex-direction: column; gap: 3px; margin: 0; }
+.acc-meta > div { display: flex; gap: 8px; font-size: var(--fs-xs); }
+.acc-meta dt { color: var(--muted); min-width: 56px; margin: 0; }
+.acc-meta dd { color: var(--ink-2); margin: 0; font-variant-numeric: tabular-nums; }
+.acc-msg {
+  margin: 0; font-size: var(--fs-xs); color: var(--muted);
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden;
+}
+.acc-acts { display: flex; gap: 6px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line-soft); flex-wrap: wrap; }
+.ui-badge .ui-dot { margin-right: 2px; }
+
+/* 确认弹层（与全局 ui-modal 一致，宽度收窄） */
+.ui-modal {
+  position: fixed; inset: 0; z-index: 200;
+  background: color-mix(in oklab, var(--ink) 45%, transparent);
+  display: grid; place-items: center; padding: var(--sp-5);
+}
+.ui-modal-box {
+  background: var(--surface); border: 2px solid var(--ink); box-shadow: var(--shadow-2);
+  width: min(480px, 100%);
+}
+.ui-modal-body { padding: var(--sp-5); color: var(--ink-2); }
+.ui-modal-body p { margin: 0; }
+.ui-modal-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: var(--sp-4) var(--sp-5); border-top: 1px solid var(--line-soft);
 }
 
 .qr-box {
@@ -272,19 +364,19 @@ onUnmounted(stopPolling)
 
 .qr-status {
   font-size: 14px;
-  color: #606266;
+  color: var(--muted);
 }
 
 .qr-status.scanned {
-  color: #e6a23c;
+  color: var(--warn);
 }
 
 .qr-status.success {
-  color: #67c23a;
+  color: var(--ok);
 }
 
 .qr-status.expired,
 .qr-status.error {
-  color: #f56c6c;
+  color: var(--danger);
 }
 </style>

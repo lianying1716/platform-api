@@ -5,37 +5,52 @@
       <span class="sub">存储目录 · 加工分档 · 类型提示词 · 模型</span>
     </div>
 
-    <el-tabs v-model="tab">
+    <!-- 页签头用 V3 样式；el-tabs 只保留内容切换能力（导航条由 CSS 隐藏） -->
+    <div class="ui-tabs">
+      <button v-for="t in tabs" :key="t.k" class="ui-tab" :class="{ on: tab === t.k }" @click="tab = t.k">
+        {{ t.label }}
+      </button>
+    </div>
+    <el-tabs v-model="tab" class="tabs-body">
       <!-- 存储目录 -->
       <el-tab-pane label="存储目录" name="storage">
-        <p class="tip">素材保存根目录，支持本机路径、NAS 挂载，Windows 盘符或 UNC（如 Z:\\xsai 或 \\\\NAS\\xsai）。</p>
-        <el-button type="primary" @click="storageDialog = true">新增根目录</el-button>
-        <el-table :data="roots" v-loading="loadingRoots" stripe style="margin-top: 12px">
-          <el-table-column prop="name" label="名称" width="140" />
-          <el-table-column prop="path" label="路径" min-width="220" show-overflow-tooltip />
-          <el-table-column label="默认" width="80">
-            <template #default="{ row }">
-              <el-tag v-if="row.is_default" type="success" size="small">默认</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="可用性" width="200">
-            <template #default="{ row }">
-              <el-tag :type="row.available ? 'success' : 'danger'" size="small">
-                {{ row.available ? '可用' : '不可用' }}
-              </el-tag>
-              <span class="detail">{{ row.detail }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="90" fixed="right">
-            <template #default="{ row }">
-              <el-popconfirm title="删除该根目录？已入库素材路径会失效" @confirm="delRoot(row)">
-                <template #reference>
-                  <el-button size="small" type="danger" plain>删除</el-button>
-                </template>
-              </el-popconfirm>
-            </template>
-          </el-table-column>
-        </el-table>
+        <p class="tip">素材保存根目录，支持本机路径、NAS 挂载，Windows 盘符或 UNC（如 Z:\xsai 或 \\NAS\xsai）。</p>
+        <div class="bar">
+          <button class="ui-btn primary" @click="storageDialog = true">新增根目录</button>
+          <span class="grow" />
+          <span class="ui-badge">共 {{ roots.length }}</span>
+        </div>
+        <section class="ui-panel" v-loading="loadingRoots">
+          <div v-if="!loadingRoots && !roots.length" class="ui-empty">
+            <div class="big">还没有配置存储根目录</div>
+            <p>选一个目录作为素材落盘位置，下载与转录都会写到这里。</p>
+          </div>
+          <table v-else class="ui-table">
+            <thead>
+              <tr>
+                <th style="width: 150px">名称</th>
+                <th>路径</th>
+                <th style="width: 80px">默认</th>
+                <th style="width: 200px">可用性</th>
+                <th style="width: 90px; text-align: right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in roots" :key="row.id">
+                <td class="strong">{{ row.name }}</td>
+                <td class="mono ellip" :title="row.path">{{ row.path }}</td>
+                <td><span v-if="row.is_default" class="ui-badge acc">默认</span><span v-else class="muted">—</span></td>
+                <td>
+                  <span class="ui-badge" :class="row.available ? 'ok' : 'bad'">{{ row.available ? '可用' : '不可用' }}</span>
+                  <span class="detail">{{ row.detail }}</span>
+                </td>
+                <td style="text-align: right">
+                  <button class="ui-btn ghost sm danger" @click="delRoot(row)">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
       </el-tab-pane>
 
       <!-- 大模型 -->
@@ -221,6 +236,20 @@
       </el-tab-pane>
     </el-tabs>
 
+    <!-- 删除存储根确认 -->
+    <div v-if="rootTarget" class="ui-modal" @click.self="rootTarget = null">
+      <div class="ui-modal-box">
+        <div class="ui-panel-head"><h2>删除存储根目录</h2></div>
+        <div class="ui-modal-body">
+          <p>确定删除「{{ rootTarget.name }}」({{ rootTarget.path }})？已入库素材的路径会失效。</p>
+        </div>
+        <div class="ui-modal-foot">
+          <button class="ui-btn" @click="rootTarget = null">取消</button>
+          <button class="ui-btn danger" @click="doDelRoot">确认删除</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 新增存储根弹窗 -->
     <el-dialog v-model="storageDialog" title="新增存储根目录" width="480px">
       <el-form label-width="80px">
@@ -248,6 +277,16 @@ import { onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 
 const tab = ref('storage')
+// 页签清单：与下面 el-tab-pane 的 name 一一对应
+const tabs = [
+  { k: 'storage', label: '存储目录' },
+  { k: 'llm', label: '大模型' },
+  { k: 'comments', label: '评论抓取' },
+  { k: 'process', label: '视频理解' },
+  { k: 'breakdown', label: '爆款拆解' },
+  { k: 'diag', label: '依赖诊断' },
+  { k: 'admin', label: '管理员' },
+]
 const roots = ref<any[]>([])
 const checks = ref<any[]>([])
 const loadingRoots = ref(false)
@@ -325,8 +364,16 @@ async function createRoot() {
   await loadRoots()
 }
 
-async function delRoot(row: any) {
-  await api.delete(`/api/system/storage-roots/${row.id}`)
+const rootTarget = ref<any>(null)
+
+function delRoot(row: any) {
+  rootTarget.value = row
+}
+
+async function doDelRoot() {
+  if (!rootTarget.value) return
+  await api.delete(`/api/system/storage-roots/${rootTarget.value.id}`)
+  rootTarget.value = null
   await loadRoots()
 }
 
@@ -424,10 +471,33 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.bar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-3); }
+.bar .grow { margin-left: auto; }
+.mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
+.ellip { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muted { color: var(--muted); }
+
+/* 隐藏 el-tabs 自带的导航条，只保留内容切换能力 */
+.tabs-body :deep(.el-tabs__header) { display: none; }
+
+/* 删除确认弹层 */
+.ui-modal {
+  position: fixed; inset: 0; z-index: 200;
+  background: color-mix(in oklab, var(--ink) 45%, transparent);
+  display: grid; place-items: center; padding: var(--sp-5);
+}
+.ui-modal-box { background: var(--surface); border: 2px solid var(--ink); box-shadow: var(--shadow-2); width: min(520px, 100%); }
+.ui-modal-body { padding: var(--sp-5); color: var(--ink-2); }
+.ui-modal-body p { margin: 0; word-break: break-all; }
+.ui-modal-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: var(--sp-4) var(--sp-5); border-top: 1px solid var(--line-soft);
+}
 .tip {
-  color: #909399;
-  font-size: 13px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
   margin: 4px 0 12px;
+  line-height: 1.6;
 }
 .detail {
   color: #909399;
