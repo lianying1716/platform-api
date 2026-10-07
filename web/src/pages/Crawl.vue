@@ -1,5 +1,10 @@
 <template>
-  <div>
+  <div class="ui-page">
+    <div class="ui-head">
+      <h1>关键词采集</h1>
+      <span class="sub">按关键词发现作品 · 支持门槛触发评论抓取</span>
+    </div>
+
     <div class="toolbar">
       <el-button type="primary" @click="openCreate">新建采集任务</el-button>
       <el-button @click="load">刷新</el-button>

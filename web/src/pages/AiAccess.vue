@@ -1,5 +1,10 @@
 <template>
-  <div>
+  <div class="ui-page">
+    <div class="ui-head">
+      <h1>AI 接入</h1>
+      <span class="sub">API Key、MCP 与 Skill 能力开放</span>
+    </div>
+
     <el-tabs v-model="tab">
       <!-- API Key 管理 -->
       <el-tab-pane label="API Key" name="keys">

@@ -1,5 +1,10 @@
 <template>
-  <div>
+  <div class="ui-page">
+    <div class="ui-head">
+      <h1>处理队列</h1>
+      <span class="sub">下载 / 转录 / 视频理解任务</span>
+    </div>
+
     <div class="toolbar">
       <el-radio-group v-model="filter" @change="load">
         <el-radio-button value="">全部</el-radio-button>

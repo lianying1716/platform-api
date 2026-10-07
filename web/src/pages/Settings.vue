@@ -1,5 +1,10 @@
 <template>
-  <div>
+  <div class="ui-page">
+    <div class="ui-head">
+      <h1>系统设置</h1>
+      <span class="sub">存储目录 · 加工分档 · 类型提示词 · 模型</span>
+    </div>
+
     <el-tabs v-model="tab">
       <!-- 存储目录 -->
       <el-tab-pane label="存储目录" name="storage">

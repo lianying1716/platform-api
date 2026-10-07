@@ -53,6 +53,15 @@
 7. `scripts/seed_demo.py` 增加文章 / 图文素材与真实可解码的演示 mp4，
    让「文章筛选 + 阅读视图 + 视频播放 + 存储占用」在模拟数据上端到端可验。
 
+## 七、V3 全站生效方式
+
+- `main.ts` 给根元素打 `data-dir="bauhaus"`，使 `ui.css` 里所有
+  `[data-dir='bauhaus']` 规则（硬阴影、0 圆角、顶部粗黑边、目录字重）全站生效。
+- `tokens.css` 的 `:root` 直接落 V3 令牌，`--el-*` 桥接改为 `:root, [data-dir]` 双作用域，
+  未改造的 Element 页面也自动跟随砖红 / 0 圆角 / 描边。
+- `/design-preview` 样张页容器自带 `data-dir`，仍可切换三方向做对比。
+- `ui.css` 新增全局 `.ui-page / .ui-tabs / .ui-tab / .ui-bar`，避免各页 scoped 重复定义。
+
 ## 五、前端改动
 
 1. `styles/tokens.css`：把包豪斯令牌提到 `:root` 作默认，保留 `[data-dir]` 供样张页对比

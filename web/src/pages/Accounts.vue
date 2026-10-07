@@ -1,5 +1,10 @@
 <template>
-  <div>
+  <div class="ui-page">
+    <div class="ui-head">
+      <h1>账号中心</h1>
+      <span class="sub">登录凭证、状态体检与扫码登录</span>
+    </div>
+
     <div class="toolbar">
       <el-button type="primary" @click="openCreate">新建账号</el-button>
       <el-button @click="load">刷新</el-button>
