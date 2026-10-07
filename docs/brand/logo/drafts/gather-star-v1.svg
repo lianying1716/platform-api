@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">Gather Star concept D</title>
+  <path fill="#000" d="M 128.0 12.0 L 152.69 94.02 L 103.31 94.02 Z"/>
+  <path fill="#000" d="M 244.0 128.0 L 161.98 152.69 L 161.98 103.31 Z"/>
+  <path fill="#000" d="M 128.0 244.0 L 103.31 161.98 L 152.69 161.98 Z"/>
+  <path fill="#000" d="M 12.0 128.0 L 94.02 103.31 L 94.02 152.69 Z"/>
+</svg>

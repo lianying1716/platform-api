@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">Blade 30 concept</title>
+  <path fill="#000" d="M 128.0 10.0 L 149.48 100.5 L 106.52 100.5 Z"/>
+  <path fill="#000" d="M 246.0 128.0 L 155.5 149.48 L 155.5 106.52 Z"/>
+  <path fill="#000" d="M 128.0 246.0 L 106.52 155.5 L 149.48 155.5 Z"/>
+  <path fill="#000" d="M 10.0 128.0 L 100.5 106.52 L 100.5 149.48 Z"/>
+</svg>

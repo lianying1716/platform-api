@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">Converge concept A</title>
+  <path fill="#000" d="M 72.0 32.0 L 184.0 32.0 L 184.0 64.0 L 128.0 104.0 L 72.0 64.0 Z"/>
+  <path fill="#000" d="M 224.0 72.0 L 224.0 184.0 L 192.0 184.0 L 152.0 128.0 L 192.0 72.0 Z"/>
+  <path fill="#000" d="M 184.0 224.0 L 72.0 224.0 L 72.0 192.0 L 128.0 152.0 L 184.0 192.0 Z"/>
+  <path fill="#000" d="M 32.0 184.0 L 32.0 72.0 L 64.0 72.0 L 104.0 128.0 L 64.0 184.0 Z"/>
+</svg>

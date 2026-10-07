@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">Aperture concept C</title>
+  <path fill="none" stroke="#000" stroke-width="34.0" stroke-linecap="butt" d="M 200.96 78.79 A 88.0 88.0 0 0 1 200.96 177.21"/>
+  <path fill="none" stroke="#000" stroke-width="34.0" stroke-linecap="butt" d="M 177.21 200.96 A 88.0 88.0 0 0 1 78.79 200.96"/>
+  <path fill="none" stroke="#000" stroke-width="34.0" stroke-linecap="butt" d="M 55.04 177.21 A 88.0 88.0 0 0 1 55.04 78.79"/>
+  <path fill="none" stroke="#000" stroke-width="34.0" stroke-linecap="butt" d="M 78.79 55.04 A 88.0 88.0 0 0 1 177.21 55.04"/>
+  <path fill="#000" d="M 128.0 88.0 L 137.9 118.1 L 168.0 128.0 L 137.9 137.9 L 128.0 168.0 L 118.1 137.9 L 88.0 128.0 L 118.1 118.1 Z"/>
+</svg>
