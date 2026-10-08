@@ -278,8 +278,6 @@ const PLATFORM_LABELS: Record<string, string> = {
   zhihu: '知乎',
   xhs: '小红书',
   wechat_mp: '微信公众号',
-  weibo: '微博',
-  tieba: '贴吧',
 }
 function platformLabel(p: string) {
   return PLATFORM_LABELS[p] || p || '未知'

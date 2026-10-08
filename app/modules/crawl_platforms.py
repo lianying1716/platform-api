@@ -1,18 +1,16 @@
-"""采集向平台的账号适配器（快手 / 知乎 / 微博 / 贴吧）。
+"""采集向平台的账号适配器（快手 / 知乎）。
 
-这四家只有「关键词采集」能力（无订阅同步），但账号中心仍需能录入/体检登录态——
+这两家只有「关键词采集」能力（无订阅同步），但账号中心仍需能录入/体检登录态——
 否则 `crawl_service._platform_cookie` 永远取不到 Cookie，采集任务必然失败。
 
 凭证 JSON: { cookie }（整段 Cookie 字符串）。
 体检接口：
 - 快手：POST www.kuaishou.com/graphql visionProfileUserList（result==1 视为在线）
 - 知乎：GET www.zhihu.com/api/v4/me（返回 id/name 视为在线）
-- 微博：GET m.weibo.cn/api/config（data.login 为 true 视为在线）
-- 贴吧：GET tieba.baidu.com/f/user/json_userinfo（no==0 且有用户名视为在线）
 
-接口来源：MediaCrawler media_platform/{kuaishou,zhihu,weibo,tieba}/client.py:pong
+接口来源：MediaCrawler media_platform/{kuaishou,zhihu}/client.py:pong
 （NON-COMMERCIAL LEARNING LICENSE 1.1, Copyright (c) 2024 relakkes@gmail.com，仅自用学习）
-快手 / 知乎支持浏览器扫码登录（browser_qr，与抖音/小红书同款）；微博 / 贴吧仅手动粘贴 Cookie。
+快手 / 知乎支持浏览器扫码登录（browser_qr，与抖音/小红书同款）。
 """
 
 import functools
@@ -143,61 +141,5 @@ class ZhihuAdapter(_CookieAdapter):
         return CheckResult(ok=False, message="登录态无效（Cookie 失效或缺少 z_c0）")
 
 
-class WeiboAdapter(_CookieAdapter):
-    platform = "weibo"
-    label = "微博"
-    hint_cookie_keys = ("SUB", "SUBP")
-
-    async def check(self, credential: dict) -> CheckResult:
-        headers = {
-            "User-Agent": _UA,
-            "Cookie": credential.get("cookie", ""),
-            "Referer": "https://m.weibo.cn/",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-        try:
-            async with httpx.AsyncClient(headers=headers, timeout=15) as client:
-                resp = await client.get("https://m.weibo.cn/api/config")
-                payload = resp.json() or {}
-        except (httpx.HTTPError, ValueError) as exc:
-            return CheckResult(ok=False, message=f"请求失败: {exc}")
-        data = payload.get("data") or {}
-        if data.get("login"):
-            return CheckResult(
-                ok=True, message="在线", external_id=str(data.get("uid") or "")
-            )
-        return CheckResult(ok=False, message="登录态无效（Cookie 失效或未登录）")
-
-
-class TiebaAdapter(_CookieAdapter):
-    platform = "tieba"
-    label = "贴吧"
-    hint_cookie_keys = ("BDUSS",)
-
-    async def check(self, credential: dict) -> CheckResult:
-        headers = {
-            "User-Agent": _UA,
-            "Cookie": credential.get("cookie", ""),
-            "Referer": "https://tieba.baidu.com/",
-        }
-        try:
-            async with httpx.AsyncClient(headers=headers, timeout=15) as client:
-                resp = await client.get("https://tieba.baidu.com/f/user/json_userinfo")
-                data = resp.json() or {}
-        except (httpx.HTTPError, ValueError) as exc:
-            return CheckResult(ok=False, message=f"请求失败: {exc}")
-        user = data.get("data") or {}
-        if str(data.get("no", 1)) == "0" and user:
-            return CheckResult(
-                ok=True,
-                message="在线",
-                external_id=str(user.get("user_id") or ""),
-                display_name=user.get("user_name_show") or user.get("user_name") or "",
-            )
-        return CheckResult(ok=False, message="登录态无效（Cookie 失效或缺少 BDUSS）")
-
-
 register(KuaishouAdapter())
 register(ZhihuAdapter())
-register(WeiboAdapter())
-register(TiebaAdapter())

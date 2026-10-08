@@ -1,13 +1,13 @@
-"""采集平台账号适配器测试（快手/知乎/微博/贴吧）：注册、凭证解析、体检（mock httpx）。"""
+"""采集平台账号适配器测试（快手/知乎）：注册、凭证解析、体检（mock httpx）。"""
 
 import pytest
 
 def test_crawl_platforms_registered():
-    """四家采集平台必须在 REGISTRY 中，否则账号中心无法录入 Cookie。"""
+    """两家采集平台必须在 REGISTRY 中，否则账号中心无法录入 Cookie。"""
     from app.api.crawl_tasks import _CRAWL_PLATFORMS
     from app.modules import REGISTRY
 
-    for p in ("kuaishou", "zhihu", "weibo", "tieba"):
+    for p in ("kuaishou", "zhihu"):
         assert p in REGISTRY, f"{p} 缺少账号适配器"
     assert _CRAWL_PLATFORMS - set(REGISTRY) == set()
 
@@ -15,7 +15,7 @@ def test_crawl_platforms_registered():
 def test_cookie_adapters_parse_manual_input():
     from app.modules import get_adapter
 
-    for p in ("kuaishou", "zhihu", "weibo", "tieba"):
+    for p in ("kuaishou", "zhihu"):
         adapter = get_adapter(p)
         assert adapter.parse_manual_input({"cookie": "A=1; B=2"}) == {"cookie": "A=1; B=2"}
         with pytest.raises(ValueError):
@@ -24,13 +24,11 @@ def test_cookie_adapters_parse_manual_input():
 
 
 def test_qr_support_only_for_kuaishou_zhihu():
-    """快手/知乎支持扫码；微博/贴吧仅手动粘 Cookie。"""
+    """快手/知乎支持扫码。"""
     from app.modules import get_adapter
 
     assert get_adapter("kuaishou").supports_qr is True
     assert get_adapter("zhihu").supports_qr is True
-    assert get_adapter("weibo").supports_qr is False
-    assert get_adapter("tieba").supports_qr is False
 
 
 @pytest.mark.asyncio
@@ -72,16 +70,6 @@ async def test_zhihu_qr_delegates_to_browser_qr(monkeypatch):
     monkeypatch.setattr(browser_qr, "browser_qr_start", fake_start)
     start = await get_adapter("zhihu").qr_start()
     assert calls["start"] == "zhihu"
-
-
-@pytest.mark.asyncio
-async def test_weibo_tieba_qr_raises():
-    """微博/贴吧不支持扫码，调用 qr_start 必须给出可读错误。"""
-    from app.modules import get_adapter
-
-    for p in ("weibo", "tieba"):
-        with pytest.raises(ValueError, match="不支持扫码登录"):
-            await get_adapter(p).qr_start()
 
 
 def _fake_httpx(monkeypatch, module, response):
@@ -140,32 +128,3 @@ async def test_zhihu_check_online(monkeypatch):
     res = await get_adapter("zhihu").check({"cookie": "z_c0=1"})
     assert res.ok and res.external_id == "u1" and res.display_name == "张三"
 
-
-@pytest.mark.asyncio
-async def test_weibo_check_online(monkeypatch):
-    from app.modules import crawl_platforms as cp
-    from app.modules import get_adapter
-
-    _fake_httpx(monkeypatch, cp, {"data": {"login": True, "uid": "42"}})
-    res = await get_adapter("weibo").check({"cookie": "SUB=1"})
-    assert res.ok and res.external_id == "42"
-
-
-@pytest.mark.asyncio
-async def test_weibo_check_offline(monkeypatch):
-    from app.modules import crawl_platforms as cp
-    from app.modules import get_adapter
-
-    _fake_httpx(monkeypatch, cp, {"data": {"login": False}})
-    res = await get_adapter("weibo").check({"cookie": "SUB=1"})
-    assert not res.ok
-
-
-@pytest.mark.asyncio
-async def test_tieba_check_online(monkeypatch):
-    from app.modules import crawl_platforms as cp
-    from app.modules import get_adapter
-
-    _fake_httpx(monkeypatch, cp, {"no": 0, "data": {"user_id": "7", "user_name_show": "李四"}})
-    res = await get_adapter("tieba").check({"cookie": "BDUSS=1"})
-    assert res.ok and res.external_id == "7" and res.display_name == "李四"

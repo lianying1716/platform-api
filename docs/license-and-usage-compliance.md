@@ -46,7 +46,7 @@ Copyright (c) [2024] [relakkes@gmail.com]
 ## 5. 平台图标（前端）
 
 前端 `platform-api/web/src/brand/platforms.ts` 中的平台商标几何来自 **simple-icons**（CC0-1.0 公共领域），
-仅取路径数据，未附带该库任何代码：B站 / 快手 / 知乎 / 小红书 / 微博 / 微信。
+仅取路径数据，未附带该库任何代码：B站 / 快手 / 知乎 / 小红书 / 微信。
 
 - **抖音**：抖音与 TikTok 共用同一音符商标几何，采用 simple-icons 的 `tiktok` 路径。
 - **未采用**：MediaCrawler 的 logo（其仓库为非商业学习许可，见第 3 节）与各平台官网 favicon（未获授权）。

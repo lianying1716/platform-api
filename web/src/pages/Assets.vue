@@ -629,7 +629,7 @@ function t(v: string) { return ({ done: 'success', error: 'danger' } as Record<s
 // 卡片展示用格式化
 const PLATFORM_LABELS: Record<string, string> = {
   douyin: '抖音', bilibili: 'B站', kuaishou: '快手', zhihu: '知乎',
-  xhs: '小红书', wechat_mp: '微信公众号', weibo: '微博', tieba: '贴吧',
+  xhs: '小红书', wechat_mp: '微信公众号',
 }
 function platformLabel(p: string) {
   return PLATFORM_LABELS[p] || p || '未知'

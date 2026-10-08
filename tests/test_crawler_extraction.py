@@ -106,7 +106,7 @@ async def test_unsupported_platform_raises():
     """全部平台已原生；未知平台直接抛可读异常（不再有子进程兜底）。"""
     from app.modules import crawler
 
-    assert crawler._NATIVE == {"bilibili", "douyin", "xhs", "kuaishou", "zhihu", "weibo", "tieba"}
+    assert crawler._NATIVE == {"bilibili", "douyin", "xhs", "kuaishou", "zhihu"}
     assert not hasattr(crawler, "_search_via_subprocess")
     with pytest.raises(ValueError, match="不支持的采集平台"):
         await crawler.search(platform="unknown_platform", keyword="x", cookie="", limit=5)

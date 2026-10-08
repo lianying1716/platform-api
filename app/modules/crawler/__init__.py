@@ -1,16 +1,16 @@
 """关键词采集统一入口（PRD 第二阶段：抓取能力抽离进 modules/）。
 
-**全部平台均为纯 Python 直连**（bilibili/douyin/xhs/kuaishou/zhihu/weibo/tieba，见 client.py），
+**全部平台均为纯 Python 直连**（bilibili/douyin/xhs/kuaishou/zhihu，见 client.py），
 不依赖活浏览器、不再子进程调 MediaCrawler。
 
 签名/接口逻辑来源见 client.py、bili_sign.py、douyin_sign.py、xhs_sign.py、zhihu_sign.py、
-weibo.py、tieba.py 各文件头（MediaCrawler NON-COMMERCIAL LEARNING LICENSE 1.1，仅自用学习）。
+kuaishou.py 各文件头（MediaCrawler NON-COMMERCIAL LEARNING LICENSE 1.1，仅自用学习）。
 """
 
 from app.modules.crawler import client as _client
 
 # 已抽离为纯 Python 抓取的平台（现覆盖全部支持的采集平台）
-_NATIVE = {"bilibili", "douyin", "xhs", "kuaishou", "zhihu", "weibo", "tieba"}
+_NATIVE = {"bilibili", "douyin", "xhs", "kuaishou", "zhihu"}
 
 
 async def search(

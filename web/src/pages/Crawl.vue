@@ -147,8 +147,6 @@ const platforms = [
   { value: 'douyin', label: '抖音' },
   { value: 'bilibili', label: 'B站' },
   { value: 'kuaishou', label: '快手' },
-  { value: 'weibo', label: '微博' },
-  { value: 'tieba', label: '贴吧' },
   { value: 'zhihu', label: '知乎' },
 ]
 

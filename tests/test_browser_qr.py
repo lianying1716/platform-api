@@ -80,7 +80,7 @@ def test_credential_extra_fields():
 
 def test_unsupported_platform_raises():
     with pytest.raises(KeyError):
-        browser_qr._PLATFORM_CONF["tieba"]
+        browser_qr._PLATFORM_CONF["unknown_platform"]
 
 
 @pytest.mark.asyncio
