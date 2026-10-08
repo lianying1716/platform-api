@@ -9,10 +9,14 @@ utils/DouyinRequestParamManager.cs（MIT，纯 HTTP + Cookie，无签名依赖�
 手动粘 Cookie 是兜底。
 """
 
+import logging
+
 import httpx
 
 from app.modules.base import CheckResult, QrPoll, QrStart, register
 from app.modules.crawler import douyin_sign
+
+logger = logging.getLogger("platform.douyin")
 
 
 def _ts_to_iso(value) -> str | None:
@@ -291,6 +295,65 @@ class DouyinAdapter:
             cursor = str(data.get("cursor", "0"))
         return items[:limit]
 
+    async def _fetch_creator_videos_via_browser(
+        self, cookie: str, sec_user_id: str, limit: int
+    ) -> list[dict]:
+        """浏览器兜底：同源 fetch 拉博主视频，规避 Argus 安全插件。
+
+        纯 HTTP + a_bogus 会被 `403 ArgusSecurityPlugin` 拦（实测缺 uifid 与 secsdk 签名），
+        页面内同源 fetch 则返回 200。代价是要起一次浏览器，所以只在被拦时才走。
+        """
+        from app.modules.douyin_browser_fetch import fetch_json
+
+        base = "/aweme/v1/web/aweme/post/"
+        referer = f"https://www.douyin.com/user/{sec_user_id}"
+        items: list[dict] = []
+        max_cursor = "0"
+        while len(items) < limit:
+            data = await fetch_json(
+                base,
+                {
+                    "sec_user_id": sec_user_id,
+                    "count": "18",
+                    "max_cursor": max_cursor,
+                    "locate_query": "false",
+                    "publish_video_strategy_type": "2",
+                },
+                cookie,
+                referer=referer,
+            )
+            aweme_list = (data or {}).get("aweme_list") or []
+            if not aweme_list:
+                break
+            for aw in aweme_list:
+                stats = aw.get("statistics") or {}
+                author = aw.get("author") or {}
+                items.append(
+                    {
+                        "external_id": str(aw.get("aweme_id", "")),
+                        "content_type": "video",
+                        "title": aw.get("desc", ""),
+                        "author_name": author.get("nickname", ""),
+                        "author_id": author.get("sec_uid", "") or sec_user_id,
+                        "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
+                        "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
+                        "published_at": _ts_to_iso(aw.get("create_time")),
+                        "metrics": {
+                            "play": stats.get("play_count", 0),
+                            "like": stats.get("digg_count", 0),
+                            "comment": stats.get("comment_count", 0),
+                            "favorite": stats.get("collect_count", 0),
+                            "share": stats.get("share_count", 0),
+                        },
+                    }
+                )
+                if len(items) >= limit:
+                    break
+            if not data.get("has_more"):
+                break
+            max_cursor = str(data.get("max_cursor", "0"))
+        return items[:limit]
+
     async def _fetch_creator_videos(self, cookie: str, sec_user_id: str, limit: int) -> list[dict]:
         """博主主页视频列表（a_bogus 签名）。签名失败/风控抛可读异常。"""
         from urllib.parse import urlencode
@@ -318,8 +381,11 @@ class DouyinAdapter:
                 except Exception as exc:  # noqa: BLE001 签名不可用时给可读错误
                     raise RuntimeError(f"抖音签名失败（{exc}），无法拉取博主视频") from exc
                 resp = await client.get(f"{base}?{qs}&a_bogus={a_bogus}")
-                if resp.status_code in (403, 412):
-                    raise RuntimeError("抖音风控拦截（HTTP %s），请稍后再试" % resp.status_code)
+                if resp.status_code in (403, 412) or "ArgusSecurityPlugin" in resp.text:
+                    # 纯 HTTP 被 Argus 安全插件拦下（实测缺 uifid / secsdk 签名）。
+                    # 改用受管浏览器的同源 fetch —— 平台 SDK 会自己补齐头与签名。
+                    logger.info("抖音博主视频被 Argus 拦截，回退浏览器同源 fetch: %s", sec_user_id)
+                    return await self._fetch_creator_videos_via_browser(cookie, sec_user_id, limit)
                 try:
                     data = resp.json()
                 except ValueError:

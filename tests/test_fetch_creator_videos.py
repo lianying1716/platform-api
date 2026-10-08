@@ -191,3 +191,63 @@ async def test_douyin_fetch_creator_sign_failure_is_readable(monkeypatch):
     adapter = douyin.DouyinAdapter()
     with pytest.raises(RuntimeError, match="签名"):
         await adapter.fetch_source({"cookie": "c=1"}, "creator", "SEC1", 10)
+
+# ---------------------------------------------------------------- Argus 兜底
+
+@pytest.mark.asyncio
+async def test_douyin_argus_block_falls_back_to_browser(monkeypatch):
+    """纯 HTTP 被 Argus 拦（403 Uifid Not Found）时，应回退浏览器同源 fetch。
+
+    实测：/aweme/v1/web/aweme/post/ 带 a_bogus 仍返回
+    403 Blocked by ArgusSecurityPlugin Uifid Not Found；
+    页面内同源 fetch 返回 200。所以被拦时必须走浏览器兜底，而不是直接报错。
+    """
+    from app.modules import douyin
+
+    class _Blocked:
+        status_code = 403
+        text = "Blocked by ArgusSecurityPlugin Uifid Not Found"
+
+        def json(self):
+            raise AssertionError("被拦时不应解析 JSON")
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None):
+            return _Blocked()
+
+    monkeypatch.setattr(douyin, "_client", lambda *a, **k: _C())
+    monkeypatch.setattr(douyin.douyin_sign, "get_a_bogus", lambda *a, **k: "fake")
+
+    called = {}
+
+    async def fake_fetch_json(path, params, cookie, referer=""):
+        called["path"] = path
+        called["sec"] = params.get("sec_user_id")
+        return {
+            "status_code": 0,
+            "has_more": False,
+            "aweme_list": [{
+                "aweme_id": "7300000000000000001",
+                "desc": "兜底拿到的作品",
+                "create_time": 1700000000,
+                "statistics": {"digg_count": 12, "comment_count": 3},
+                "author": {"nickname": "某博主", "sec_uid": "SECU"},
+                "video": {"cover": {"url_list": ["https://c/1.jpg"]}},
+            }],
+        }
+
+    monkeypatch.setattr("app.modules.douyin_browser_fetch.fetch_json", fake_fetch_json)
+
+    items = await douyin.DouyinAdapter()._fetch_creator_videos("sessionid=x", "SECU", 10)
+    assert called.get("path") == "/aweme/v1/web/aweme/post/"
+    assert called.get("sec") == "SECU"
+    assert len(items) == 1
+    assert items[0]["external_id"] == "7300000000000000001"
+    assert items[0]["title"] == "兜底拿到的作品"
+    assert items[0]["metrics"]["like"] == 12

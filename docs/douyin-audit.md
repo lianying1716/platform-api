@@ -11,7 +11,7 @@
 | 3 | 体检/探活 | `following/list` 或收藏列表 | 同左 | ✅ 形态被平台接受 |
 | 4 | 收藏列表 | `POST aweme/listcollection` | 同左（POST） | ✅ 形态被接受 |
 | 5 | 关注列表 | `GET user/following/list` | 同左 | ✅ 形态被接受 |
-| 6 | **博主主页视频** | `GET aweme/post`（带 uifid + 签名） | `GET aweme/post` + a_bogus | ❌ **403 Argus** |
+| 6 | 博主主页视频 | `GET aweme/post`（带 uifid + 签名） | 纯 HTTP 被拦 → **浏览器同源 fetch 兜底** | ✅ 已打通 |
 | 7 | 下载 | yt-dlp | 同左 | ✅ 已修（原先必崩） |
 | 8 | 评论抓取 | — | `GET comment/list` + a_bogus | ✅ 形态被接受 |
 
@@ -41,7 +41,7 @@ ERROR: [Douyin] ...: Fresh cookies (not necessarily logged in) are needed
 
 `handle_download` 从来没把 cookie 传给 `download()`。**修复**：按平台取在线账号 Cookie 传入。
 
-## 未打通：博主主页视频（创作者订阅同步的关键）
+## 博主主页视频：已用浏览器兜底打通（原为 403）
 
 `GET /aweme/v1/web/aweme/post/` 实测返回：
 
@@ -62,16 +62,23 @@ ERROR: [Douyin] ...: Fresh cookies (not necessarily logged in) are needed
 补齐 `uifid`（参数+头）后，错误从 `Uifid Not Found` 变成
 `Signature Not Found` —— 说明还有一层 `x-secsdk-web-signature` 之类的签名没算。
 
-**因此当前状态**：抖音的**收藏列表同步**（走 `listcollection`）可用；
-**博主主页视频同步**（走 `aweme/post`）在补齐 uifid 与 secsdk 签名之前不可用。
+### 解法（已实现）
 
-### 可选解法（按成本排序）
+在真实页面里用**同源 fetch** 调同一个接口，平台的 SDK 会自己补齐全部头与签名。
+实测：把账号已存的 Cookie 注入一个全新无头浏览器上下文，打开抖音首页后
+`page.evaluate` 发同源 fetch，返回 **200**（不再是 403）。
 
-1. **复用浏览器上下文发请求**（最稳）：已登录的 Playwright 页面里
-   `page.evaluate` 发同源 fetch，平台自己会带上全部头与签名。
-   代价：每条同步要多一次浏览器往返，慢。
-2. **补齐 uifid + msToken + webid + verifyFp**，再看是否还需要 secsdk 签名。
-3. 跟抖小云一样，把博主视频同步当作"需要用户自己确认可用"的降级能力。
+实现：`app/modules/douyin_browser_fetch.py`；
+在 `douyin._fetch_creator_videos` 里，一旦发现 `403 / 412 / ArgusSecurityPlugin`
+就自动回退浏览器路径（仅在纯 HTTP 被拦时走，避免每次都起浏览器）。
 
-> 抖小云能用是因为它全程带着用户从浏览器复制的完整 Cookie（含 `UIFID` 等），
-> 且它**不下载博主视频列表用于抓取**——它同步的是收藏/关注等不需要 secsdk 的接口。
+**当前状态**：抖音**收藏列表同步**与**博主主页视频同步**都可用；
+代价是后者每次调用要起一次无头浏览器（数秒）。
+
+### 为什么不能纯 Python 解决
+
+真实请求带的 `x-secsdk-web-signature` 由页面安全 SDK 在运行时生成，
+纯 Python 复刻成本高且随平台更新失效；浏览器兜底更稳。
+
+> 抖小云能用纯 HTTP，是因为它同步的是收藏/关注等**不需要 secsdk** 的接口；
+> 博主主页视频这条链路它同样依赖完整 Cookie（含 `UIFID`）。
