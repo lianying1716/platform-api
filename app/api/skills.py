@@ -98,6 +98,65 @@ def skill_search_assets(
     return out
 
 
+@router.get("/crawl-tasks")
+def skill_list_crawl_tasks(
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("read", "operate", "admin")),
+):
+    """列出关键词采集任务（与前端 /api/crawl-tasks 对齐，只读视图）。"""
+    t0 = time.time()
+    tasks = db.scalars(select(CrawlTask).order_by(CrawlTask.id.desc())).all()
+    out = [
+        {
+            "id": t.id,
+            "platform": t.platform,
+            "keyword": t.keyword,
+            "sort": t.sort,
+            "limit_per_run": t.limit_per_run,
+            "enabled": t.enabled,
+            "interval_minutes": t.interval_minutes,
+            "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
+        }
+        for t in tasks
+    ]
+    _log(db, key.id, "list_crawl_tasks", "", "ok", int((time.time() - t0) * 1000))
+    return out
+
+
+@router.get("/analytics")
+def skill_get_analytics(
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("read", "operate", "admin")),
+):
+    """数据看板摘要（复用与前端 /api/dashboard/summary 相同的聚合逻辑）。"""
+    from app.api.analytics import dashboard_summary
+
+    t0 = time.time()
+    data = dashboard_summary(db)
+    _log(db, key.id, "get_analytics", "", "ok", int((time.time() - t0) * 1000))
+    return data
+
+
+@router.get("/followed-creators")
+def skill_list_followed_creators(
+    platform: str | None = None,
+    account_id: int | None = None,
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("read", "operate", "admin")),
+):
+    """列出关注博主及同步状态（供 AI 决策"该同步谁"）。
+
+    复用前端 /api/followed-creators 的投影逻辑（creator 订阅 + 博主资料），
+    保证 AI 看到的 id 与前端一致，可直接用于 trigger_sync / 博主同步。
+    """
+    from app.api.followed_creators import list_followed_creators as _list_fc
+
+    t0 = time.time()
+    rows = _list_fc(platform=platform, account_id=account_id, db=db)
+    _log(db, key.id, "list_followed_creators", f"platform={platform}", "ok", int((time.time() - t0) * 1000))
+    return rows
+
+
 @router.get("/assets/{asset_id}/transcript")
 def skill_get_transcript(
     asset_id: int,
@@ -196,6 +255,117 @@ async def skill_start_qr_login(
         "qr_image_base64": start.qr_image_b64,
         "expires_in": settings.qr_session_ttl,
     }
+
+
+@router.get("/accounts/qr-login/{session_id}")
+async def skill_poll_qr_login(
+    session_id: str,
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("operate", "admin")),
+):
+    """轮询扫码状态：pending/scanned/success/expired。
+
+    与前端 /api/accounts/qr-login/{id} 完全等价（复用同一逻辑），
+    成功后账号自动入库，返回 account_id。
+    """
+    from app.api.accounts import qr_login_poll
+
+    t0 = time.time()
+    try:
+        result = await qr_login_poll(session_id, db)
+    except HTTPException as exc:
+        _log(db, key.id, "poll_qr_login", session_id, "error", int((time.time() - t0) * 1000))
+        raise
+    _log(db, key.id, "poll_qr_login", session_id, "ok", int((time.time() - t0) * 1000))
+    return result.model_dump() if hasattr(result, "model_dump") else result
+
+
+@router.post("/accounts/cookie")
+def skill_update_cookie(
+    body: dict,
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("operate", "admin")),
+):
+    """手动用 Cookie 录入/更新账号（扫码不可用时的兜底，与前端录入等价）。
+
+    body: { platform, cookie, display_name? }
+    按 (platform) 找已有账号则更新凭证，否则新建。
+    """
+    from datetime import datetime
+
+    from app.api.accounts import _save_credential
+    from app.modules import get_adapter
+
+    t0 = time.time()
+    platform = (body or {}).get("platform", "")
+    cookie = (body or {}).get("cookie", "")
+    display_name = (body or {}).get("display_name", "")
+    try:
+        adapter = get_adapter(platform)
+    except ValueError as exc:
+        _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        plain = adapter.parse_manual_input({"cookie": cookie})
+    except ValueError as exc:
+        _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    account = db.scalar(
+        select(PlatformAccount).where(PlatformAccount.platform == platform).order_by(PlatformAccount.id)
+    )
+    if account is None:
+        account = PlatformAccount(
+            platform=platform, display_name=display_name, credential_kind=adapter.credential_kind
+        )
+        db.add(account)
+        db.flush()
+    elif display_name:
+        account.display_name = display_name
+    _save_credential(db, account, plain)
+    account.status, account.status_message = "unchecked", ""
+    db.commit()
+    db.refresh(account)
+    _log(db, key.id, "update_cookie", platform, "ok", int((time.time() - t0) * 1000))
+    return {"account_id": account.id, "platform": account.platform, "status": account.status}
+
+
+@router.post("/accounts/{account_id}/check")
+async def skill_check_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("operate", "admin")),
+):
+    """立即对某账号做一次登录态体检。"""
+    from app.api.accounts import _run_check
+
+    t0 = time.time()
+    account = db.get(PlatformAccount, account_id)
+    if account is None:
+        _log(db, key.id, "check_account", f"id={account_id}", "error", int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=404, detail="账号不存在")
+    result = await _run_check(db, account, actor=f"apikey:{key.id}")
+    _log(db, key.id, "check_account", f"id={account_id}", "ok", int((time.time() - t0) * 1000))
+    return result.model_dump() if hasattr(result, "model_dump") else result
+
+
+class ExportBody(BaseModel):
+    asset_ids: list[int]
+    format: str = "md"
+
+
+@router.post("/assets/export")
+def skill_export_assets(
+    body: ExportBody,
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("read", "operate", "admin")),
+):
+    """导出素材的转录+分析（md/json），与前端 /api/assets/export 等价。"""
+    from app.api.assets import ExportRequest, export_assets
+
+    t0 = time.time()
+    result = export_assets(ExportRequest(asset_ids=body.asset_ids, format=body.format), db)
+    _log(db, key.id, "export_assets", f"n={len(body.asset_ids)} fmt={body.format}", "ok", int((time.time() - t0) * 1000))
+    return result
 
 
 @router.post("/import-article")

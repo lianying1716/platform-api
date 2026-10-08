@@ -57,17 +57,30 @@
     <template v-else-if="tab === 'mcp'">
       <section class="ui-panel">
         <div class="ui-panel-head">
-          <h2>MCP 配置</h2>
-          <span class="hint">粘贴到 Claude Code / Codex 的 MCP 配置里，AI 即可调用平台能力</span>
+          <h2>接进 Claude Code / Codex</h2>
+          <span class="hint">MCP 在本地跑一个小进程转发到本平台，装一次即可</span>
           <div class="grow" />
-          <button class="ui-btn sm" @click="copyMcp">复制配置</button>
+          <button class="ui-btn sm" @click="copyMcp">复制 Codex 配置</button>
         </div>
         <div class="ui-panel-body">
+          <ol class="steps">
+            <li>先在上方「API Key」页建一个 Key 并复制。</li>
+            <li>在服务器上装依赖：<code>cd platform-api &amp;&amp; uv sync --extra mcp</code></li>
+            <li>把下面的配置贴进对应客户端，替换 <code>sk-你的key</code>。</li>
+            <li>重启客户端，用 <code>/mcp</code> 确认能看到 <code>xsai-platform</code>。</li>
+          </ol>
+          <p class="hint" style="display:block;margin:10px 0 6px">Codex · 追加到 <code>~/.codex/config.toml</code></p>
           <pre class="code">{{ mcpConfig }}</pre>
+          <p class="hint" style="display:block;margin:14px 0 6px">Claude Code · 命令行执行一条</p>
+          <pre class="code">{{ claudeCmd }}</pre>
+          <p class="hint" style="display:block;margin:14px 0 0">
+            完整图文步骤见仓库 <code>docs/mcp-integration.md</code>；排错先跑
+            <code>uv run python -m mcp_server.server --self-check</code>。
+          </p>
         </div>
       </section>
       <section class="ui-panel">
-        <div class="ui-panel-head"><h2>可用工具</h2><span class="hint">工具会按 Key 的权限范围放行</span></div>
+        <div class="ui-panel-head"><h2>可用工具（{{ tools.length }}）</h2><span class="hint">工具会按 Key 的权限范围放行</span></div>
         <div class="ui-panel-body tool-list">
           <div v-for="t in tools" :key="t.name" class="tool">
             <code>{{ t.name }}</code>
@@ -179,19 +192,23 @@ const showKey = ref(false)
 const newKey = ref('')
 const form = reactive({ name: '', scopes: ['read', 'operate'], rate_limit_per_min: 60 })
 
-const mcpConfig = computed(() =>
-  JSON.stringify(
-    {
-      mcpServers: {
-        'xsai-workbench': {
-          url: `${location.origin}/api/skills`,
-          headers: { Authorization: 'Bearer <在此粘贴你创建的 API Key>' },
-        },
-      },
-    },
-    null,
-    2,
-  ),
+// MCP 走本地 stdio 进程（不是 HTTP URL）：这里给出可直接粘贴的配置。
+const apiBase = computed(() => location.origin)
+const mcpConfig = computed(
+  () => `[mcp_servers.xsai-platform]
+command = "uv"
+args = ["run", "--project", "<platform-api 绝对路径>", "python", "-m", "mcp_server.server"]
+cwd = "<platform-api 绝对路径>"
+
+[mcp_servers.xsai-platform.env]
+PLATFORM_API_BASE = "${apiBase.value}"
+PLATFORM_API_KEY  = "sk-你的key"`,
+)
+const claudeCmd = computed(
+  () => `claude mcp add xsai-platform \\
+  --env PLATFORM_API_BASE=${apiBase.value} \\
+  --env PLATFORM_API_KEY=sk-你的key \\
+  -- uv run --project <platform-api 绝对路径> python -m mcp_server.server`,
 )
 
 function fmt(v: string | null) {
@@ -234,14 +251,22 @@ function copyKey() {
 
 const revokeTarget = ref<any>(null)
 
-// MCP 工具清单（与后端 skills / ai_access 暴露的能力对应）
+// MCP 工具清单（与 mcp_server/server.py 注册的 14 个工具一致）
 const tools = [
-  { name: 'search_assets', desc: '按关键词/平台/分类检索素材', scope: 'read' },
-  { name: 'get_asset', desc: '取单条素材详情、转录与拆解报告', scope: 'read' },
-  { name: 'list_followed_creators', desc: '列出关注列表与同步状态', scope: 'read' },
+  { name: 'list_accounts', desc: '列出所有账号及登录态', scope: 'read' },
+  { name: 'check_account', desc: '立即体检某账号', scope: 'operate' },
+  { name: 'start_qr_login', desc: '发起扫码登录，返回二维码', scope: 'operate' },
+  { name: 'poll_qr_login', desc: '轮询扫码状态，成功后账号入库', scope: 'operate' },
+  { name: 'update_cookie', desc: '手动用 Cookie 录入/更新账号', scope: 'operate' },
+  { name: 'list_followed_creators', desc: '列出关注博主与同步状态', scope: 'read' },
   { name: 'create_crawl_task', desc: '按关键词建采集任务', scope: 'operate' },
-  { name: 'trigger_sync', desc: '触发某个订阅/博主的同步', scope: 'operate' },
-  { name: 'get_dashboard', desc: '读总览统计与趋势', scope: 'read' },
+  { name: 'list_crawl_tasks', desc: '列出采集任务', scope: 'read' },
+  { name: 'trigger_sync', desc: '触发订阅/博主同步', scope: 'operate' },
+  { name: 'search_assets', desc: '搜索素材库', scope: 'read' },
+  { name: 'get_transcript', desc: '取某素材转录文本', scope: 'read' },
+  { name: 'get_analytics', desc: '数据看板摘要', scope: 'read' },
+  { name: 'export_assets', desc: '导出素材转录+分析（md/json）', scope: 'read' },
+  { name: 'import_article', desc: '导入单篇公众号文章', scope: 'operate' },
 ]
 
 function switchLogs() {
@@ -279,6 +304,8 @@ onMounted(load)
 .ellip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 
 /* MCP 配置代码块 */
+.steps { margin: 0 0 4px; padding-left: 20px; color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.9; }
+.steps code, .ui-panel-body > .hint code { font-family: var(--font-mono); }
 .code {
   margin: 0;
   padding: var(--sp-4);
