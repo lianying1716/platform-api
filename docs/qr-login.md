@@ -76,3 +76,25 @@ async def main():
 asyncio.run(main())
 PY
 ```
+
+## 登录后必须拿到"我是谁"（external_id）
+
+`external_id` 决定**同一人二次扫码是更新原账号还是新建一个**。
+抖音原先不返回它，导致每扫一次就多一个账号、卡片还显示"未命名账号"（已修）。
+
+取身份的顺序（`_douyin_profile`）：
+
+1. **self profile**：借页面自身带签名的请求
+   `/aweme/v1/web/user/profile/self/?device_platform=webapp&aid=6383`
+   取 `user.sec_uid` / `user.uid` / `user.nickname`
+   （实测未登录返回 `status_code=8 用户未登录`，登录后返回 `user` 对象）
+2. 退化到 localStorage（`user_sec_id` / `user_id` 等）与 cookie（`sid_tt` / `uid_tt`）
+
+落库时（`app/api/accounts.py`）的去重顺序：
+
+1. 有 `external_id` → 按 `(platform, external_id)` 精确匹配更新
+2. 没匹配到、但该平台**只有一个**账号 → 复用它并回填这次拿到的身份
+3. 该平台有**多个**账号又拿不到身份 → 返回 409 明确报错，**绝不猜着建重复号**
+
+> 排查：如果用户反馈"扫一次多一个账号"，先查 `qr_poll` 是否回了 `external_id`。
+> `tests/test_qr_login_accounts.py` 已锁定这几种情况。
