@@ -60,6 +60,14 @@ _PLATFORM_CONF = {
         # 不要用 passport_csrf_token 之类去猜"已扫码"——它进登录页就有，会误报。
         "qr_status_url": "check_qrconnect",
         "qr_status_map": {"new": "pending", "scanned": "scanned", "confirmed": "success"},
+        # 登录后从页面自身取"我是谁"：external_id 决定二次登录是更新还是新建账号，
+        # 取不到就会每扫一次建一个新号（实测过）。
+        "self_profile_url": (
+            "/aweme/v1/web/user/profile/self/?device_platform=webapp&aid=6383"
+        ),
+        "self_id_fields": ["sec_uid"],
+        "self_id_cookies": ["sid_tt"],
+        "self_name_fields": ["nickname"],
         "needs_display": False,
     },
     "xhs": {
@@ -425,12 +433,70 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_map.items())
     credential = {"cookie": cookie_str}
     credential.update(_extra_credential(platform))
-    # 抖音：登录后从 localStorage 取自己的 uid，回填 my_user_id / sec_user_id，
-    # 这样同步博主投稿时不必再让用户手填。
+    external_id, display_name = "", ""
+    # 抖音：登录后取自己的身份（sec_uid / 昵称）。
+    # external_id 用于"同一个人二次登录时更新而非新建账号"，必须拿到。
     if platform == "douyin":
-        credential.update(_douyin_identity(local_storage, cookie_map))
+        identity = await _douyin_profile(page, local_storage, cookie_map, conf)
+        credential["sec_user_id"] = identity.get("sec_uid", "")
+        credential["my_user_id"] = identity.get("uid", "")
+        external_id = identity.get("sec_uid", "") or identity.get("uid", "")
+        display_name = identity.get("nickname", "")
+        if not external_id:
+            # 退一步：至少用 sid_tt 当稳定标识，避免每次扫码都新建账号
+            external_id = str(cookie_map.get("sid_tt") or "")
     await _close(session_id)
-    return QrPoll(status="success", message="登录成功，已自动提取 Cookie", credential=credential)
+    return QrPoll(
+        status="success",
+        message="登录成功，已自动提取 Cookie",
+        credential=credential,
+        external_id=external_id,
+        display_name=display_name,
+    )
+
+
+async def _douyin_profile(page, local_storage: dict, cookie_map: dict, conf: dict) -> dict:
+    """取抖音"我是谁"：优先用页面自身发起的 self profile 请求（带平台签名），失败则退到 cookie。
+
+    返回 {sec_uid, uid, nickname}；取不到的字段留空，绝不抛异常影响登录。
+    """
+    out = {"sec_uid": "", "uid": "", "nickname": ""}
+    url = conf.get("self_profile_url")
+    if url:
+        try:
+            data = await page.evaluate(
+                """async (u) => {
+                    try {
+                        const r = await fetch(u, {credentials: 'include'});
+                        return await r.json();
+                    } catch (e) { return null; }
+                }""",
+                url,
+            )
+            user = (data or {}).get("user") or {}
+            if user:
+                for f in conf.get("self_id_fields", []):
+                    if user.get(f):
+                        out["sec_uid"] = str(user[f]); break
+                if user.get("uid"):
+                    out["uid"] = str(user["uid"])
+                for f in conf.get("self_name_fields", []):
+                    if user.get(f):
+                        out["nickname"] = str(user[f]); break
+        except Exception:  # noqa: BLE001 取身份失败不影响登录本身
+            pass
+    # 接口拿不到就退回 localStorage / cookie（字段名以实际页面为准，多个候选都试）
+    if not out["sec_uid"]:
+        for k in ("user_sec_id", "sec_user_id", "userIdSec"):
+            if local_storage.get(k):
+                out["sec_uid"] = str(local_storage[k]); break
+    if not out["uid"]:
+        for k in ("user_id", "uid", "userId"):
+            if local_storage.get(k):
+                out["uid"] = str(local_storage[k]); break
+    if not out["uid"]:
+        out["uid"] = str(cookie_map.get("uid_tt") or "")
+    return out
 
 
 def _douyin_identity(local_storage: dict, cookie_map: dict) -> dict:

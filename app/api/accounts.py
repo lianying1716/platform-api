@@ -126,15 +126,36 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
             qr_sessions.remove(session_id)
         return schemas.QrLoginStatus(status=poll.status, message=poll.message)
 
-    # 登录成功：按 platform + external_id 找旧账号，找不到就新建
+    # 登录成功 → 决定"更新哪个账号 / 要不要新建"，顺序如下：
+    #   1. 有身份标识：按 (platform, external_id) 精确匹配
+    #   2. 没匹配到，但该平台只有一个账号：复用它（并回填这次拿到的身份）
+    #      —— 覆盖"上次没拿到身份、这次拿到了"的升级场景，以及平台不回身份的情况
+    #   3. 该平台有多个账号却无法确定身份：报错，绝不猜着建重复号
     qr_sessions.remove(session_id)
     account = None
     if poll.external_id:
         account = db.scalar(
             select(PlatformAccount).where(
-                PlatformAccount.platform == sess.platform, PlatformAccount.external_id == poll.external_id
+                PlatformAccount.platform == sess.platform,
+                PlatformAccount.external_id == poll.external_id,
             )
         )
+    if account is None:
+        existing = db.scalars(
+            select(PlatformAccount)
+            .where(PlatformAccount.platform == sess.platform)
+            .order_by(PlatformAccount.id)
+        ).all()
+        if len(existing) == 1:
+            account = existing[0]
+        elif len(existing) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{adapter.label} 已有多个账号，且平台未返回可唯一识别的身份，"
+                    "无法判断该更新哪一个。请手动在账号中心处理，或先删除多余账号后重试。"
+                ),
+            )
     if account is None:
         account = PlatformAccount(
             platform=sess.platform,
@@ -146,6 +167,11 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
         db.flush()
         _audit(db, account.id, "create", "扫码登录创建")
     else:
+        # 补上后拿到的身份/昵称，让账号卡片显示得更完整
+        if poll.external_id and not account.external_id:
+            account.external_id = poll.external_id
+        if poll.display_name and not sess.display_name:
+            account.display_name = poll.display_name
         _audit(db, account.id, "update", "扫码登录更新凭证")
     _save_credential(db, account, poll.credential or {})
     account.status, account.status_message = "active", poll.message or "登录成功"
