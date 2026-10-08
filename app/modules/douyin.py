@@ -123,6 +123,28 @@ FAVORITE_PARAMS = _with(
 )
 
 
+# 请求节流：照抄抖小云 job/DouyinBasicSyncJob.cs 的随机等待
+#   await Task.Delay(_random.Next(2, 10) * 1000);   // 翻页之间
+#   await Task.Delay(_random.Next(1, 4) * 1000);    // 每次下载前
+# 抖小云长期稳定、无风控，这个随机间隔是关键之一（比固定间隔更像真人）。
+_PAGE_DELAY_RANGE = (2.0, 10.0)
+_BATCH_LIMIT = 30          # 抖小云 IsSyncLimitReached：单次同步最多 30 条
+
+
+async def _pace() -> None:
+    """翻页之间的随机等待（秒）。
+
+    每次调用都重新读取模块级 _PAGE_DELAY_RANGE，这样测试可以把它调成 0 跳过等待。
+    """
+    import asyncio
+    import random
+
+    lo, hi = _PAGE_DELAY_RANGE
+    if hi <= 0:
+        return
+    await asyncio.sleep(random.uniform(lo, hi))
+
+
 def _pick_play_url(aw: dict) -> str:
     """从 aweme 结构里取可直连下载的播放地址。
 
@@ -282,6 +304,7 @@ class DouyinAdapter:
                     break
                 # 抖小云按服务端返回的 offset 翻页（不是自己累加）
                 offset = int(data.get("offset") or (offset + count))
+                await _pace()      # 翻页之间随机等待（照抄抖小云）
         except (httpx.HTTPError, ValueError):
             return out[:limit]
         return out[:limit]
@@ -339,6 +362,7 @@ class DouyinAdapter:
                 if not data.get("has_more"):
                     break
                 offset = int(data.get("offset") or (offset + count))
+                await _pace()      # 翻页之间随机等待（照抄抖小云）
         except (httpx.HTTPError, ValueError):
             pass
         return out[:limit]
@@ -356,6 +380,7 @@ class DouyinAdapter:
             return []
         items: list[dict] = []
         cursor = "0"
+        limit = min(limit, _BATCH_LIMIT)   # 单次上限 30（照抄抖小云）
         while len(items) < limit:
             data = await list_collection(cookie, cursor=cursor, count="20")
             if not data or data.get("status_code") != 0:
@@ -388,6 +413,7 @@ class DouyinAdapter:
             if not data.get("has_more"):
                 break
             cursor = str(data.get("cursor", "0"))
+            await _pace()          # 翻页之间随机等待（照抄抖小云）
         return items[:limit]
 
     async def _fetch_creator_videos(self, cookie: str, sec_user_id: str, limit: int) -> list[dict]:
@@ -401,6 +427,9 @@ class DouyinAdapter:
         sec_user_id = str(sec_user_id or "").strip()
         if not sec_user_id:
             return []
+        # 单次同步上限 30：照抄抖小云 IsSyncLimitReached（避免一次拉太多触发风控，
+        # 剩下的等下次任务继续，配合订阅周期自然消化）
+        limit = min(limit, _BATCH_LIMIT)
         base = "/aweme/v1/web/aweme/post"
         referer = f"https://www.douyin.com/user/{sec_user_id}"
         items: list[dict] = []
@@ -462,6 +491,7 @@ class DouyinAdapter:
                 if not data.get("has_more"):
                     break
                 max_cursor = str(data.get("max_cursor", "0"))
+                await _pace()      # 翻页之间随机等待（照抄抖小云）
         return items[:limit]
 
 

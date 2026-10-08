@@ -3,6 +3,13 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_pace(monkeypatch):
+    """测试里把抖音翻页随机等待调成 0。"""
+    from app.modules import douyin
+    monkeypatch.setattr(douyin, "_PAGE_DELAY_RANGE", (0.0, 0.0), raising=False)
+
+
 class _FakeResp:
     status_code = 200
 

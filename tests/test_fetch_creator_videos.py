@@ -4,6 +4,13 @@ import httpx
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_pace(monkeypatch):
+    """测试里把抖音的翻页随机等待（2~10s）调成 0，否则测试会非常慢。"""
+    from app.modules import douyin
+    monkeypatch.setattr(douyin, "_PAGE_DELAY_RANGE", (0.0, 0.0), raising=False)
+
+
 class _FakeResp:
     status_code = 200
 
