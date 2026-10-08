@@ -2,7 +2,9 @@ import json
 import platform as py_platform
 import shutil
 import sys
+import time
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, text
@@ -90,6 +92,51 @@ def update_settings(body: dict, db: Session = Depends(get_db)):
         row.value = str(value)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/settings/test-llm")
+async def test_llm(db: Session = Depends(get_db), body: dict | None = None):
+    """测试大模型连通性（"接入方法"的验证按钮）。
+
+    用系统设置里的 Base URL / Key / 模型（未保存的字段也可经 body 临时覆盖），
+    发一个最小 chat/completions 请求，返回是否通、耗时、回复片段。
+    只做连通性探测，不写库、不产生费用之外的副作用。
+    """
+    rows = {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
+    body = body or {}
+    base = (body.get("llm_base_url") or rows.get("llm_base_url") or settings.llm_base_url or "").rstrip("/")
+    key = body.get("llm_api_key") or rows.get("llm_api_key") or settings.llm_api_key or ""
+    model = body.get("llm_model") or rows.get("llm_model") or settings.llm_model or ""
+    if not base:
+        raise HTTPException(status_code=422, detail="未填 Base URL")
+    if not model:
+        raise HTTPException(status_code=422, detail="未填模型名")
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 8,
+    }
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(f"{base}/chat/completions", headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        return {"ok": False, "message": f"连接失败: {exc}", "elapsed_ms": int((time.time() - t0) * 1000)}
+    ms = int((time.time() - t0) * 1000)
+    if resp.status_code >= 400:
+        return {
+            "ok": False,
+            "message": f"HTTP {resp.status_code}: {resp.text[:300]}",
+            "elapsed_ms": ms,
+        }
+    try:
+        data = resp.json()
+        snippet = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    except Exception:
+        snippet = ""
+    return {"ok": True, "message": "连接成功", "model": model, "reply": str(snippet)[:100], "elapsed_ms": ms}
 
 
 # ---------- 评论抓取配置（抖音评论富集门控/抓取参数） ----------

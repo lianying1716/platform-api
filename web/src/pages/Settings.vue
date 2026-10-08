@@ -72,6 +72,7 @@
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="saveSettings">保存</el-button>
+            <el-button :loading="testingLlm" @click="testLlm">测试连接</el-button>
           </el-form-item>
         </el-form>
       </el-tab-pane>
@@ -392,6 +393,26 @@ async function saveSettings() {
   ElMessage.success('已保存')
   settings.llm_api_key = ''
   await loadSettings()
+}
+
+const testingLlm = ref(false)
+async function testLlm() {
+  testingLlm.value = true
+  try {
+    // 用当前表单值（含未保存的）探测，方便边调边试
+    const { data } = await api.post('/api/system/settings/test-llm', {
+      llm_base_url: settings.llm_base_url,
+      llm_model: settings.llm_model,
+      llm_api_key: settings.llm_api_key,
+    })
+    if (data.ok) {
+      ElMessage.success(`连接成功（${data.elapsed_ms}ms）· 模型 ${data.model}`)
+    } else {
+      ElMessage.error(data.message || '连接失败')
+    }
+  } finally {
+    testingLlm.value = false
+  }
 }
 
 async function loadDiag() {

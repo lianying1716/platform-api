@@ -80,6 +80,19 @@ Claude Code / Codex（经 MCP）三条通道能力完全对等。
 MCP 是本地 **stdio** 小进程（`mcp_server/server.py`），不是 HTTP 端点；它把 AI 的调用
 转发到本平台的 `/api/skills/*`。共 14 个工具，全部调用落 `api_call_log` 可审计。
 
+### 平台自己的大模型（内容分析用）
+
+「AI 接入」有两层，别混淆：
+
+1. **别人调我们**（上面这节）：外部 AI 通过 API Key / MCP 调平台能力。
+2. **我们调大模型**（本节）：平台做摘要 / 视频理解 / 爆款拆解时调用的外部 LLM。
+
+第 2 项的接入方法：网页左侧 **「系统设置 → 大模型」** 填 Base URL、模型名、API Key
+（OpenAI 兼容接口），点 **「测试连接」** 校验——通过后再保存即可。
+字段说明：Base URL 填到 `/v1` 为止；Key 只写入不回显；留空的模型名默认 `gpt-4o-mini`。
+也可用环境变量 `PLATFORM_LLM_BASE_URL` / `PLATFORM_LLM_API_KEY` / `PLATFORM_LLM_MODEL`，
+但**系统设置里的值优先**于环境变量。
+
 ## 配置
 
 复制 `.env.example` 为 `.env` 后按需修改（`.env` 已被 git 忽略）。**凭证加密密钥丢失即全部凭证作废，迁移机器必须随行。**
