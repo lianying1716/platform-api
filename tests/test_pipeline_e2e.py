@@ -114,7 +114,10 @@ def test_full_pipeline_download_transcribe_analyze(session, monkeypatch):
 
     # mock 出网依赖
     async def fake_download(url, target_dir, **kw):
-        return {"video_file": "video.mp4", "audio_file": "audio.wav"}
+        # 必须返回真实的 DownloadResult —— 早先这里 mock 成 dict，
+        # 掩盖了 handler 用 .get() 读 dataclass 的崩溃（下载全挂却测试通过）
+        from app.modules.media_download import DownloadResult
+        return DownloadResult(ok=True, video_file="video.mp4", audio_file="audio.wav", title="t")
 
     async def fake_transcribe(media_path, options):
         return {"language": "zh", "model": "base",
@@ -324,7 +327,10 @@ def test_download_completion_triggers_auto_process_gate(session, monkeypatch):
     session.commit()
 
     async def fake_download(url, target_dir, **kw):
-        return {"video_file": "video.mp4", "audio_file": "audio.wav"}
+        # 必须返回真实的 DownloadResult —— 早先这里 mock 成 dict，
+        # 掩盖了 handler 用 .get() 读 dataclass 的崩溃（下载全挂却测试通过）
+        from app.modules.media_download import DownloadResult
+        return DownloadResult(ok=True, video_file="video.mp4", audio_file="audio.wav", title="t")
 
     monkeypatch.setattr("app.modules.media_download.download", fake_download)
     asyncio.run(handlers.handle_download(session, {"asset_id": asset.id}))
@@ -354,7 +360,10 @@ def test_download_gate_failure_does_not_flip_download(session, monkeypatch):
     session.commit()
 
     async def fake_download(url, target_dir, **kw):
-        return {"video_file": "video.mp4", "audio_file": "audio.wav"}
+        # 必须返回真实的 DownloadResult —— 早先这里 mock 成 dict，
+        # 掩盖了 handler 用 .get() 读 dataclass 的崩溃（下载全挂却测试通过）
+        from app.modules.media_download import DownloadResult
+        return DownloadResult(ok=True, video_file="video.mp4", audio_file="audio.wav", title="t")
 
     monkeypatch.setattr("app.modules.media_download.download", fake_download)
 
@@ -383,7 +392,10 @@ def test_download_path_respects_inflight_budget(session, monkeypatch):
     from app.workers import handlers
 
     async def fake_download(url, target_dir, **kw):
-        return {"video_file": "video.mp4", "audio_file": "audio.wav"}
+        # 必须返回真实的 DownloadResult —— 早先这里 mock 成 dict，
+        # 掩盖了 handler 用 .get() 读 dataclass 的崩溃（下载全挂却测试通过）
+        from app.modules.media_download import DownloadResult
+        return DownloadResult(ok=True, video_file="video.mp4", audio_file="audio.wav", title="t")
 
     monkeypatch.setattr("app.modules.media_download.download", fake_download)
 

@@ -50,9 +50,20 @@ async def handle_download(db: Session, payload: dict) -> None:
     asset.relative_path = rel
     target_dir = resolve_asset_dir(db, asset)
 
-    result = await media_download.download(content.url, target_dir)
-    asset.video_file = result.get("video_file", "")
-    asset.audio_file = result.get("audio_file", "")
+    # 抖音的页面下载需要带 Cookie（yt-dlp 的 Douyin extractor 明确要求 fresh cookies），
+    # 没带就会直接失败。其它平台带了也无害。
+    cookie = _comment_cookie(db, content.platform)
+    result = await media_download.download(content.url, target_dir, cookie=cookie)
+    # download() 返回 DownloadResult(dataclass)，不是 dict —— 这里必须属性访问。
+    asset.video_file = result.video_file
+    asset.audio_file = result.audio_file
+    if not result.ok:
+        # 下载失败别谎报 done，否则看板上全是"已完成"却没有文件
+        asset.download_status = "error"
+        asset.error = result.message or "下载失败"
+        db.commit()
+        events.publish("asset_status", {"asset_id": asset_id, "download": "error"})
+        return
     asset.download_status = "done"
     asset.error = ""
     db.commit()
