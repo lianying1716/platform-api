@@ -64,14 +64,52 @@
 - `media_download.download_direct()` 流式落盘、按 Content-Type 修扩展名
 - handler 优先走直链，没有直链才回退 yt-dlp
 
-### 5. Token / 限速 —— 同抖小云
+### 5. 限速 / 节流 —— 逐条照抄抖小云
+
+抖小云长期稳定、无风控，靠的不是什么签名，而是**随机间隔 + 单批上限**。
+`job/DouyinBasicSyncJob.cs` 原文：
+
+```csharp
+await Task.Delay(_random.Next(2, 10) * 1000);  // 翻页之间（line 467）
+await Task.Delay(_random.Next(1, 4) * 1000);   // 每次下载前（line 914）
+await Task.Delay(_random.Next(2, 10) * 1000);  // 动态/图文之间（line 1014）
+```
+
+`IsSyncLimitReached`：单次同步**最多 30 条**，剩下的等下次任务继续
+（收藏合集另有 `config.BatchCount`，默认 18、上限 30）。
+
+我们照做：
 
 | 项 | 抖小云 | 我们 |
 |---|---|---|
+| 翻页间隔 | 2~10s 随机 | `_pace()`：`_PAGE_DELAY_RANGE=(2,10)` 随机，每个翻页循环后调用 |
+| 单批上限 | 30 条 | `_BATCH_LIMIT = 30`，`_fetch_paged` / `_fetch_creator_videos` 生效 |
+| 下载间隔 | 1~4s 随机 | （下载队列已有节流，见 handlers） |
 | 同步限速 | 全局令牌桶 `SlidingWindowRateLimiter` | `fetch_cache` + 风控冷却 |
-| 博主视频限速 | `UseAutoRateLimit` | 订阅同步间隔 + 5 分钟抓取缓存 |
 | 连接 | `MaxConnectionsPerServer=8`，超时 60s | httpx 默认池，超时 15s |
 | 下载超时 | 5 分钟 | 300s |
+
+测试注意：`_pace()` 每次调用都重读模块级 `_PAGE_DELAY_RANGE`，
+测试用 autouse fixture 把它置 0 即可跳过真实等待（不要用默认参数绑定，那样改不动）。
+
+### 6. 订阅源类型 —— 补齐抖小云的全部入口
+
+抖小云 `VideoTypeEnum` 的同步入口我们逐条搬了过来：
+
+| 抖小云 VideoType | 我们 source_type | 接口 |
+|---|---|---|
+| dy_favorite（喜欢的/点赞） | `like` | `/aweme/v1/web/aweme/favorite` |
+| dy_collects（收藏） | `favorite` | POST `/aweme/v1/web/aweme/listcollection` |
+| dy_custom_collect（自定义收藏夹） | `collect_folder` | `/aweme/v1/web/collects/list` + `/collects/video/list` |
+| dy_mix（收藏合集） | `collection` | `/aweme/v1/web/mix/listcollection` + `/mix/aweme` |
+| dy_series（收藏短剧） | `series` | `/aweme/v1/web/series/collections` + `/series/aweme` |
+| dy_follows / dy_followuser（关注的博主） | `creator` | `/aweme/v1/web/aweme/post` |
+
+六套参数模板（`COLLECT_FOLDER_LIST_PARAMS` / `COLLECT_FOLDER_VIDEO_PARAMS` /
+`MIX_LIST_PARAMS` / `MIX_VIDEO_PARAMS` / `SERIES_LIST_PARAMS` / `SERIES_VIDEO_PARAMS`）
+逐项照抄 `DouyinRequestParamManager`，路径一律**无尾斜杠**。
+统一映射函数 `_aweme_to_item`，分页走 `_fetch_paged`（服务端 cursor + 30 上限 + 随机间隔）。
+前端「新建跟踪」的来源类型按平台动态出选项（抖音 6 种 / B站 3 种）。
 
 ## 修完移除的“多余发明”
 
@@ -81,7 +119,7 @@
 
 ## 验证
 
-- `pytest 441 passed`
+- `pytest 451 passed`
 - 真机实测三个端点（博主视频 / 关注 / 收藏）全部 **200**，不再是 403
 - 回归测试锁定：路径不得带尾斜杠；`extra.download_url` 优先直链下载
 
