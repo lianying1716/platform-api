@@ -1,7 +1,14 @@
 # platform-api · 统一素材采集管理平台
 
-xsai-workbench 的统一后端主控层 + Web 工作台。设计文档见
-[`../docs/workbench-requirements-and-design-v1.md`](../docs/workbench-requirements-and-design-v1.md)。
+xsai-workbench 的统一后端主控层 + Web 工作台。
+
+> **本仓库是独立仓库**（https://github.com/lianying1716/platform-api），单独 clone 时
+> 下方 `../docs/...` 链接会失效——那些设计文档在**工作台仓库**
+> （https://github.com/lianying1716/xsai-workbench）里。工作台内两者是同级目录。
+
+设计文档见工作台仓库的 `docs/`：
+[`workbench-requirements-and-design-v1.md`](https://github.com/lianying1716/xsai-workbench/blob/main/docs/workbench-requirements-and-design-v1.md)、
+开发总纲 [`development-master-plan.md`](https://github.com/lianying1716/xsai-workbench/blob/main/docs/development-master-plan.md)。
 
 ## 当前进度
 
@@ -73,7 +80,7 @@ npm run build                              # 产物输出到 ../app/static
 
 - ✅ 登录态管理（扫码/探活）、✅ 单篇文章 URL 导入（`POST /api/imports/wechat-article`）。
 - ❌ 不做公众号订阅同步 / 批量历史文章列表 / 公开索引发现：微信已于 2026-07 关闭相关后台接口。
-  详见 `../docs/plans/2026-10-05-wechat-mp-investigation.md`。
+  详见工作台仓库 [`docs/plans/2026-10-05-wechat-mp-investigation.md`](https://github.com/lianying1716/xsai-workbench/blob/main/docs/plans/2026-10-05-wechat-mp-investigation.md)。
 
 ## 协议来源与许可
 

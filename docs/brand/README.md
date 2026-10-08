@@ -41,5 +41,7 @@
 抖音用 simple-icons 的 `tiktok` 路径（两者共用同一音符商标几何）。
 
 **合规边界**：平台商标归各平台所有，仅作「这是哪个平台」的识别性使用，
-不得作为本项目自身标志、不得暗示官方合作或背书。详见
-`../../docs/license-and-usage-compliance.md` 第 5 节（工作区根目录）。
+不得作为本项目自身标志、不得暗示官方合作或背书。
+完整合规声明（权威副本）见工作台仓库
+[`docs/license-and-usage-compliance.md`](https://github.com/lianying1716/xsai-workbench/blob/main/docs/license-and-usage-compliance.md) 第 5 节；
+本仓库内的同名文件只是指针。
