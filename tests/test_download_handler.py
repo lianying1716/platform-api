@@ -91,3 +91,62 @@ async def test_download_failure_marks_error_not_done(session, monkeypatch):
     session.refresh(asset)
     assert asset.download_status == "error"
     assert "Fresh cookies" in (asset.error or "")
+
+@pytest.mark.asyncio
+async def test_douyin_uses_direct_play_url(session, monkeypatch):
+    """抖音：抓取时存了 play_addr 直链，下载应走直链(兜底 yt-dlp)。
+
+    照抄抖小云：它把 video.play_addr 的直链存下来，下载只做一次带 Cookie 的 GET，
+    不用 yt-dlp（抖音页面下载要 fresh cookies，很脆）。
+    """
+    from app.modules.media_download import DownloadResult
+    from app.workers import handlers
+
+    _acc, content, asset = _setup(session)
+    content.extra = {"download_url": "https://www.douyin.com/aweme/v1/play/?video_id=v0200abc"}
+    session.commit()
+
+    called = {}
+
+    async def fake_direct(url, out_dir, cookie=""):
+        called["direct"] = url
+        return DownloadResult(ok=True, video_file="v0200abc.mp4")
+
+    async def fake_ytdlp(*a, **k):
+        called["ytdlp"] = True
+        return DownloadResult(ok=False, message="不该走这条路")
+
+    monkeypatch.setattr(handlers.media_download, "download_direct", fake_direct)
+    monkeypatch.setattr(handlers.media_download, "download", fake_ytdlp)
+
+    await handlers.handle_download(session, {"asset_id": asset.id})
+    assert called.get("direct", "").startswith("https://www.douyin.com/aweme/v1/play/")
+    assert "ytdlp" not in called, "有直链时不应回退 yt-dlp"
+    session.refresh(asset)
+    assert asset.video_file == "v0200abc.mp4"
+    assert asset.download_status == "done"
+
+
+@pytest.mark.asyncio
+async def test_douyin_without_direct_url_falls_back_to_ytdlp(session, monkeypatch):
+    """没有直链时（老数据）仍应能回退 yt-dlp。"""
+    from app.modules.media_download import DownloadResult
+    from app.workers import handlers
+
+    _acc, _content, asset = _setup(session)
+    called = {}
+
+    async def fake_direct(*a, **k):
+        called["direct"] = True
+        return DownloadResult(ok=False, message="不该走")
+
+    async def fake_ytdlp(*a, **k):
+        called["ytdlp"] = True
+        return DownloadResult(ok=True, video_file="x.mp4")
+
+    monkeypatch.setattr(handlers.media_download, "download_direct", fake_direct)
+    monkeypatch.setattr(handlers.media_download, "download", fake_ytdlp)
+
+    await handlers.handle_download(session, {"asset_id": asset.id})
+    assert called.get("ytdlp") is True
+    assert "direct" not in called

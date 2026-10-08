@@ -180,36 +180,32 @@ async def test_douyin_fetch_creator_videos(monkeypatch):
     assert it["cover_url"] == "https://p3.douyinpic.com/c.jpg"
     assert it["metrics"]["play"] == 5
     assert it["published_at"].startswith("2023-12-23")
-    assert "a_bogus" in calls[0]["url"]
+    # 关键回归：路径**不能带尾斜杠**。带尾斜杠会被 Argus 拦成 403
+    # （实测 Blocked by ArgusSecurityPlugin Uifid Not Found）。
+    assert "/aweme/v1/web/aweme/post?" in calls[0]["url"]
+    assert "/aweme/v1/web/aweme/post/?" not in calls[0]["url"]
+    # 不真算签名：抖小云同样不签名。
+    # 注意它的参数模板里**保留 a_bogus 空键**（"带空键"与"完全不带"服务端处理不同），
+    # 所以这里断言的是"没有真的签名值"，而不是"没有这个键"。
+    assert "a_bogus=&" in calls[0]["url"] or calls[0]["url"].endswith("a_bogus=")
+    assert "ABOGUS" not in calls[0]["url"]
 
 
 @pytest.mark.asyncio
-async def test_douyin_fetch_creator_sign_failure_is_readable(monkeypatch):
+async def test_douyin_creator_argus_block_retries_with_signature(monkeypatch):
+    """万一又被 Argus 拦（平台改版），应带上 a_bogus 重试一次，而不是直接失败。"""
     from app.modules import douyin
 
-    _patch_douyin(monkeypatch, {"aweme/post": {"status_code": 0, "aweme_list": []}}, sign_ok=False)
-    adapter = douyin.DouyinAdapter()
-    with pytest.raises(RuntimeError, match="签名"):
-        await adapter.fetch_source({"cookie": "c=1"}, "creator", "SEC1", 10)
+    calls = []
 
-# ---------------------------------------------------------------- Argus 兜底
-
-@pytest.mark.asyncio
-async def test_douyin_argus_block_falls_back_to_browser(monkeypatch):
-    """纯 HTTP 被 Argus 拦（403 Uifid Not Found）时，应回退浏览器同源 fetch。
-
-    实测：/aweme/v1/web/aweme/post/ 带 a_bogus 仍返回
-    403 Blocked by ArgusSecurityPlugin Uifid Not Found；
-    页面内同源 fetch 返回 200。所以被拦时必须走浏览器兜底，而不是直接报错。
-    """
-    from app.modules import douyin
-
-    class _Blocked:
-        status_code = 403
-        text = "Blocked by ArgusSecurityPlugin Uifid Not Found"
+    class _Resp:
+        def __init__(self, status, text, payload=None):
+            self.status_code = status
+            self.text = text
+            self._payload = payload
 
         def json(self):
-            raise AssertionError("被拦时不应解析 JSON")
+            return self._payload
 
     class _C:
         async def __aenter__(self):
@@ -219,35 +215,18 @@ async def test_douyin_argus_block_falls_back_to_browser(monkeypatch):
             return False
 
         async def get(self, url, params=None):
-            return _Blocked()
+            calls.append(url)
+            # 模板里本来就有空的 a_bogus= 键，所以要看"有没有真签名值"
+            if "a_bogus=FAKEBOGUS" not in url:
+                return _Resp(403, "Blocked by ArgusSecurityPlugin Uifid Not Found")
+            return _Resp(200, "", {"status_code": 0, "has_more": False,
+                                   "aweme_list": [{"aweme_id": "9001", "desc": "重试拿到",
+                                                   "statistics": {}, "author": {}}]})
 
     monkeypatch.setattr(douyin, "_client", lambda *a, **k: _C())
-    monkeypatch.setattr(douyin.douyin_sign, "get_a_bogus", lambda *a, **k: "fake")
+    monkeypatch.setattr(douyin.douyin_sign, "get_a_bogus", lambda *a, **k: "FAKEBOGUS")
 
-    called = {}
-
-    async def fake_fetch_json(path, params, cookie, referer=""):
-        called["path"] = path
-        called["sec"] = params.get("sec_user_id")
-        return {
-            "status_code": 0,
-            "has_more": False,
-            "aweme_list": [{
-                "aweme_id": "7300000000000000001",
-                "desc": "兜底拿到的作品",
-                "create_time": 1700000000,
-                "statistics": {"digg_count": 12, "comment_count": 3},
-                "author": {"nickname": "某博主", "sec_uid": "SECU"},
-                "video": {"cover": {"url_list": ["https://c/1.jpg"]}},
-            }],
-        }
-
-    monkeypatch.setattr("app.modules.douyin_browser_fetch.fetch_json", fake_fetch_json)
-
-    items = await douyin.DouyinAdapter()._fetch_creator_videos("sessionid=x", "SECU", 10)
-    assert called.get("path") == "/aweme/v1/web/aweme/post/"
-    assert called.get("sec") == "SECU"
-    assert len(items) == 1
-    assert items[0]["external_id"] == "7300000000000000001"
-    assert items[0]["title"] == "兜底拿到的作品"
-    assert items[0]["metrics"]["like"] == 12
+    items = await douyin.DouyinAdapter().fetch_source({"cookie": "c=1"}, "creator", "SEC1", 10)
+    assert len(calls) == 2, "被拦后应重试一次"
+    assert "a_bogus=FAKEBOGUS" in calls[1]
+    assert items[0]["external_id"] == "9001"

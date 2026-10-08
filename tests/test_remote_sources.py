@@ -178,18 +178,21 @@ async def test_douyin_creator(monkeypatch):
 
     calls: list[dict] = []
 
-    async def fake_following_list(cookie, sec_user_id, offset="1", count="10"):
+    async def fake_following_list(cookie, sec_user_id, offset="0", count="20"):
         calls.append({"cookie": cookie, "sec_user_id": sec_user_id, "offset": offset, "count": count})
-        if offset == "1":
+        if offset == "0":
+            # 抖小云按服务端返回的 offset 翻页，这里模拟平台给下一页游标
             return {
                 "status_code": 0,
                 "has_more": True,
+                "offset": 2,
                 "followings": [
                     {"sec_uid": "S1", "nickname": "博主1"},
                     {"sec_uid": "S2", "nickname": "博主2"},
                 ],
             }
-        return {"status_code": 0, "has_more": False, "followings": [{"sec_uid": "S3", "nickname": "博主3"}]}
+        return {"status_code": 0, "has_more": False, "offset": 3,
+                "followings": [{"sec_uid": "S3", "nickname": "博主3"}]}
 
     monkeypatch.setattr(douyin, "following_list", fake_following_list)
     out = await douyin.DouyinAdapter().list_sources({"cookie": "ck", "sec_user_id": "SEC"}, "creator")
@@ -205,7 +208,7 @@ async def test_douyin_creator(monkeypatch):
 async def test_douyin_creator_pagination_capped_at_50(monkeypatch):
     from app.modules import douyin
 
-    async def always_more(cookie, sec_user_id, offset="1", count="10"):
+    async def always_more(cookie, sec_user_id, offset="0", count="20"):
         base = int(offset)
         return {
             "status_code": 0,
@@ -217,8 +220,8 @@ async def test_douyin_creator_pagination_capped_at_50(monkeypatch):
 
     monkeypatch.setattr(douyin, "following_list", always_more)
     out = await douyin.DouyinAdapter().list_sources({"cookie": "ck", "sec_user_id": "SEC"}, "creator")
-    assert len(out) == 50
-    assert out[0] == {"remote_id": "S1", "title": "n1"}
+    assert len(out) == 50, "关注列表最多取 50 条"
+    assert out[0] == {"remote_id": "S0", "title": "n0"}
 
 
 @pytest.mark.asyncio
@@ -263,7 +266,7 @@ async def test_douyin_creator_defensive_parsing(monkeypatch):
     """关注列表结构异常（缺 sec_uid / 非 0 状态码）时不崩、只跳过坏项。"""
     from app.modules import douyin
 
-    async def weird(cookie, sec_user_id, offset="1", count="10"):
+    async def weird(cookie, sec_user_id, offset="0", count="20"):
         return {
             "status_code": 0,
             "has_more": False,

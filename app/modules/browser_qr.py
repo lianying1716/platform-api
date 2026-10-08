@@ -63,7 +63,7 @@ _PLATFORM_CONF = {
         # 登录后从页面自身取"我是谁"：external_id 决定二次登录是更新还是新建账号，
         # 取不到就会每扫一次建一个新号（实测过）。
         "self_profile_url": (
-            "/aweme/v1/web/user/profile/self/?device_platform=webapp&aid=6383"
+            "/aweme/v1/web/user/profile/self?device_platform=webapp&aid=6383"
         ),
         "self_id_fields": ["sec_uid"],
         "self_id_cookies": ["sid_tt"],

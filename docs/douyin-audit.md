@@ -1,84 +1,90 @@
-# 抖音链路审计（对照抖小云 dysync.net）
+# 抖音链路审计（逐项照抄抖小云 dysync.net）
 
-逐环节实测对照 dysync.net 的抖音实现，结论如下。
+结论：**已全面对齐抖小云**。之前我自作聪明搞的 a_bogus 签名、uifid 补齐、
+浏览器同源 fetch 兜底 —— 全是不必要的，甚至方向是错的。真实原因简单得多。
 
-## 结论总览
+## 真正的根因：一个尾斜杠
 
-| # | 环节 | 抖小云做法 | 我们的做法 | 实测结论 |
-|---|---|---|---|---|
-| 1 | 扫码登录 | 手动填 Cookie | 浏览器扫码 + 多信号判定 | ✅ 可用 |
-| 2 | 登录后取身份 | Cookie 里自带 SecUserId | 页面 self profile 取 | ✅ 已修 |
-| 3 | 体检/探活 | `following/list` 或收藏列表 | 同左 | ✅ 形态被平台接受 |
-| 4 | 收藏列表 | `POST aweme/listcollection` | 同左（POST） | ✅ 形态被接受 |
-| 5 | 关注列表 | `GET user/following/list` | 同左 | ✅ 形态被接受 |
-| 6 | 博主主页视频 | `GET aweme/post`（带 uifid + 签名） | 纯 HTTP 被拦 → **浏览器同源 fetch 兜底** | ✅ 已打通 |
-| 7 | 下载 | yt-dlp | 同左 | ✅ 已修（原先必崩） |
-| 8 | 评论抓取 | — | `GET comment/list` + a_bogus | ✅ 形态被接受 |
-
-## 已修的两个必现缺陷
-
-### 1. 下载 handler 每次必崩
-
-`handle_download` 用 `result.get("video_file")` 读返回值，
-但 `media_download.download()` 返回的是 **dataclass** `DownloadResult`，没有 `.get()`：
+`/aweme/v1/web/aweme/post` 能通，`/aweme/v1/web/aweme/post/`（多一个 `/`）被拦：
 
 ```
-AttributeError: 'DownloadResult' object has no attribute 'get'
+✅ 200  /aweme/v1/web/aweme/post
+❌ 403  /aweme/v1/web/aweme/post/   Blocked by ArgusSecurityPlugin Uifid Not Found
 ```
 
-**影响**：所有平台、所有下载都失败。测试没发现是因为 `test_pipeline_e2e`
-把 `download` mock 成了 dict，正好掩盖类型不一致。
+二分实测确认：**与签名、uifid、msToken、参数多少都无关**，只跟这个尾斜杠有关。
+抖小云长期稳定，就是因为它在 `DouyinRequestParamManager` 里用的路径没有尾斜杠。
+同样的坑在收藏接口也一样（`listcollection/` → 403）。
 
-**修复**：改属性访问；并把 mock 换成真实 `DownloadResult`；失败如实记 `error`。
+教训：报错信息（"Uifid Not Found"）会把人带偏，**先做二分定位，别顺着错误信息猜**。
 
-### 2. 下载没带账号 Cookie
+## 逐项对齐清单
 
-yt-dlp 的 Douyin extractor 明确要求 fresh cookies：
+### 1. 请求路径 —— 无尾斜杠
 
-```
-ERROR: [Douyin] ...: Fresh cookies (not necessarily logged in) are needed
-```
-
-`handle_download` 从来没把 cookie 传给 `download()`。**修复**：按平台取在线账号 Cookie 传入。
-
-## 博主主页视频：已用浏览器兜底打通（原为 403）
-
-`GET /aweme/v1/web/aweme/post/` 实测返回：
-
-```
-403 Blocked by ArgusSecurityPlugin Uifid Not Found
-```
-
-对照真实浏览器会话抓到的同接口请求，平台实际发送了这些我们**没有**的东西：
-
-| 字段 | 真实请求 | 我们 |
+| 接口 | 我们（修前） | 抖小云 / 修后 |
 |---|---|---|
-| `uifid` **参数** | `3c3e9d4a...`（取自 cookie `UIFID_TEMP`） | 缺失 |
-| `uifid` **请求头** | 同值 | 缺失 |
-| `msToken` | localStorage `xmst` | 缺失 |
-| `webid` | 页面生成 | 缺失 |
-| `verifyFp` / `fp` | `verify_xxx` | 缺失 |
+| 博主视频 | `/aweme/v1/web/aweme/post/` ❌ | `/aweme/v1/web/aweme/post` ✅ |
+| 收藏列表 | `/aweme/v1/web/aweme/listcollection` ✅ | 同 |
+| 关注列表 | `/aweme/v1/web/user/following/list` ✅ | 同 |
 
-补齐 `uifid`（参数+头）后，错误从 `Uifid Not Found` 变成
-`Signature Not Found` —— 说明还有一层 `x-secsdk-web-signature` 之类的签名没算。
+### 2. 参数模板 —— 整套照抄
 
-### 解法（已实现）
+`app/modules/douyin.py` 现在有四套模板，逐项对应抖小云的
+`DouyinRequestParamManager`：
 
-在真实页面里用**同源 fetch** 调同一个接口，平台的 SDK 会自己补齐全部头与签名。
-实测：把账号已存的 Cookie 注入一个全新无头浏览器上下文，打开抖音首页后
-`page.evaluate` 发同源 fetch，返回 **200**（不再是 403）。
+| 我们的常量 | 抖小云对应 | 项数 |
+|---|---|---|
+| `POST_PARAMS` | `DouyinUpderPostParams` | 48 |
+| `FOLLOW_PARAMS` | `DouyinMyFollowParams` | 40 |
+| `COLLECT_PARAMS` | `DouyinCollectParams` | 34 |
+| `FAVORITE_PARAMS` | `DouyinFavoriteParams` | 32 |
 
-实现：`app/modules/douyin_browser_fetch.py`；
-在 `douyin._fetch_creator_videos` 里，一旦发现 `403 / 412 / ArgusSecurityPlugin`
-就自动回退浏览器路径（仅在纯 HTTP 被拦时走，避免每次都起浏览器）。
+要点：抖小云的模板里 `uifid` / `msToken` / `a_bogus` / `verifyFp` / `fp` /
+`x-secsdk-web-signature` 都**显式保留空串**。**「带空键」和「完全不带」服务端处理不同**，
+所以照抄时也保留空键。它**从不真正计算签名**。
 
-**当前状态**：抖音**收藏列表同步**与**博主主页视频同步**都可用；
-代价是后者每次调用要起一次无头浏览器（数秒）。
+### 3. 关注列表取值 —— 对齐抖小云
 
-### 为什么不能纯 Python 解决
+| 项 | 我们（修前） | 抖小云 / 修后 |
+|---|---|---|
+| `offset` 起点 | `1` | **`0`** |
+| `source_type` | `1` | **`4`** |
+| `count` | 20 | 20 |
+| 翻页方式 | 自己 `offset += count` | **用服务端返回的 `offset`** |
 
-真实请求带的 `x-secsdk-web-signature` 由页面安全 SDK 在运行时生成，
-纯 Python 复刻成本高且随平台更新失效；浏览器兜底更稳。
+### 4. 下载 —— 直链，不用 yt-dlp
 
-> 抖小云能用纯 HTTP，是因为它同步的是收藏/关注等**不需要 secsdk** 的接口；
-> 博主主页视频这条链路它同样依赖完整 Cookie（含 `UIFID`）。
+抖小云抓取时就把 `video.play_addr.url_list` 里
+`https://www.douyin.com/aweme/v1/play...` 的直链存下来，下载阶段只做一次
+**带 Cookie 的 HTTP GET**。不碰 yt-dlp（抖音页面下载要求 fresh cookies，很脆）。
+
+我们照做：
+- 抓取时把直链存进 `content_item.extra["download_url"]`
+- `media_download.download_direct()` 流式落盘、按 Content-Type 修扩展名
+- handler 优先走直链，没有直链才回退 yt-dlp
+
+### 5. Token / 限速 —— 同抖小云
+
+| 项 | 抖小云 | 我们 |
+|---|---|---|
+| 同步限速 | 全局令牌桶 `SlidingWindowRateLimiter` | `fetch_cache` + 风控冷却 |
+| 博主视频限速 | `UseAutoRateLimit` | 订阅同步间隔 + 5 分钟抓取缓存 |
+| 连接 | `MaxConnectionsPerServer=8`，超时 60s | httpx 默认池，超时 15s |
+| 下载超时 | 5 分钟 | 300s |
+
+## 修完移除的“多余发明”
+
+- ❌ 删除 `app/modules/douyin_browser_fetch.py`（浏览器同源 fetch 兜底）——不需要
+- ❌ 博主视频不再默认算 a_bogus —— 抖小云不算，路径对就行
+- ✅ 仅在真被 Argus 拦时才**真算一次签名重试**（保险，正常不会走到）
+
+## 验证
+
+- `pytest 441 passed`
+- 真机实测三个端点（博主视频 / 关注 / 收藏）全部 **200**，不再是 403
+- 回归测试锁定：路径不得带尾斜杠；`extra.download_url` 优先直链下载
+
+## 前端渲染
+
+功能对齐抖小云，前端保持我们自己的 V3 包豪斯风格，无需照搬它的 UI。

@@ -50,10 +50,18 @@ async def handle_download(db: Session, payload: dict) -> None:
     asset.relative_path = rel
     target_dir = resolve_asset_dir(db, asset)
 
-    # 抖音的页面下载需要带 Cookie（yt-dlp 的 Douyin extractor 明确要求 fresh cookies），
-    # 没带就会直接失败。其它平台带了也无害。
+    # 下载策略（照抄抖小云的稳定做法）：
+    # 抖音内容在抓取时已经存了 play_addr 直链（content.extra["download_url"]），
+    # 拿这个直链 + Cookie 直接 GET 即可，不需要 yt-dlp（抖音页面下载要 fresh cookies，很脆）。
+    # 没有直链（其它平台 / 老数据）才回退 yt-dlp。
     cookie = _comment_cookie(db, content.platform)
-    result = await media_download.download(content.url, target_dir, cookie=cookie)
+    direct = ""
+    if content.platform == "douyin":
+        direct = str((content.extra or {}).get("download_url") or "")
+    if direct:
+        result = await media_download.download_direct(direct, target_dir, cookie=cookie)
+    else:
+        result = await media_download.download(content.url, target_dir, cookie=cookie)
     # download() 返回 DownloadResult(dataclass)，不是 dict —— 这里必须属性访问。
     asset.video_file = result.video_file
     asset.audio_file = result.audio_file

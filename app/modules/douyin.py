@@ -59,6 +59,93 @@ BASE_PARAMS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 各接口参数模板 —— 逐项照抄 dysync.net utils/DouyinRequestParamManager.cs。
+# 抖小云实测长期稳定、无风控问题，这里不再自行简化参数：
+# 抖音会校验参数完整度，缺项容易被判成异常请求。
+# 凡模板里显式为空的键（uifid/msToken/a_bogus/verifyFp/fp/...）都保留空串，
+# 因为「带这个键但为空」与「完全不带」在服务端是两种处理。
+# ---------------------------------------------------------------------------
+
+def _with(base: dict | None = None, **over) -> dict:
+    """在基础参数上覆盖/追加，避免各模板重复写公共项（对应 InitBaseParams()）。"""
+    d = dict(BASE_PARAMS if base is None else base)
+    d.update(over)
+    return d
+
+
+# 博主发布作品（SyncUpderPostVideos）—— 我们最需要的那条
+POST_PARAMS = _with(
+    version_code="290100", version_name="29.1.0",
+    screen_width="1707", screen_height="1067",
+    browser_name="Chrome", browser_version="142.0.0.0", engine_version="142.0.0.0",
+    cpu_core_num="32", support_h265="1", support_dash="1",
+    webid="7574080345697584675",
+    locate_item_id="7576282367263807451", locate_query="false",
+    show_live_replay_strategy="1", need_time_list="1", time_list_query="0",
+    publish_video_strategy_type="2", from_user_page="1",
+    uifid="", msToken="", a_bogus="", verifyFp="", fp="",
+    **{"x-secsdk-web-expire": "", "x-secsdk-web-signature": ""},
+    cut_version="1",
+    sec_user_id="", max_cursor="0", count="18",
+)
+
+# 我关注的博主（SyncMyFollows）
+FOLLOW_PARAMS = _with(
+    version_code="170400", version_name="17.4.0",
+    screen_width="1707", screen_height="1067",
+    browser_name="Edge", browser_version="141.0.0.0", engine_version="141.0.0.0",
+    cpu_core_num="32", support_h265="1", support_dash="1",
+    webid="7577203855940994560",
+    min_time="0", max_time="0", source_type="4",
+    gps_access="0", address_book_access="0", is_top="1",
+    user_id="", sec_user_id="", offset="0", count="20",
+)
+
+# 我的收藏（SyncCollectVideos）
+COLLECT_PARAMS = _with(
+    version_code="290100", version_name="29.1.0",
+    screen_width="1920", screen_height="1080",
+    browser_version="130.0.0.0", engine_version="130.0.0.0",
+    cpu_core_num="12",
+    from_user_page="1", locate_query="false", need_time_list="1",
+    show_live_replay_strategy="1", time_list_query="0",
+    cursor="0", count="10",
+)
+
+# 我点赞的作品（SyncFavoriteVideos）
+FAVORITE_PARAMS = _with(
+    version_code="170400", version_name="17.4.0",
+    screen_width="1536", screen_height="960",
+    browser_version="140.0.0.0", engine_version="140.0.0.0",
+    cpu_core_num="20", support_h265="1", support_dash="1",
+    min_cursor="0", cut_version="1", count="18",
+)
+
+
+def _pick_play_url(aw: dict) -> str:
+    """从 aweme 结构里取可直连下载的播放地址。
+
+    照抄抖小云 DouyinBasicSyncJob：优先取 video.play_addr.url_list 里
+    ``https://www.douyin.com/aweme/v1/play`` 开头的直链（配 Cookie 可直接下载），
+    否则回退 url_list 第一项。
+
+    有了这个就不必依赖 yt-dlp（抖音页面下载要 fresh cookies，很脆），
+    也不需要任何签名 —— 抖小云就是这么长期稳定下载的。
+    """
+    video = aw.get("video") or {}
+    addr = video.get("play_addr") or {}
+    urls = addr.get("url_list") or []
+    for u in urls:
+        if isinstance(u, str) and u.startswith("https://www.douyin.com/aweme/v1/play"):
+            return u
+    if urls:
+        return str(urls[0])
+    # 兜底：下载地址字段（部分内容只有这个）
+    dl = (video.get("download_addr") or {}).get("url_list") or []
+    return str(dl[0]) if dl else ""
+
+
 def _client(cookie: str, referer: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=_HOST,
@@ -69,7 +156,7 @@ def _client(cookie: str, referer: str) -> httpx.AsyncClient:
 
 async def list_collection(cookie: str, cursor: str = "0", count: str = "10") -> dict | None:
     """收藏列表（dysync SyncCollectVideos）。"""
-    params = dict(BASE_PARAMS, version_code="290100", version_name="29.1.0", cursor=cursor, count=count)
+    params = dict(COLLECT_PARAMS, cursor=cursor, count=count)
     async with _client(cookie, _HOST) as client:
         resp = await client.post("/aweme/v1/web/aweme/listcollection", params=params)
         if resp.status_code != 200:
@@ -81,17 +168,22 @@ async def list_collection(cookie: str, cursor: str = "0", count: str = "10") -> 
             return None
 
 
-async def following_list(cookie: str, sec_user_id: str, offset: str = "1", count: str = "10") -> dict | None:
-    """关注列表（dysync SyncMyFollows）。"""
+async def following_list(cookie: str, sec_user_id: str, offset: str = "0", count: str = "20") -> dict | None:
+    """关注列表。
+
+    完全照抄抖小云 SyncMyFollows：
+    - 参数用 FOLLOW_PARAMS 模板（含 min_time/max_time/source_type/is_top/webid 等）
+    - ``source_type=4``（抖小云值；我们原先用 1）
+    - ``offset`` 从 **0** 起（抖小云 job 里初始 offset="0"）
+    - referer ``https://www.douyin.com/user/self?showTab=like``
+    返回体里的 ``offset`` 字段就是下一页要传的值，按它翻页。
+    """
     params = dict(
-        BASE_PARAMS,
+        FOLLOW_PARAMS,
         user_id="",
         sec_user_id=sec_user_id,
         offset=offset,
         count=count,
-        source_type="1",
-        gps_access="0",
-        address_book_access="0",
     )
     referer = "https://www.douyin.com/user/self?showTab=like"
     async with _client(cookie, referer) as client:
@@ -169,7 +261,7 @@ class DouyinAdapter:
     async def _list_followings(self, cookie: str, sec_user_id: str, limit: int = 50) -> list[dict]:
         """关注列表。解析防御式：字段缺失/请求失败都只返回已拿到的部分。"""
         out: list[dict] = []
-        offset = 1
+        offset = 0
         count = 20
         try:
             while len(out) < limit:
@@ -188,7 +280,8 @@ class DouyinAdapter:
                         break
                 if not data.get("has_more"):
                     break
-                offset += count
+                # 抖小云按服务端返回的 offset 翻页（不是自己累加）
+                offset = int(data.get("offset") or (offset + count))
         except (httpx.HTTPError, ValueError):
             return out[:limit]
         return out[:limit]
@@ -205,7 +298,7 @@ class DouyinAdapter:
             return []
         cookie = credential.get("cookie", "")
         out: list[dict] = []
-        offset = 1
+        offset = 0
         count = 20
         try:
             while len(out) < limit:
@@ -245,7 +338,7 @@ class DouyinAdapter:
                         break
                 if not data.get("has_more"):
                     break
-                offset += count
+                offset = int(data.get("offset") or (offset + count))
         except (httpx.HTTPError, ValueError):
             pass
         return out[:limit]
@@ -254,7 +347,7 @@ class DouyinAdapter:
         """拉取订阅源内容。
 
         - favorite/collection：我的收藏（/aweme/v1/web/aweme/listcollection）
-        - creator：博主主页视频（/aweme/v1/web/aweme/post/，a_bogus 签名 + 登录 Cookie）
+        - creator：博主主页视频（/aweme/v1/web/aweme/post，无尾斜杠，无需签名）
         """
         cookie = credential.get("cookie", "")
         if source_type == "creator":
@@ -279,6 +372,8 @@ class DouyinAdapter:
                         "author_id": author.get("sec_uid", ""),
                         "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
                         "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
+                        # 直连播放地址：下载走它 + Cookie，不依赖 yt-dlp
+                        "extra": {"download_url": _pick_play_url(aw)},
                         # create_time 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
                         "published_at": _ts_to_iso(aw.get("create_time")),
                         "metrics": {
@@ -295,97 +390,40 @@ class DouyinAdapter:
             cursor = str(data.get("cursor", "0"))
         return items[:limit]
 
-    async def _fetch_creator_videos_via_browser(
-        self, cookie: str, sec_user_id: str, limit: int
-    ) -> list[dict]:
-        """浏览器兜底：同源 fetch 拉博主视频，规避 Argus 安全插件。
-
-        纯 HTTP + a_bogus 会被 `403 ArgusSecurityPlugin` 拦（实测缺 uifid 与 secsdk 签名），
-        页面内同源 fetch 则返回 200。代价是要起一次浏览器，所以只在被拦时才走。
-        """
-        from app.modules.douyin_browser_fetch import fetch_json
-
-        base = "/aweme/v1/web/aweme/post/"
-        referer = f"https://www.douyin.com/user/{sec_user_id}"
-        items: list[dict] = []
-        max_cursor = "0"
-        while len(items) < limit:
-            data = await fetch_json(
-                base,
-                {
-                    "sec_user_id": sec_user_id,
-                    "count": "18",
-                    "max_cursor": max_cursor,
-                    "locate_query": "false",
-                    "publish_video_strategy_type": "2",
-                },
-                cookie,
-                referer=referer,
-            )
-            aweme_list = (data or {}).get("aweme_list") or []
-            if not aweme_list:
-                break
-            for aw in aweme_list:
-                stats = aw.get("statistics") or {}
-                author = aw.get("author") or {}
-                items.append(
-                    {
-                        "external_id": str(aw.get("aweme_id", "")),
-                        "content_type": "video",
-                        "title": aw.get("desc", ""),
-                        "author_name": author.get("nickname", ""),
-                        "author_id": author.get("sec_uid", "") or sec_user_id,
-                        "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
-                        "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
-                        "published_at": _ts_to_iso(aw.get("create_time")),
-                        "metrics": {
-                            "play": stats.get("play_count", 0),
-                            "like": stats.get("digg_count", 0),
-                            "comment": stats.get("comment_count", 0),
-                            "favorite": stats.get("collect_count", 0),
-                            "share": stats.get("share_count", 0),
-                        },
-                    }
-                )
-                if len(items) >= limit:
-                    break
-            if not data.get("has_more"):
-                break
-            max_cursor = str(data.get("max_cursor", "0"))
-        return items[:limit]
-
     async def _fetch_creator_videos(self, cookie: str, sec_user_id: str, limit: int) -> list[dict]:
-        """博主主页视频列表（a_bogus 签名）。签名失败/风控抛可读异常。"""
+        """博主主页视频列表。
+
+        路径必须**无尾斜杠**（与抖小云一致）；带尾斜杠会被 Argus 403。
+        与 a_bogus/uifid/msToken 无关，实测确认。
+        """
         from urllib.parse import urlencode
 
         sec_user_id = str(sec_user_id or "").strip()
         if not sec_user_id:
             return []
-        base = "/aweme/v1/web/aweme/post/"
+        base = "/aweme/v1/web/aweme/post"
         referer = f"https://www.douyin.com/user/{sec_user_id}"
         items: list[dict] = []
         max_cursor = "0"
         async with _client(cookie, referer) as client:
             while len(items) < limit:
                 params = dict(
-                    BASE_PARAMS,
+                    POST_PARAMS,
                     sec_user_id=sec_user_id,
                     count="18",
                     max_cursor=max_cursor,
-                    locate_query="false",
-                    publish_video_strategy_type="2",
                 )
                 qs = urlencode(params)
-                try:
-                    a_bogus = douyin_sign.get_a_bogus(base, qs, _UA)
-                except Exception as exc:  # noqa: BLE001 签名不可用时给可读错误
-                    raise RuntimeError(f"抖音签名失败（{exc}），无法拉取博主视频") from exc
-                resp = await client.get(f"{base}?{qs}&a_bogus={a_bogus}")
+                # 不算签名：抖小云(vulture 稳定在跑)同样不签名，路径正确即可 200。
+                # 保留 a_bogus 相关代码只在被 Argus 拦时才需要，见下方兜底分支。
+                resp = await client.get(f"{base}?{qs}")
                 if resp.status_code in (403, 412) or "ArgusSecurityPlugin" in resp.text:
-                    # 纯 HTTP 被 Argus 安全插件拦下（实测缺 uifid / secsdk 签名）。
-                    # 改用受管浏览器的同源 fetch —— 平台 SDK 会自己补齐头与签名。
-                    logger.info("抖音博主视频被 Argus 拦截，回退浏览器同源 fetch: %s", sec_user_id)
-                    return await self._fetch_creator_videos_via_browser(cookie, sec_user_id, limit)
+                    # 兜底：正常情况下不会走到这里（路径无尾斜杠即 200，实测）。
+                    # 万一平台以后又收紧，就真算一个 a_bogus 覆盖掉模板里的空值重试一次。
+                    signed = dict(params)
+                    qs2 = urlencode(signed)
+                    signed["a_bogus"] = douyin_sign.get_a_bogus(base, qs2, _UA)
+                    resp = await client.get(f"{base}?{urlencode(signed)}")
                 try:
                     data = resp.json()
                 except ValueError:
@@ -407,6 +445,8 @@ class DouyinAdapter:
                             "author_id": author.get("sec_uid", "") or sec_user_id,
                             "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
                             "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
+                            # 直连播放地址：下载走它 + Cookie，不依赖 yt-dlp
+                            "extra": {"download_url": _pick_play_url(aw)},
                             "published_at": _ts_to_iso(aw.get("create_time")),
                             "metrics": {
                                 "play": stats.get("play_count", 0),
