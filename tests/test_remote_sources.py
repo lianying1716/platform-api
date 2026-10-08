@@ -244,7 +244,7 @@ async def test_douyin_creator_missing_sec_user_id_returns_empty(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source_type", ["collection", "watch_later", ""])
+@pytest.mark.parametrize("source_type", ["watch_later", ""])
 async def test_douyin_unsupported_type_returns_empty(monkeypatch, source_type):
     from app.modules import douyin
 
@@ -254,6 +254,90 @@ async def test_douyin_unsupported_type_returns_empty(monkeypatch, source_type):
     monkeypatch.setattr(douyin, "following_list", boom)
     out = await douyin.DouyinAdapter().list_sources({"cookie": "ck", "sec_user_id": "SEC"}, source_type)
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_douyin_lists_mixes(monkeypatch):
+    """合集列表：/aweme/v1/web/mix/listcollection -> mix_infos。"""
+    from app.modules import douyin
+
+    calls = []
+
+    async def fake_mix_list(cookie, cursor="0"):
+        calls.append(cursor)
+        if cursor == "0":
+            return {
+                "status_code": 0,
+                "has_more": 1,
+                "cursor": 10,
+                "mix_infos": [{"mix_id": "M1", "mix_name": "合集一"}],
+            }
+        return {
+            "status_code": 0,
+            "has_more": 0,
+            "cursor": 20,
+            "mix_infos": [{"mix_id": "M2", "mix_name": "合集二"}],
+        }
+
+    monkeypatch.setattr(douyin, "mix_list", fake_mix_list)
+    out = await douyin.DouyinAdapter().list_sources({"cookie": "ck", "sec_user_id": "SEC"}, "collection")
+    assert out == [
+        {"remote_id": "M1", "title": "合集一"},
+        {"remote_id": "M2", "title": "合集二"},
+    ]
+    assert calls == ["0", "10"]
+
+
+@pytest.mark.asyncio
+async def test_douyin_lists_collect_folders(monkeypatch):
+    """自定义收藏夹：/aweme/v1/web/collects/list -> collects_list。"""
+    from app.modules import douyin
+
+    async def fake_folder_list(cookie, cursor="0"):
+        return {
+            "status_code": 0,
+            "has_more": False,
+            "cursor": 0,
+            "collects_list": [
+                {"collects_id": 111, "collects_id_str": "111", "collects_name": "剪辑素材"},
+                {"collects_id": 222, "collects_id_str": "", "collects_name": "备用"},
+            ],
+        }
+
+    monkeypatch.setattr(douyin, "collect_folder_list", fake_folder_list)
+    out = await douyin.DouyinAdapter().list_sources({"cookie": "ck", "sec_user_id": "SEC"}, "collect_folder")
+    # collects_id_str 优先，缺失时回退 collects_id
+    assert out == [
+        {"remote_id": "111", "title": "剪辑素材"},
+        {"remote_id": "222", "title": "备用"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_douyin_lists_series(monkeypatch):
+    """收藏短剧：/aweme/v1/web/series/collections -> series_infos。"""
+    from app.modules import douyin
+
+    async def fake_series_list(cookie, cursor="0"):
+        return {
+            "status_code": 0,
+            "has_more": 0,
+            "cursor": 0,
+            "series_infos": [{"series_id": "S1", "series_name": "短剧一"}],
+        }
+
+    monkeypatch.setattr(douyin, "series_list", fake_series_list)
+    out = await douyin.DouyinAdapter().list_sources({"cookie": "ck", "sec_user_id": "SEC"}, "series")
+    assert out == [{"remote_id": "S1", "title": "短剧一"}]
+
+
+@pytest.mark.asyncio
+async def test_douyin_like_source_virtual_item(monkeypatch):
+    """点赞列表无独立列表接口，返回虚拟项。"""
+    from app.modules import douyin
+
+    out = await douyin.DouyinAdapter().list_sources({"cookie": "ck", "sec_user_id": "SEC"}, "like")
+    assert out == [{"remote_id": "SEC", "title": "我点赞的作品"}]
 
 
 @pytest.mark.asyncio

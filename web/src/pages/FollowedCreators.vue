@@ -151,9 +151,7 @@
         </el-form-item>
         <el-form-item label="来源类型" v-if="!editing">
           <el-select v-model="form.source_type" style="width: 100%" @change="onSourceTypeChange">
-            <el-option label="收藏夹" value="favorite" />
-            <el-option label="合集" value="collection" />
-            <el-option label="博主" value="creator" />
+            <el-option v-for="o in sourceTypeOptions" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
         </el-form-item>
         <el-form-item label="来源" v-if="!editing">
@@ -294,9 +292,30 @@ interface SyncRunRow {
 const PLATFORM_LABELS: Record<string, string> = { douyin: '抖音', bilibili: 'B站' }
 const SUPPORTED = ['douyin', 'bilibili']
 const SOURCE_TYPES: Record<string, string> = {
-  favorite: '收藏夹', collection: '合集', creator: '博主', like: '点赞',
+  favorite: '收藏', like: '点赞', collect_folder: '收藏夹', collection: '合集',
+  series: '短剧', creator: '博主',
 }
+// 每种平台的来源类型选项（抽屉表单里只显示该平台真正支持的）
+const DOUYIN_SOURCE_TYPES = [
+  { value: 'favorite', label: '我的收藏' },
+  { value: 'like', label: '我点赞的作品' },
+  { value: 'collect_folder', label: '自定义收藏夹' },
+  { value: 'collection', label: '收藏的合集' },
+  { value: 'series', label: '收藏的短剧' },
+  { value: 'creator', label: '博主（我关注的）' },
+]
+const BILIBILI_SOURCE_TYPES = [
+  { value: 'favorite', label: '收藏夹' },
+  { value: 'collection', label: '合集' },
+  { value: 'creator', label: '博主（我关注的）' },
+]
 const DEFAULT_SUBDIR = '{platform}/{creator}/{date}'
+
+const sourceTypeOptions = computed(() => {
+  const acc = accounts.value.find((a) => a.id === form.account_id)
+  const platform = acc?.platform || activePlatform.value
+  return platform === 'douyin' ? DOUYIN_SOURCE_TYPES : BILIBILI_SOURCE_TYPES
+})
 
 const accounts = ref<Account[]>([])
 const rows = ref<TrackRow[]>([])
@@ -365,7 +384,7 @@ const visibleRows = computed(() => [...creatorRows.value, ...sourceRows.value])
 function isCreator(row: TrackRow) { return row.source_type === 'creator' }
 /** 收藏夹/合集没有头像，用一个几何符号代替，保证卡片结构一致。 */
 function sourceGlyph(t: string) {
-  return ({ favorite: '☆', collection: '▤', like: '♥' } as Record<string, string>)[t] ?? '▦'
+  return ({ favorite: '☆', collection: '▤', like: '♥', collect_folder: '❏', series: '▧' } as Record<string, string>)[t] ?? '▦'
 }
 const enabledCount = computed(() => rows.value.filter((r) => r.enabled).length)
 
@@ -589,6 +608,12 @@ function onPickModeChange() { sources.value = []; sourcesError.value = '' }
 
 function onFormAccountChange() {
   sources.value = []
+  // 切账号后把不支持的来源类型回退到该平台的第一项
+  const allowed = sourceTypeOptions.value.map((o) => o.value)
+  if (!allowed.includes(form.source_type)) {
+    form.source_type = allowed[0]
+    form.remote_id = ''
+  }
   if (subPickMode.value === 'list') loadSources()
 }
 function onSourceTypeChange() {

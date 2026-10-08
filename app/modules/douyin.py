@@ -123,6 +123,67 @@ FAVORITE_PARAMS = _with(
 )
 
 
+# 收藏夹列表（SyncCollectFolderList -> /aweme/v1/web/collects/list）—— 抖小云 DouyinCollectListParams
+COLLECT_FOLDER_LIST_PARAMS = _with(
+    version_code="170400", version_name="17.4.0",
+    screen_width="1707", screen_height="1067",
+    browser_name="Edge", browser_version="141.0.0.0", engine_version="141.0.0.0",
+    cpu_core_num="32", support_h265="1", support_dash="1",
+    webid="7584476599598188067",
+    cursor="0", count="10",
+)
+
+# 收藏夹内作品（SyncCollectVideosByCollectId -> /aweme/v1/web/collects/video/list）—— 抖小云 DouyinFolderCollectParams
+COLLECT_FOLDER_VIDEO_PARAMS = _with(
+    version_code="170400", version_name="17.4.0",
+    screen_width="1707", screen_height="1067",
+    browser_name="Edge", browser_version="141.0.0.0", engine_version="141.0.0.0",
+    cpu_core_num="32", support_h265="1", support_dash="1",
+    webid="7584476599598188067",
+    collects_id="", cursor="", count="15",
+)
+
+# 合集列表（SyncMixList -> /aweme/v1/web/mix/listcollection）—— 抖小云 DouyinMixListParams
+MIX_LIST_PARAMS = _with(
+    version_code="170400", version_name="17.4.0",
+    screen_width="1707", screen_height="1067",
+    browser_name="Edge", browser_version="141.0.0.0", engine_version="141.0.0.0",
+    cpu_core_num="32", support_h265="1", support_dash="1",
+    webid="7584476599598188067",
+    cursor="0", count="10",
+)
+
+# 合集内作品（SyncMixViedosByMixId -> /aweme/v1/web/mix/aweme）—— 抖小云 DouyinMixVideoParams
+MIX_VIDEO_PARAMS = _with(
+    version_code="170400", version_name="17.4.0",
+    screen_width="1707", screen_height="1067",
+    browser_name="Edge", browser_version="141.0.0.0", engine_version="141.0.0.0",
+    cpu_core_num="32", support_h265="1", support_dash="1",
+    webid="7584476599598188067",
+    mix_id="", cursor="0", count="15",
+)
+
+# 短剧列表（SyncSeriesList -> /aweme/v1/web/series/collections）—— 抖小云 DouyinSeriesListParams
+SERIES_LIST_PARAMS = _with(
+    version_code="170400", version_name="17.4.0",
+    screen_width="1707", screen_height="1067",
+    browser_name="Edge", browser_version="141.0.0.0", engine_version="141.0.0.0",
+    cpu_core_num="32", support_h265="1", support_dash="1",
+    round_trip_time="50", webid="7584476599598188067",
+    cursor="0", count="15",
+)
+
+# 短剧作品（SyncSeriesViedosByMSeriesId -> /aweme/v1/web/series/aweme）—— 抖小云 DouyinSeriesVideosParams
+SERIES_VIDEO_PARAMS = _with(
+    version_code="170400", version_name="17.4.0",
+    screen_width="1707", screen_height="1067",
+    browser_name="Edge", browser_version="141.0.0.0", engine_version="141.0.0.0",
+    cpu_core_num="32", support_h265="1", support_dash="1",
+    round_trip_time="50", webid="7584476599598188067",
+    pull_type="2", series_id="", cursor="0", count="20",
+)
+
+
 # 请求节流：照抄抖小云 job/DouyinBasicSyncJob.cs 的随机等待
 #   await Task.Delay(_random.Next(2, 10) * 1000);   // 翻页之间
 #   await Task.Delay(_random.Next(1, 4) * 1000);    // 每次下载前
@@ -218,6 +279,145 @@ async def following_list(cookie: str, sec_user_id: str, offset: str = "0", count
             return None
 
 
+_COLLECT_REFERER = (
+    "https://www.douyin.com/user/self?from_tab_name=main"
+    "&showSubTab=favorite_folder&showTab=favorite_collection"
+)
+
+
+async def recent_collection_videos(
+    cookie: str, max_cursor: str = "0", count: str = "20", sec_user_id: str = ""
+) -> dict | None:
+    """我点赞的作品（dysync SyncFavoriteVideos -> /aweme/v1/web/aweme/favorite）。
+
+    注：这是「点赞」列表，抖小云把 VideoTypeEnum.dy_favorite 叫做「喜欢的」；
+    查询参数名是 max_cursor（不是 cursor）。sec_user_id 是**自己主页**的 sec_uid。
+    """
+    params = dict(FAVORITE_PARAMS, max_cursor=max_cursor, sec_user_id=sec_user_id, count=count)
+    referer = "https://www.douyin.com/user/self?showTab=like"
+    async with _client(cookie, referer) as client:
+        resp = await client.get("/aweme/v1/web/aweme/favorite", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+
+async def collect_folder_list(cookie: str, cursor: str = "0") -> dict | None:
+    """自定义收藏夹列表（dysync SyncCollectFolderList -> /aweme/v1/web/collects/list）。"""
+    params = dict(COLLECT_FOLDER_LIST_PARAMS, cursor=cursor, count="10")
+    async with _client(cookie, _COLLECT_REFERER) as client:
+        resp = await client.get("/aweme/v1/web/collects/list", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+
+async def collect_folder_videos(
+    cookie: str, collects_id: str, cursor: str = "0", count: str = "15"
+) -> dict | None:
+    """收藏夹内作品（dysync SyncCollectVideosByCollectId -> /aweme/v1/web/collects/video/list）。"""
+    params = dict(COLLECT_FOLDER_VIDEO_PARAMS, collects_id=collects_id, cursor=cursor, count=count)
+    async with _client(cookie, _COLLECT_REFERER) as client:
+        resp = await client.get("/aweme/v1/web/collects/video/list", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+
+async def mix_list(cookie: str, cursor: str = "0") -> dict | None:
+    """收藏的合集列表（dysync SyncMixList -> /aweme/v1/web/mix/listcollection）。"""
+    params = dict(MIX_LIST_PARAMS, cursor=cursor, count="10")
+    async with _client(cookie, _HOST) as client:
+        resp = await client.get("/aweme/v1/web/mix/listcollection", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+
+async def mix_videos(cookie: str, mix_id: str, cursor: str = "0", count: str = "15") -> dict | None:
+    """合集内作品（dysync SyncMixViedosByMixId -> /aweme/v1/web/mix/aweme）。"""
+    params = dict(MIX_VIDEO_PARAMS, mix_id=mix_id, cursor=cursor, count=count)
+    async with _client(cookie, _HOST) as client:
+        resp = await client.get("/aweme/v1/web/mix/aweme", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+
+async def series_list(cookie: str, cursor: str = "0") -> dict | None:
+    """收藏的短剧列表（dysync SyncSeriesList -> /aweme/v1/web/series/collections）。"""
+    params = dict(SERIES_LIST_PARAMS, cursor=cursor, count="15")
+    async with _client(cookie, _HOST) as client:
+        resp = await client.get("/aweme/v1/web/series/collections", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+
+async def series_videos(
+    cookie: str, series_id: str, cursor: str = "0", count: str = "20"
+) -> dict | None:
+    """短剧剧集（dysync SyncSeriesViedosByMSeriesId -> /aweme/v1/web/series/aweme）。"""
+    params = dict(SERIES_VIDEO_PARAMS, series_id=series_id, cursor=cursor, count=count)
+    async with _client(cookie, _HOST) as client:
+        resp = await client.get("/aweme/v1/web/series/aweme", params=params)
+        if resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+
+def _aweme_to_item(aw: dict, fallback_author_id: str = "") -> dict:
+    """把抖音 aweme 结构规整成统一的 content_item 字典。
+
+    照抄抖小云 DouyinBasicSyncJob.ProcessVideoList / SaveVideos 的取值：
+    aweme_list[i] -> statistics(digg/comment/collect/share/play) + author + video.play_addr。
+    """
+    stats = aw.get("statistics") or {}
+    author = aw.get("author") or {}
+    aweme_id = aw.get("aweme_id", "")
+    return {
+        "external_id": str(aweme_id),
+        "content_type": "video",
+        "title": aw.get("desc", ""),
+        "author_name": author.get("nickname", ""),
+        "author_id": author.get("sec_uid", "") or fallback_author_id,
+        "url": f"https://www.douyin.com/video/{aweme_id}",
+        "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
+        # 直连播放地址：下载走它 + Cookie，不依赖 yt-dlp
+        "extra": {"download_url": _pick_play_url(aw)},
+        # create_time 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
+        "published_at": _ts_to_iso(aw.get("create_time")),
+        "metrics": {
+            "play": stats.get("play_count", 0),
+            "like": stats.get("digg_count", 0),
+            "comment": stats.get("comment_count", 0),
+            "favorite": stats.get("collect_count", 0),
+            "share": stats.get("share_count", 0),
+        },
+    }
+
+
 class DouyinAdapter:
     platform = "douyin"
     label = "抖音"
@@ -266,19 +466,112 @@ class DouyinAdapter:
     async def list_sources(self, credential: dict, source_type: str) -> list[dict]:
         """列出可订阅的源，返回 [{remote_id, title}]。
 
-        source_type：
-        - favorite：抖音没有“收藏夹列表”接口，返回虚拟项“我的收藏”。
-        - creator：自己关注的博主（需 sec_user_id，分页到 ~50 条）。
+        逐项对应抖小云 VideoTypeEnum 的同步入口：
+        - favorite（我的收藏）：无列表接口，返回虚拟项，remote_id 用 sec_user_id 占位。
+        - like（我点赞的）：同上，虚拟项。
+        - collection（收藏的合集）：/aweme/v1/web/mix/listcollection 真实列表。
+        - collect_folder（自定义收藏夹）：/aweme/v1/web/collects/list 真实列表。
+        - series（收藏的短剧）：/aweme/v1/web/series/collections 真实列表。
+        - creator（关注的博主）：/aweme/v1/web/user/following/list 分页到 ~50 条。
         其它类型或缺少必需凭证字段时返回 []（不抛异常）。
         """
-        if source_type == "favorite":
-            return [{"remote_id": credential.get("sec_user_id") or "self", "title": "我的收藏"}]
+        cookie = credential.get("cookie", "")
+        sec_user_id = (credential.get("sec_user_id") or "").strip()
+        if source_type in ("favorite", "like"):
+            title = "我的收藏" if source_type == "favorite" else "我点赞的作品"
+            return [{"remote_id": sec_user_id or "self", "title": title}]
         if source_type == "creator":
-            sec_user_id = (credential.get("sec_user_id") or "").strip()
             if not sec_user_id:
                 return []
-            return await self._list_followings(credential.get("cookie", ""), sec_user_id)
+            return await self._list_followings(cookie, sec_user_id)
+        if source_type == "collection":
+            return await self._list_mixes(cookie)
+        if source_type == "collect_folder":
+            return await self._list_collect_folders(cookie)
+        if source_type == "series":
+            return await self._list_series(cookie)
         return []
+
+    async def _list_mixes(self, cookie: str, limit: int = 100) -> list[dict]:
+        """收藏的合集列表。防御式：请求失败只返回已拿到的部分。"""
+        out: list[dict] = []
+        cursor = "0"
+        try:
+            while len(out) < limit:
+                data = await mix_list(cookie, cursor=cursor)
+                if not data or data.get("status_code") != 0:
+                    break
+                infos = data.get("mix_infos") or []
+                if not infos:
+                    break
+                for m in infos:
+                    mix_id = str(m.get("mix_id") or "")
+                    if not mix_id:
+                        continue
+                    out.append({"remote_id": mix_id, "title": m.get("mix_name") or mix_id})
+                    if len(out) >= limit:
+                        break
+                if data.get("has_more") != 1:
+                    break
+                cursor = str(data.get("cursor", "0"))
+                await _pace()
+        except (httpx.HTTPError, ValueError):
+            return out[:limit]
+        return out[:limit]
+
+    async def _list_collect_folders(self, cookie: str, limit: int = 100) -> list[dict]:
+        """自定义收藏夹列表。"""
+        out: list[dict] = []
+        cursor = "0"
+        try:
+            while len(out) < limit:
+                data = await collect_folder_list(cookie, cursor=cursor)
+                if not data or data.get("status_code") != 0:
+                    break
+                folders = data.get("collects_list") or []
+                if not folders:
+                    break
+                for f in folders:
+                    fid = str(f.get("collects_id_str") or f.get("collects_id") or "")
+                    if not fid:
+                        continue
+                    out.append({"remote_id": fid, "title": f.get("collects_name") or fid})
+                    if len(out) >= limit:
+                        break
+                if not data.get("has_more"):
+                    break
+                cursor = str(data.get("cursor", "0"))
+                await _pace()
+        except (httpx.HTTPError, ValueError):
+            return out[:limit]
+        return out[:limit]
+
+    async def _list_series(self, cookie: str, limit: int = 100) -> list[dict]:
+        """收藏的短剧列表。"""
+        out: list[dict] = []
+        cursor = "0"
+        try:
+            while len(out) < limit:
+                data = await series_list(cookie, cursor=cursor)
+                if not data or data.get("status_code") != 0:
+                    break
+                infos = data.get("series_infos") or []
+                if not infos:
+                    break
+                for s in infos:
+                    sid = str(s.get("series_id") or "")
+                    if not sid:
+                        continue
+                    out.append({"remote_id": sid, "title": s.get("series_name") or sid})
+                    if len(out) >= limit:
+                        break
+                if data.get("has_more") != 1:
+                    break
+                cursor = str(data.get("cursor", "0"))
+                await _pace()
+        except (httpx.HTTPError, ValueError):
+            return out[:limit]
+        return out[:limit]
 
     async def _list_followings(self, cookie: str, sec_user_id: str, limit: int = 50) -> list[dict]:
         """关注列表。解析防御式：字段缺失/请求失败都只返回已拿到的部分。"""
@@ -368,52 +661,59 @@ class DouyinAdapter:
         return out[:limit]
 
     async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
-        """拉取订阅源内容。
+        """拉取订阅源内容（逐项对应抖小云 VideoTypeEnum）。
 
-        - favorite/collection：我的收藏（/aweme/v1/web/aweme/listcollection）
+        - favorite：我的收藏（POST /aweme/v1/web/aweme/listcollection）
+        - like：我点赞的作品（/aweme/v1/web/aweme/favorite，需自己 sec_user_id）
+        - collect_folder：某收藏夹内作品（/aweme/v1/web/collects/video/list）
+        - collection：某合集内作品（/aweme/v1/web/mix/aweme）
+        - series：某短剧剧集（/aweme/v1/web/series/aweme）
         - creator：博主主页视频（/aweme/v1/web/aweme/post，无尾斜杠，无需签名）
         """
         cookie = credential.get("cookie", "")
         if source_type == "creator":
             return await self._fetch_creator_videos(cookie, remote_id, limit)
-        if source_type not in ("favorite", "collection"):
+        if source_type == "like":
+            sec_user_id = (credential.get("sec_user_id") or remote_id or "").strip()
+            return await self._fetch_paged(
+                cookie, recent_collection_videos, limit,
+                cursor_param="max_cursor", sec_user_id=sec_user_id,
+            )
+        if source_type == "collect_folder":
+            return await self._fetch_paged(cookie, collect_folder_videos, limit, collects_id=remote_id)
+        if source_type == "collection":
+            return await self._fetch_paged(cookie, mix_videos, limit, mix_id=remote_id)
+        if source_type == "series":
+            return await self._fetch_paged(cookie, series_videos, limit, series_id=remote_id)
+        if source_type != "favorite":
             return []
+        return await self._fetch_paged(cookie, list_collection, limit)
+
+    async def _fetch_paged(self, cookie, fn, limit: int, cursor_param: str = "cursor", **extra) -> list[dict]:
+        """通用分页抓取：aweme_list 逐条映射成 content_item，按服务端 cursor 翻页。
+
+        查表函数签名统一为 fn(cookie, <cursor_param>=cursor, count=..., **extra)。
+        单次同步上限 30（照抄抖小云 IsSyncLimitReached），翻页之间随机等待。
+        """
+        limit = min(limit, _BATCH_LIMIT)
         items: list[dict] = []
         cursor = "0"
-        limit = min(limit, _BATCH_LIMIT)   # 单次上限 30（照抄抖小云）
+        kwargs = dict(extra)
+        if "sec_user_id" in kwargs and not kwargs["sec_user_id"]:
+            kwargs.pop("sec_user_id")
         while len(items) < limit:
-            data = await list_collection(cookie, cursor=cursor, count="20")
+            kw = {cursor_param: cursor, "count": "20", **kwargs}
+            data = await fn(cookie, **kw)
             if not data or data.get("status_code") != 0:
                 break
             for aw in data.get("aweme_list") or []:
-                stats = aw.get("statistics") or {}
-                author = aw.get("author") or {}
-                items.append(
-                    {
-                        "external_id": str(aw.get("aweme_id", "")),
-                        "content_type": "video",
-                        "title": aw.get("desc", ""),
-                        "author_name": author.get("nickname", ""),
-                        "author_id": author.get("sec_uid", ""),
-                        "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
-                        "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
-                        # 直连播放地址：下载走它 + Cookie，不依赖 yt-dlp
-                        "extra": {"download_url": _pick_play_url(aw)},
-                        # create_time 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
-                        "published_at": _ts_to_iso(aw.get("create_time")),
-                        "metrics": {
-                            "play": stats.get("play_count", 0),
-                            "like": stats.get("digg_count", 0),
-                            "comment": stats.get("comment_count", 0),
-                            "favorite": stats.get("collect_count", 0),
-                            "share": stats.get("share_count", 0),
-                        },
-                    }
-                )
+                items.append(_aweme_to_item(aw, fallback_author_id=kwargs.get("sec_user_id", "")))
+                if len(items) >= limit:
+                    break
             if not data.get("has_more"):
                 break
-            cursor = str(data.get("cursor", "0"))
-            await _pace()          # 翻页之间随机等待（照抄抖小云）
+            cursor = str(data.get("cursor") or data.get("max_cursor") or "0")
+            await _pace()
         return items[:limit]
 
     async def _fetch_creator_videos(self, cookie: str, sec_user_id: str, limit: int) -> list[dict]:
@@ -463,29 +763,7 @@ class DouyinAdapter:
                 if not aweme_list:
                     break
                 for aw in aweme_list:
-                    stats = aw.get("statistics") or {}
-                    author = aw.get("author") or {}
-                    items.append(
-                        {
-                            "external_id": str(aw.get("aweme_id", "")),
-                            "content_type": "video",
-                            "title": aw.get("desc", ""),
-                            "author_name": author.get("nickname", ""),
-                            "author_id": author.get("sec_uid", "") or sec_user_id,
-                            "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
-                            "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
-                            # 直连播放地址：下载走它 + Cookie，不依赖 yt-dlp
-                            "extra": {"download_url": _pick_play_url(aw)},
-                            "published_at": _ts_to_iso(aw.get("create_time")),
-                            "metrics": {
-                                "play": stats.get("play_count", 0),
-                                "like": stats.get("digg_count", 0),
-                                "comment": stats.get("comment_count", 0),
-                                "favorite": stats.get("collect_count", 0),
-                                "share": stats.get("share_count", 0),
-                            },
-                        }
-                    )
+                    items.append(_aweme_to_item(aw, fallback_author_id=sec_user_id))
                     if len(items) >= limit:
                         break
                 if not data.get("has_more"):
