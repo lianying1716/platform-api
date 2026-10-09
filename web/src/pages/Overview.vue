@@ -48,24 +48,27 @@
 
     <div class="ui-metrics second">
       <div class="ui-metric">
-        <div class="k">今日新增</div>
+        <div class="k">今日入库</div>
         <div class="v">{{ num(todayCrawled) }}</div>
         <div class="d">近 7 天 {{ num(weekCrawled) }}</div>
       </div>
       <div class="ui-metric">
-        <div class="k">总播放</div>
-        <div class="v">{{ compact(engagement.play) }}</div>
-        <div class="d">全部平台累计</div>
-      </div>
-      <div class="ui-metric">
-        <div class="k">总点赞</div>
-        <div class="v">{{ compact(engagement.like) }}</div>
-        <div class="d">评论 {{ compact(engagement.comment) }} · 收藏 {{ compact(engagement.favorite) }}</div>
-      </div>
-      <div class="ui-metric">
-        <div class="k">加工完成</div>
+        <div class="k">已转录</div>
         <div class="v">{{ num(processing.transcribed) }}</div>
-        <div class="d">已转录 · 已理解 {{ num(processing.understood) }}</div>
+        <div class="d">已理解 {{ num(processing.understood) }}</div>
+      </div>
+      <div class="ui-metric">
+        <div class="k">已判类</div>
+        <div class="v">{{ num(categorizedCount) }}</div>
+        <div class="d">未判类 {{ num(uncategorizedCount) }} · {{ classifiedPct }}</div>
+      </div>
+      <div class="ui-metric" :class="{ alert: accountsStat.abnormal > 0 }">
+        <div class="k"><span v-if="accountsStat.abnormal" class="ui-dot bad" />账号状态</div>
+        <div class="v">{{ num(accountsStat.total - accountsStat.abnormal) }}</div>
+        <div class="d">
+          在线 · 异常 <b>{{ accountsStat.abnormal }}</b>
+          <button class="ui-btn ghost sm" @click="go('/accounts')">去处理</button>
+        </div>
       </div>
     </div>
 
@@ -97,8 +100,8 @@
             <th style="text-align: right">素材</th>
             <th style="text-align: right">视频</th>
             <th style="text-align: right">文章</th>
-            <th style="text-align: right">播放</th>
-            <th style="text-align: right">点赞</th>
+            <th style="text-align: right">已转录</th>
+            <th style="text-align: right">已判类</th>
             <th style="text-align: right">占用</th>
           </tr>
         </thead>
@@ -112,8 +115,8 @@
             <td class="num">{{ num(p.total) }}</td>
             <td class="num">{{ num(p.video) }}</td>
             <td class="num">{{ num(p.article) }}</td>
-            <td class="num">{{ compact(p.play) }}</td>
-            <td class="num">{{ compact(p.like) }}</td>
+            <td class="num">{{ num(p.transcribed) }}</td>
+            <td class="num">{{ num(p.categorized) }}</td>
             <td class="num">{{ bytes(storageByPlatform[p.platform] || 0) }}</td>
           </tr>
         </tbody>
@@ -269,7 +272,7 @@ const content = ref({ total: 0, video: 0, article: 0, duration_sec: 0 })
 const platforms = ref<any[]>([])
 const categories = ref<any[]>([])
 const processing = ref({ transcribed: 0, understood: 0, pending: 0, failed: 0 })
-const engagement = ref({ play: 0, like: 0, comment: 0, favorite: 0 })
+const accountsStat = ref({ total: 0, abnormal: 0 })
 const storageByPlatform = ref<Record<string, number>>({})
 const trend = ref<{ date: string; added: number }[]>([])
 const hot = ref<any[]>([])
@@ -332,6 +335,18 @@ function dur(sec: number) {
   return `${m} 分 ${s % 60} 秒`
 }
 
+const categorizedCount = computed(() => {
+  const known = categories.value.filter((c) => c.key)
+  return known.reduce((sum, c) => sum + Number(c.count || 0), 0)
+})
+const uncategorizedCount = computed(
+  () => Number(categories.value.find((c) => !c.key)?.count || 0),
+)
+const classifiedPct = computed(() => {
+  const total = categorizedCount.value + uncategorizedCount.value
+  if (!total) return '—'
+  return `${Math.round((categorizedCount.value / total) * 100)}%`
+})
 const bytesText = computed(() => bytes(storageUsed.value))
 const durText = computed(() => dur(content.value.duration_sec || 0))
 const avgDur = computed(() => {
@@ -481,7 +496,6 @@ async function load() {
     platforms.value = data.platforms || []
     categories.value = data.categories || []
     processing.value = data.processing || processing.value
-    engagement.value = data.engagement || engagement.value
     trend.value = data.trend || []
     hot.value = data.hot || []
     todayCrawled.value = data.today_crawled || 0
@@ -489,6 +503,10 @@ async function load() {
     storageUsed.value = data.storage?.used_bytes || 0
     storageByPlatform.value = data.storage?.by_platform || {}
     storageRoots.value = data.storage?.roots || []
+    accountsStat.value = {
+      total: data.accounts?.total || 0,
+      abnormal: data.accounts?.abnormal || 0,
+    }
     creators.value = creatorsResp.data || []
   } catch {
     ElMessage.error('加载总览失败')

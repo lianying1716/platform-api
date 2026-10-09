@@ -48,9 +48,18 @@ class AccountOut(BaseModel):
     last_checked_at: datetime | None
     expires_at: datetime | None
     created_at: datetime
+    storage_root_id: int | None = None  # NULL = 使用默认根目录
+    storage_root_name: str = ""  # 绑定的存储根名称（展示用）
+    storage_root_path: str = ""  # 绑定的存储根路径（展示用）
     credential_preview: dict[str, str] = {}  # 脱敏后的凭证字段
 
     model_config = {"from_attributes": True}
+
+
+class AccountStorageUpdate(BaseModel):
+    """给账号指定/清除存储根。storage_root_id=None 表示用默认根。"""
+
+    storage_root_id: int | None = None
 
 
 class AccountCreate(BaseModel):

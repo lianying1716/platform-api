@@ -16,11 +16,46 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core import events, queue
-from app.core.storage import get_default_root, render_subdir, resolve_asset_dir
-from app.models import AnalysisResult, ContentItem, MediaAsset, Transcript
+from app.core.storage import render_subdir, resolve_account_root, resolve_asset_dir
+from app.models import (
+    AnalysisResult,
+    ContentItem,
+    MediaAsset,
+    PlatformAccount,
+    StorageRoot,
+    Subscription,
+    Transcript,
+)
 from app.modules import media_download
 
 logger = logging.getLogger("platform.worker.handlers")
+
+# 未指定子目录模板时的兜底（内容 ID 段保证同目录不重名）。
+_DEFAULT_SUBDIR = "{platform}/{account}/{creator}/{date}/{content_id}"
+
+
+def _account_segment(account) -> str:
+    """账号目录段：优先用可读的显示名，退回平台账号 ID。"""
+    if account is None:
+        return ""
+    name = (getattr(account, "display_name", "") or "").strip()
+    if name:
+        return name
+    return f"account-{account.id}"
+
+
+def _subscription_for_content(db: Session, content: ContentItem) -> Subscription | None:
+    if content.source_kind == "subscription" and content.source_id:
+        return db.get(Subscription, content.source_id)
+    return None
+
+
+def _account_subdir_template(db: Session, content: ContentItem) -> str:
+    """取内容所属订阅的子目录模板；采集/无订阅内容用默认模板。"""
+    sub = _subscription_for_content(db, content)
+    if sub is not None and (sub.subdir_template or "").strip():
+        return sub.subdir_template
+    return _DEFAULT_SUBDIR
 
 
 async def handle_download(db: Session, payload: dict) -> None:
@@ -36,13 +71,21 @@ async def handle_download(db: Session, payload: dict) -> None:
     db.commit()
     events.publish("asset_status", {"asset_id": asset_id, "download": "downloading"})
 
-    # 计算保存目录
-    root = get_default_root(db)
+    # 计算保存目录：根目录优先取订阅级覆盖，其次账号绑定，最后默认根 + 订阅子目录模板。
+    account = db.get(PlatformAccount, content.account_id)
+    sub = _subscription_for_content(db, content)
+    root = None
+    if sub is not None and sub.storage_root_id is not None:
+        root = db.get(StorageRoot, sub.storage_root_id)
+    if root is None:
+        root = resolve_account_root(db, account)
     if asset.storage_root_id is None and root is not None:
         asset.storage_root_id = root.id
+    template = _account_subdir_template(db, content)
     rel = asset.relative_path or render_subdir(
-        "{platform}/{creator}/{date}/{content_id}",
+        template,
         platform=content.platform,
+        account=_account_segment(account),
         creator=content.author_name,
         date=content.published_at or content.created_at,
         content_id=content.external_id,
@@ -79,13 +122,22 @@ async def handle_download(db: Session, payload: dict) -> None:
     # 下载完成后按动态热度门控自动决定是否升级到高级档（设计 §6.1）。采集/同步时素材尚未
     # 下载完，门控只对已下载素材生效，故真正的自动分档在此触发。失败不得翻转下载成功状态。
     from app.core.process_settings import get_process_settings
+    from app.services.auto_process import enqueue_auto_process
     from app.services.process_gate import enqueue_process_jobs
 
+    settings = get_process_settings(db)
     try:
-        enqueue_process_jobs(db, [content], settings=get_process_settings(db))
+        enqueue_process_jobs(db, [content], settings=settings)
     except Exception:  # noqa: BLE001 分档加工是增强项，失败不得翻转已完成的下载
         db.rollback()
         logger.exception("素材 #%s 下载后分档入队失败，已忽略", asset_id)
+    # 显式自动转录 / 自动分析（订阅级或全局默认）：绕过热度门控直接入队。
+    try:
+        enqueue_auto_process(db, asset, content, settings)
+        db.commit()
+    except Exception:  # noqa: BLE001 自动加工是增强项，失败不得翻转已完成的下载
+        db.rollback()
+        logger.exception("素材 #%s 自动加工入队失败，已忽略", asset_id)
 
 
 async def handle_transcribe(db: Session, payload: dict) -> None:
@@ -125,6 +177,17 @@ async def handle_transcribe(db: Session, payload: dict) -> None:
     asset.error = ""
     db.commit()
     events.publish("asset_status", {"asset_id": asset_id, "transcribe": "done"})
+    # 转录完成后再补自动分析（analyze 依赖转录文本，必须在此链式触发）。
+    try:
+        from app.core.process_settings import get_process_settings
+        from app.services.auto_process import maybe_chain_analyze
+
+        content = db.get(ContentItem, asset.content_id)
+        maybe_chain_analyze(db, asset, content, get_process_settings(db))
+        db.commit()
+    except Exception:  # noqa: BLE001 自动分析是增强项，失败不得翻转已完成的转录
+        db.rollback()
+        logger.exception("素材 #%s 转录后自动分析入队失败，已忽略", asset_id)
 
 
 async def handle_analyze(db: Session, payload: dict) -> None:

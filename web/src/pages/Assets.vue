@@ -55,8 +55,14 @@
       </div>
       <div v-else class="asset-grid">
         <article v-for="a in assets" :key="a.asset_id" class="asset" :class="{ picked: isPicked(a) }">
-          <!-- 封面/预览：视频悬浮播放键，文章显示正文摘要入口 -->
-          <div class="cover">
+          <!-- 封面：整块可点即开始（视频播放 / 文章阅读），不再需要额外按钮 -->
+          <div
+            class="cover"
+            :class="{ clickable: canOpen(a) }"
+            :role="canOpen(a) ? 'button' : undefined"
+            :title="coverHint(a)"
+            @click="onCoverClick(a)"
+          >
             <!-- 封面用真实 <img>：加载失败时自动退回占位符，避免留下空白/破图 -->
             <img v-if="a.cover_url && !coverFailed(a.asset_id)" :src="a.cover_url" alt=""
               loading="lazy" @error="markCoverFailed(a.asset_id)" />
@@ -64,14 +70,11 @@
             <span class="badge-plat"><PlatformMark :platform="a.platform" :show-label="false" size="sm" :colored="false" /></span>
             <span class="badge-type">{{ typeLabel(a.content_type) }}</span>
             <span v-if="a.duration_sec" class="badge-dur">{{ mmss(a.duration_sec) }}</span>
-            <button
-              v-if="a.content_type === 'video' && a.playable"
-              class="play"
-              title="播放"
-              @click="openPlayer(a)"
-            >
-              ▶
-            </button>
+            <!-- 悬浮提示：点封面即可开始 -->
+            <span v-if="canOpen(a)" class="cover-cta">
+              <span class="cta-ic">{{ a.content_type === 'video' ? '▶' : '📖' }}</span>
+              {{ a.content_type === 'video' ? '播放' : '阅读' }}
+            </span>
             <span v-else-if="a.content_type === 'video'" class="badge-nofile">未下载</span>
           </div>
 
@@ -122,10 +125,12 @@
 
             <div class="acts">
               <button class="ui-btn sm" @click="openDetail(a.asset_id)">详情</button>
-              <button v-if="a.content_type === 'video' && a.playable" class="ui-btn sm" @click="openPlayer(a)">播放</button>
-              <button v-if="a.content_type !== 'video'" class="ui-btn sm" @click="openArticle(a.asset_id)">阅读</button>
-              <button class="ui-btn sm" @click="act(a.asset_id, 'transcribe')">转录</button>
-              <button class="ui-btn sm" @click="act(a.asset_id, 'analyze')">分析</button>
+              <button class="ui-btn sm" @click="act(a.asset_id, 'transcribe')">
+                {{ isTranscribed(a) ? '重新转录' : '转录' }}
+              </button>
+              <button class="ui-btn sm" @click="act(a.asset_id, 'analyze')">
+                {{ isAnalyzed(a) ? '重新分析' : '分析' }}
+              </button>
             </div>
           </div>
         </article>
@@ -433,6 +438,27 @@ function openPlayer(a: any) {
 async function openArticle(assetId: number) {
   const { data } = await api.get(`/api/assets/${assetId}/article`)
   article.value = data
+}
+
+// 封面即入口：视频点开播放（需已下载），文章点开阅读（有正文即可）。
+function canOpen(a: any) {
+  return a.content_type === 'video' ? !!a.playable : true
+}
+function coverHint(a: any) {
+  if (a.content_type === 'video') return a.playable ? '点击封面播放' : '未下载，无法播放'
+  return '点击封面阅读'
+}
+function onCoverClick(a: any) {
+  if (!canOpen(a)) return
+  if (a.content_type === 'video') openPlayer(a)
+  else openArticle(a.asset_id)
+}
+// 已转录 / 已分析：决定按钮显示「转录」还是「重新转录」。
+function isTranscribed(a: any) {
+  return a.transcribe_status === 'done'
+}
+function isAnalyzed(a: any) {
+  return a.analyze_status === 'done'
 }
 
 const importDialog = ref(false)
@@ -842,22 +868,25 @@ onUnmounted(() => {
 .asset .cover .badge-type { top: 8px; right: 8px; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .asset .cover .badge-dur { bottom: 8px; right: 8px; font-variant-numeric: tabular-nums; }
 .asset .cover .badge-nofile { bottom: 8px; right: 8px; color: var(--muted); }
-.asset .cover .play {
-  position: absolute;
-  width: 54px; height: 54px;
-  border-radius: 50%;
-  border: 2px solid var(--ink);
-  background: color-mix(in oklab, var(--surface) 82%, transparent);
-  color: var(--ink);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  display: grid; place-items: center;
-  padding-left: 3px;
-  transition: transform .14s ease-out, background .14s ease-out;
+/* 封面即入口：整块可点，hover 时浮出「播放 / 阅读」提示 */
+.asset .cover.clickable { cursor: pointer; }
+.asset .cover.clickable > img { transition: transform .18s ease-out, filter .18s ease-out; }
+.asset .cover.clickable:hover > img { transform: scale(1.04); filter: brightness(.82); }
+.asset .cover .cover-cta {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: var(--fs-lg); font-weight: 750; color: #fff;
+  text-shadow: 0 1px 6px rgba(0,0,0,.6);
+  opacity: 0; transition: opacity .16s ease-out;
+  pointer-events: none;
 }
-.asset .cover .play:hover { transform: scale(1.08); background: var(--accent); color: var(--accent-ink); }
-
+.asset .cover.clickable:hover .cover-cta { opacity: 1; }
+.asset .cover .cover-cta .cta-ic {
+  display: grid; place-items: center;
+  width: 48px; height: 48px; border-radius: 50%;
+  border: 2px solid #fff; background: rgba(0,0,0,.28);
+  font-size: 20px;
+}
 .asset .body { padding: var(--sp-4); display: flex; flex-direction: column; gap: 9px; flex: 1; }
 .asset .title {
   font-weight: 650; font-size: var(--fs-md); color: var(--ink); line-height: 1.4;

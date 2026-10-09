@@ -160,6 +160,14 @@
           <el-form-item label="判类默认用封面 use_cover">
             <el-switch v-model="proc.use_cover" />
           </el-form-item>
+          <el-form-item label="自动转录新素材">
+            <el-switch v-model="proc.auto_transcribe" />
+            <span class="detail">全局默认：素材下载完成后自动转录；订阅里可单独覆盖</span>
+          </el-form-item>
+          <el-form-item label="自动分析新素材">
+            <el-switch v-model="proc.auto_analyze" />
+            <span class="detail">全局默认：转录后自动分析；订阅里可单独覆盖</span>
+          </el-form-item>
           <el-form-item label="视频理解 provider">
             <el-select v-model="proc.provider" style="width: 200px">
               <el-option label="qwen（OpenAI 兼容）" value="qwen" />
@@ -320,6 +328,8 @@ const proc = reactive<any>({
   low_confidence_threshold: 0.6,
   classify_enabled: true,
   use_cover: false,
+  auto_transcribe: false,
+  auto_analyze: false,
   provider: 'qwen',
   vision_model: 'qwen3.8-flash',
   classify_model: 'qwen3.8-flash',
@@ -471,6 +481,8 @@ async function saveProcessSettings() {
     low_confidence_threshold: proc.low_confidence_threshold,
     classify_enabled: proc.classify_enabled,
     use_cover: proc.use_cover,
+    auto_transcribe: proc.auto_transcribe,
+    auto_analyze: proc.auto_analyze,
     provider: proc.provider,
     vision_model: proc.vision_model,
     classify_model: proc.classify_model,

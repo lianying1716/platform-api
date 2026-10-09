@@ -10,7 +10,13 @@ from app.config import settings
 from app.core import security
 from app.core.crypto import decrypt_credential, encrypt_credential, mask
 from app.db import get_db
-from app.models import AccountCredential, ContentItem, CredentialAuditLog, PlatformAccount
+from app.models import (
+    AccountCredential,
+    ContentItem,
+    CredentialAuditLog,
+    PlatformAccount,
+    StorageRoot,
+)
 from app.modules import REGISTRY, get_adapter
 from app.modules.base import PlatformAdapter
 from app.modules.browser_qr import BrowserQrUnavailable
@@ -33,10 +39,13 @@ def _adapter_or_400(platform: str) -> PlatformAdapter:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _account_out(account: PlatformAccount) -> schemas.AccountOut:
+def _account_out(account: PlatformAccount, root: StorageRoot | None = None) -> schemas.AccountOut:
     out = schemas.AccountOut.model_validate(account)
     adapter = REGISTRY.get(account.platform)
     out.platform_label = adapter.label if adapter else account.platform
+    if root is not None:
+        out.storage_root_name = root.name
+        out.storage_root_path = root.path
     if account.credential:
         try:
             plain = decrypt_credential(account.credential.ciphertext)
@@ -204,7 +213,8 @@ def list_accounts(db: Session = Depends(get_db)):
         )
         .order_by(PlatformAccount.id)
     ).all()
-    return [_account_out(a) for a in accounts]
+    roots = {r.id: r for r in db.scalars(select(StorageRoot)).all()}
+    return [_account_out(a, roots.get(a.storage_root_id)) for a in accounts]
 
 
 @router.post("/accounts", response_model=schemas.AccountOut)
@@ -293,6 +303,34 @@ async def update_credential(account_id: int, body: schemas.CredentialUpdate, db:
         await _run_check(db, account)
     db.refresh(account)
     return _account_out(account)
+
+
+@router.put("/accounts/{account_id}/storage", response_model=schemas.AccountOut)
+def update_account_storage(
+    account_id: int, body: schemas.AccountStorageUpdate, db: Session = Depends(get_db)
+):
+    """给账号指定存储根目录；storage_root_id=None 表示回到默认根。
+
+    两个账户可以指向同一个根（共用目录），也可以各指一个（独立目录），两种都合法。
+    """
+    account = db.get(PlatformAccount, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    root = None
+    if body.storage_root_id is not None:
+        root = db.get(StorageRoot, body.storage_root_id)
+        if root is None:
+            raise HTTPException(status_code=404, detail="存储根目录不存在")
+    account.storage_root_id = body.storage_root_id
+    _audit(
+        db,
+        account.id,
+        "update",
+        f"存储根改为 {root.name if root else '默认目录'}",
+    )
+    db.commit()
+    db.refresh(account)
+    return _account_out(account, root)
 
 
 @router.post("/accounts/{account_id}/check", response_model=schemas.CheckResponse)

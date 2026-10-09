@@ -30,7 +30,9 @@ class SubscriptionIn(BaseModel):
     enabled: bool = True
     auto_download: bool = False
     interval_minutes: int = Field(360, ge=10)
-    subdir_template: str = "{platform}/{creator}/{date}"
+    subdir_template: str = "{platform}/{account}/{creator}/{date}"
+    # 订阅级存储根覆盖：None = 继承账号绑定（再回退默认根）。
+    storage_root_id: int | None = None
     # 同步设置（A1/A4）：范围校验在 create/update 两处同时生效（同一个模型）。
     min_play: int = Field(0, ge=0)
     publish_after_days: int = Field(0, ge=0)
@@ -38,6 +40,9 @@ class SubscriptionIn(BaseModel):
     only_new: bool = True
     download_quality: str = "best"
     with_comments: bool = False
+    # 订阅级自动加工开关（显式 opt-in；绕过热度门控直接入队）。
+    auto_transcribe: bool = False
+    auto_analyze: bool = False
 
     @field_validator("download_quality")
     @classmethod
@@ -58,13 +63,16 @@ class SubscriptionOut(BaseModel):
     enabled: bool
     auto_download: bool
     interval_minutes: int
-    subdir_template: str = "{platform}/{creator}/{date}"
+    subdir_template: str = "{platform}/{account}/{creator}/{date}"
+    storage_root_id: int | None = None
     min_play: int = 0
     publish_after_days: int = 0
     max_items: int = 50
     only_new: bool = True
     download_quality: str = "best"
     with_comments: bool = False
+    auto_transcribe: bool = False
+    auto_analyze: bool = False
     last_sync_at: datetime | None = None
     deleted_at: datetime | None = None
     # creator 订阅即"关注的博主"；其头像供列表直接显示

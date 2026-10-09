@@ -298,6 +298,9 @@ _PROCESS_SPECS = {
     "provider": _as_provider,
     "vision_model": _as_nonempty_str,
     "classify_model": _as_nonempty_str,
+    # 全局自动加工默认（新素材下载完成后是否自动转录/分析）。
+    "auto_transcribe": _as_bool,
+    "auto_analyze": _as_bool,
 }
 
 

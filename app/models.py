@@ -49,6 +49,10 @@ class PlatformAccount(Base):
     last_crawl_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 采集公平轮换
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 账号级存储根：NULL = 用默认根目录。两个账户可共用同一根，也可各指一个。
+    storage_root_id: Mapped[int | None] = mapped_column(
+        ForeignKey("storage_root.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -137,7 +141,14 @@ class Subscription(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_download: Mapped[bool] = mapped_column(Boolean, default=False)
     interval_minutes: Mapped[int] = mapped_column(Integer, default=360)
-    subdir_template: Mapped[str] = mapped_column(String(256), default="{platform}/{creator}/{date}")
+    subdir_template: Mapped[str] = mapped_column(String(256), default="{platform}/{account}/{creator}/{date}")
+    # 订阅级存储根覆盖：NULL = 继承账号绑定（再回退默认根）。
+    storage_root_id: Mapped[int | None] = mapped_column(
+        ForeignKey("storage_root.id", ondelete="SET NULL"), nullable=True
+    )
+    # 加工开关（本订阅级显式 opt-in；命中即绕过热度门控直接入队）。
+    auto_transcribe: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_analyze: Mapped[bool] = mapped_column(Boolean, default=False)
     # 同步设置（迁移 0008）：过滤 / 截断 / 只新 / 画质 / 评论门控
     min_play: Mapped[int] = mapped_column(Integer, default=0)  # 最低播放量门槛，0=不限
     publish_after_days: Mapped[int] = mapped_column(Integer, default=0)  # 只同步最近 N 天，0=不限

@@ -43,5 +43,8 @@ export interface Account {
   status_message: string
   last_checked_at: string | null
   expires_at: string | null
+  storage_root_id: number | null
+  storage_root_name: string
+  storage_root_path: string
   credential_preview: Record<string, string>
 }

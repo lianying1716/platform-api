@@ -23,6 +23,19 @@ def get_default_root(db: Session) -> StorageRoot | None:
     return root
 
 
+def resolve_account_root(db: Session, account) -> StorageRoot | None:
+    """账号绑定的存储根；账号未绑定或绑定失效时回退默认根。
+
+    两个账户可指向同一个根（共用），也可各指一个（独立），两种都合法。
+    """
+    root_id = getattr(account, "storage_root_id", None) if account is not None else None
+    if root_id is not None:
+        root = db.get(StorageRoot, root_id)
+        if root is not None:
+            return root
+    return get_default_root(db)
+
+
 def sanitize_segment(value: str, fallback: str = "unknown") -> str:
     """把作者名/标题等清洗成安全的单层目录名，禁止路径穿越。"""
     value = (value or "").strip()
@@ -32,10 +45,24 @@ def sanitize_segment(value: str, fallback: str = "unknown") -> str:
     return value or fallback
 
 
-def render_subdir(template: str, *, platform: str, creator: str, date: datetime, content_id: str) -> str:
-    """渲染子目录模板，每段都清洗，返回相对路径（POSIX 风格）。"""
+def render_subdir(
+    template: str,
+    *,
+    platform: str,
+    creator: str,
+    date: datetime,
+    content_id: str,
+    account: str = "",
+) -> str:
+    """渲染子目录模板，每段都清洗，返回相对路径（POSIX 风格）。
+
+    `account` 是账号段（账号名/ID），供 `{account}` token 使用；为空时该段被清掉
+    （避免出现空目录层级）。
+    """
     mapping = {
         "platform": sanitize_segment(platform, "platform"),
+        # account 为空则映射成空串，让 {account} 段整体消失（不留空目录层）。
+        "account": sanitize_segment(account, "account") if (account or "").strip() else "",
         "creator": sanitize_segment(creator, "creator"),
         "date": date.strftime("%Y-%m-%d"),
         "content_id": sanitize_segment(content_id, "id"),
@@ -43,7 +70,7 @@ def render_subdir(template: str, *, platform: str, creator: str, date: datetime,
     rendered = template
     for key, val in mapping.items():
         rendered = rendered.replace("{" + key + "}", val)
-    # 模板里未覆盖的占位符或多余分隔符清掉
+    # 模板里未覆盖的占位符或多余分隔符清掉；{account} 为空时该段整体消失。
     parts = [sanitize_segment(p) for p in re.split(r"[/\\]+", rendered) if p and "{" not in p]
     return "/".join(parts)
 

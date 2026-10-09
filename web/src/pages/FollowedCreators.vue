@@ -110,16 +110,26 @@
             <button class="ui-icon-btn" title="立即同步" @click="syncRow(row)">↻</button>
           </div>
 
+          <!-- 同步开关放头部，状态一眼可见；底部只放次级操作 -->
+          <div class="sync-bar" :class="{ on: row.enabled }">
+            <span class="sync-label">
+              <span class="ui-dot" :class="row.enabled ? 'ok' : ''" />
+              {{ row.enabled ? '同步已开启' : '同步已关闭' }}
+            </span>
+            <button
+              class="ui-switch lg"
+              :class="{ on: row.enabled }"
+              :aria-label="row.enabled ? '关闭同步' : '开启同步'"
+              @click="toggleEnabled(row)"
+            >
+              <i />
+            </button>
+          </div>
+
           <p v-if="isCreator(row) && row.signature" class="sig">{{ row.signature }}</p>
           <p v-else-if="!isCreator(row)" class="sig">{{ filterSummary(row) }}</p>
 
           <div class="foot">
-            <span class="ui-toggle">
-              <span>开启同步</span>
-              <button class="ui-switch" :class="{ on: row.enabled }" @click="toggleEnabled(row)">
-                <i />
-              </button>
-            </span>
             <span v-if="row.enabled" class="ui-toggle">
               <span>全量</span>
               <button class="ui-switch sm" :class="{ on: !row.only_new }" @click="toggleFull(row)">
@@ -175,8 +185,9 @@
           </div>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.title" placeholder="例如：技术收藏夹（可留空）" /></el-form-item>
+
+        <div class="form-sec">同步</div>
         <el-form-item label="启用同步"><el-switch v-model="form.enabled" /></el-form-item>
-        <el-form-item label="自动下载"><el-switch v-model="form.auto_download" /></el-form-item>
         <el-form-item label="周期(分钟)"><el-input-number v-model="form.interval_minutes" :min="10" :step="10" /></el-form-item>
         <el-form-item label="最低播放量">
           <el-input-number v-model="form.min_play" :min="0" :step="1000" />
@@ -191,6 +202,9 @@
           <span class="detail">单次同步最多入库条数（1~500）</span>
         </el-form-item>
         <el-form-item label="只同步新"><el-switch v-model="form.only_new" /></el-form-item>
+
+        <div class="form-sec">下载</div>
+        <el-form-item label="自动下载"><el-switch v-model="form.auto_download" /></el-form-item>
         <el-form-item label="下载画质">
           <el-select v-model="form.download_quality" style="width: 200px">
             <el-option label="最佳画质" value="best" />
@@ -200,8 +214,40 @@
           </el-select>
         </el-form-item>
         <el-form-item label="同步评论"><el-switch v-model="form.with_comments" /></el-form-item>
+
+        <div class="form-sec">加工</div>
+        <el-form-item label="自动转录">
+          <el-switch v-model="form.auto_transcribe" />
+          <span class="detail">新素材下载完成后自动转录</span>
+        </el-form-item>
+        <el-form-item label="自动分析">
+          <el-switch v-model="form.auto_analyze" />
+          <span class="detail">转录后自动分析（依赖转录，未转录会先补转录）</span>
+        </el-form-item>
+
+        <div class="form-sec">存储</div>
+        <el-form-item label="根目录">
+          <el-select v-model="form.storage_mode" style="width: 200px">
+            <el-option label="继承账号目录" value="account" />
+            <el-option label="指定根目录" value="custom" />
+          </el-select>
+          <el-select
+            v-if="form.storage_mode === 'custom'"
+            v-model="form.storage_root_id"
+            placeholder="选择存储根"
+            style="width: 200px; margin-left: 8px"
+          >
+            <el-option v-for="r in storageRoots" :key="r.id" :label="`${r.name}（${r.path}）`" :value="r.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="子目录模板">
-          <el-input v-model="form.subdir_template" placeholder="{platform}/{creator}/{date}" />
+          <el-input v-model="form.subdir_template" placeholder="{platform}/{account}/{creator}/{date}" />
+          <span class="detail">可用占位符：{platform} {account} {creator} {date} {content_id}</span>
+        </el-form-item>
+        <el-form-item label="路径预览">
+          <div class="path-preview">
+            <code>{{ storagePreview }}</code>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -273,6 +319,8 @@ interface TrackRow {
   only_new: boolean
   download_quality: string
   with_comments: boolean
+  auto_transcribe: boolean
+  auto_analyze: boolean
   last_sync_at: string | null
   creator_avatar: string
   // creator 专属（由后端从 creator_profile 合成）
@@ -309,7 +357,7 @@ const BILIBILI_SOURCE_TYPES = [
   { value: 'collection', label: '合集' },
   { value: 'creator', label: '博主（我关注的）' },
 ]
-const DEFAULT_SUBDIR = '{platform}/{creator}/{date}'
+const DEFAULT_SUBDIR = '{platform}/{account}/{creator}/{date}'
 
 const sourceTypeOptions = computed(() => {
   const acc = accounts.value.find((a) => a.id === form.account_id)
@@ -356,7 +404,14 @@ const form = reactive({
   only_new: true,
   download_quality: 'best',
   with_comments: false,
+  auto_transcribe: false,
+  auto_analyze: false,
+  // 存储：账户级根目录（默认继承账号）或指定根 + 子目录模板
+  storage_mode: 'account' as 'account' | 'custom',
+  storage_root_id: null as number | null,
 })
+
+const storageRoots = ref<Array<{ id: number; name: string; path: string }>>([])
 
 const platformsWithAccounts = computed(() =>
   SUPPORTED.filter((p) => accounts.value.some((a) => a.platform === p)).map((p) => ({
@@ -369,6 +424,35 @@ const accountsForPlatform = computed(() =>
 const currentAccount = computed(() =>
   accountsForPlatform.value.find((a) => String(a.id) === activeAccountId.value),
 )
+
+/** 表单当前账号：新建时按 form.account_id，编辑时按行归属。 */
+const formAccount = computed(() =>
+  accounts.value.find((a) => a.id === (editing.value ? editing.value.account_id : form.account_id)),
+)
+
+/** 路径预览：根目录 + 模板渲染结果，让用户看到文件实际落点。 */
+const storagePreview = computed(() => {
+  let base: string
+  if (form.storage_mode === 'custom' && form.storage_root_id) {
+    base = storageRoots.value.find((r) => r.id === form.storage_root_id)?.path || '<未选择根目录>'
+  } else {
+    const acc = formAccount.value as any
+    base = acc?.storage_root_path || '<账号默认目录>'
+  }
+  const acc = formAccount.value as any
+  const segs = {
+    platform: acc?.platform || 'douyin',
+    account: acc?.display_name || (acc ? `account-${acc.id}` : '账号'),
+    creator: '<博主>',
+    date: new Date().toISOString().slice(0, 10),
+    content_id: '<内容ID>',
+  }
+  let rel = form.subdir_template || ''
+  for (const [k, v] of Object.entries(segs)) rel = rel.replaceAll(`{${k}}`, v)
+  rel = rel.replace(/[{}]/g, '').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '')
+  const join = base.endsWith('/') || base.endsWith('\\') ? base : `${base}/`
+  return `${join}${rel}`.replace(/([^:])\/{2,}/g, '$1/')
+})
 
 /** 当前账号下的行 */
 const accountRows = computed(() =>
@@ -442,6 +526,7 @@ async function load() {
 
 async function loadAccounts() {
   accounts.value = (await api.get('/api/accounts')).data
+  storageRoots.value = (await api.get('/api/system/storage-roots')).data
   syncAccountSelection()
 }
 
@@ -558,6 +643,9 @@ function openEdit(row: TrackRow) {
     min_play: row.min_play, publish_after_days: row.publish_after_days,
     max_items: row.max_items, only_new: row.only_new,
     download_quality: row.download_quality, with_comments: row.with_comments,
+    auto_transcribe: row.auto_transcribe, auto_analyze: row.auto_analyze,
+    // 存储以账号为准：编辑时默认继承账号目录（账号绑定在账号中心管理）
+    storage_mode: 'account', storage_root_id: null,
   })
   dialog.value = true
 }
@@ -588,6 +676,7 @@ function subPayload(row: TrackRow, extra: Record<string, unknown> = {}) {
     min_play: row.min_play, publish_after_days: row.publish_after_days,
     max_items: row.max_items, only_new: row.only_new,
     download_quality: row.download_quality, with_comments: row.with_comments,
+    auto_transcribe: row.auto_transcribe, auto_analyze: row.auto_analyze,
     ...extra,
   }
 }
@@ -598,6 +687,8 @@ function resetForm() {
     enabled: true, auto_download: false, interval_minutes: 360,
     subdir_template: DEFAULT_SUBDIR, min_play: 0, publish_after_days: 0,
     max_items: 50, only_new: true, download_quality: 'best', with_comments: false,
+    auto_transcribe: false, auto_analyze: false,
+    storage_mode: 'account', storage_root_id: null,
   })
   sources.value = []
   sourcesError.value = ''
@@ -645,18 +736,29 @@ async function loadSources() {
 async function submit() {
   if (!editing.value && !form.account_id) return ElMessage.warning('请选择账号')
   if (!editing.value && !form.remote_id.trim()) return ElMessage.warning('请选择或填写来源')
+  if (form.storage_mode === 'custom' && !form.storage_root_id) {
+    return ElMessage.warning('请选择要指定的存储根目录，或改为继承账号目录')
+  }
   submitting.value = true
   try {
+    // 存储根：继承账号 -> null（后端回退账号绑定/默认根）；指定 -> 具体 root id。
+    const rootOverride = form.storage_mode === 'custom' ? form.storage_root_id : null
+    const common = {
+      title: form.title, enabled: form.enabled, auto_download: form.auto_download,
+      interval_minutes: form.interval_minutes, subdir_template: form.subdir_template,
+      storage_root_id: rootOverride,
+      min_play: form.min_play, publish_after_days: form.publish_after_days,
+      max_items: form.max_items, only_new: form.only_new,
+      download_quality: form.download_quality, with_comments: form.with_comments,
+      auto_transcribe: form.auto_transcribe, auto_analyze: form.auto_analyze,
+    }
     if (editing.value) {
-      await api.put(`/api/subscriptions/${editing.value.id}`, subPayload(editing.value, {
-        title: form.title, enabled: form.enabled, auto_download: form.auto_download,
-        interval_minutes: form.interval_minutes, subdir_template: form.subdir_template,
-        min_play: form.min_play, publish_after_days: form.publish_after_days,
-        max_items: form.max_items, only_new: form.only_new,
-        download_quality: form.download_quality, with_comments: form.with_comments,
-      }))
+      await api.put(`/api/subscriptions/${editing.value.id}`, subPayload(editing.value, common))
     } else {
-      await api.post('/api/subscriptions', { ...form })
+      await api.post('/api/subscriptions', {
+        account_id: form.account_id, source_type: form.source_type, remote_id: form.remote_id,
+        ...common,
+      })
     }
     ElMessage.success('已保存')
     dialog.value = false
@@ -692,11 +794,34 @@ onMounted(async () => {
 .hint { font-size: var(--fs-sm); color: var(--muted); }
 .grid-wrap { display: flex; flex-direction: column; gap: 16px; }
 .ui-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
-.ui-card { display: flex; flex-direction: column; gap: 8px; }
-.ui-card .row { display: flex; align-items: center; gap: 10px; }
-.ui-card .ava { cursor: pointer; }
-.ui-card.off { opacity: .72; }
+.ui-card {
+  display: flex; flex-direction: column; gap: 8px;
+  /* 卡片边界线：与账号卡片同款硬边 + 偏移阴影，看清每张卡的边界 */
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow-1);
+  padding: var(--sp-4);
+  transition: transform .14s ease-out, box-shadow .14s ease-out, border-color .14s ease-out;
+}
+.ui-card:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
+.ui-card.off { opacity: .72; border-style: dashed; }
 .ui-card.off:hover { opacity: 1; }
+.ui-card .row { display: flex; align-items: center; gap: 10px; }
+
+/* 头部同步开关条：让"开/关同步"成为一眼可见的主操作 */
+.sync-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  transition: background .14s ease-out, border-color .14s ease-out;
+}
+.sync-bar.on { border-color: color-mix(in oklab, var(--ok) 40%, var(--ink)); background: var(--ok-soft); }
+.sync-bar .sync-label {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: var(--fs-sm); font-weight: 650; color: var(--ink-2);
+}
+.sync-bar.on .sync-label { color: var(--ink); }
 .src-ava {
   display: grid; place-items: center; cursor: default;
   background: var(--surface-3); border: 1px solid var(--ink);
@@ -723,4 +848,17 @@ onMounted(async () => {
   padding: 0 4px; background: var(--accent-soft); color: var(--accent);
 }
 .detail { margin-left: 8px; font-size: var(--fs-sm); color: var(--muted); }
+
+/* 设置弹窗分节标题 */
+.form-sec {
+  margin: 6px 0 10px; padding-left: 9px;
+  font-size: var(--fs-md); font-weight: 700; color: var(--ink);
+  border-left: 4px solid var(--accent);
+}
+.form-sec:first-of-type { margin-top: 0; }
+.path-preview {
+  width: 100%; padding: 7px 10px; overflow-x: auto;
+  background: var(--surface-2); border: 1px solid var(--line-soft);
+}
+.path-preview code { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--ink-2); white-space: nowrap; }
 </style>

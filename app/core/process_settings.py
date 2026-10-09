@@ -34,6 +34,9 @@ PROCESS_KEYS: dict[str, str] = {
     "provider": "process_provider",
     "vision_model": "process_vision_model",
     "classify_model": "process_classify_model",
+    # 全局自动加工默认（新素材下载完成后是否自动转录/视频理解）；订阅级开关可显式覆盖。
+    "auto_transcribe": "process_auto_transcribe",
+    "auto_analyze": "process_auto_analyze",
 }
 
 # system_setting key -> (默认值, 类型)。默认值可被 system_setting 覆盖。
@@ -55,6 +58,9 @@ _DEFAULTS: dict[str, tuple[object, str]] = {
     "process_provider": ("qwen", _STR),
     "process_vision_model": ("qwen3.8-flash", _STR),
     "process_classify_model": ("qwen3.8-flash", _STR),
+    # 默认关闭：自动加工耗资源，默认让用户显式开启。
+    "process_auto_transcribe": (False, _BOOL),
+    "process_auto_analyze": (False, _BOOL),
 }
 
 # 类型目录（枚举 -> 中文），设计 §4 的 16 类 + other。

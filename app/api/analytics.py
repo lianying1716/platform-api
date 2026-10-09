@@ -113,7 +113,10 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
     for plat, ctype, cnt in platform_rows:
         p = platforms.setdefault(
             plat or "unknown",
-            {"platform": plat or "unknown", "total": 0, "video": 0, "article": 0, "play": 0, "like": 0},
+            {
+                "platform": plat or "unknown", "total": 0, "video": 0, "article": 0,
+                "play": 0, "like": 0, "transcribed": 0, "categorized": 0,
+            },
         )
         p["total"] += int(cnt)
         if (ctype or "video") == "video":
@@ -147,7 +150,10 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
     for plat, play, like, comment, fav in metric_rows:
         p = platforms.setdefault(
             plat or "unknown",
-            {"platform": plat or "unknown", "total": 0, "video": 0, "article": 0, "play": 0, "like": 0},
+            {
+                "platform": plat or "unknown", "total": 0, "video": 0, "article": 0,
+                "play": 0, "like": 0, "transcribed": 0, "categorized": 0,
+            },
         )
         p["play"] = int(play or 0)
         p["like"] = int(like or 0)
@@ -155,6 +161,23 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
         totals["like"] += int(like or 0)
         totals["comment"] += int(comment or 0)
         totals["favorite"] += int(fav or 0)
+
+    # 每平台加工进度：已转录（media_asset.transcribe_status=done）/ 已判类（auto_category 非空）。
+    transcribed_rows = db.execute(
+        select(ContentItem.platform, func.count(MediaAsset.id))
+        .join(MediaAsset, MediaAsset.content_id == ContentItem.id)
+        .where(MediaAsset.transcribe_status == "done", *content_filter)
+        .group_by(ContentItem.platform)
+    ).all()
+    for plat, cnt in transcribed_rows:
+        platforms.setdefault(plat or "unknown", {"platform": plat or "unknown"})["transcribed"] = int(cnt or 0)
+    categorized_rows = db.execute(
+        select(ContentItem.platform, func.count(ContentItem.id))
+        .where(ContentItem.auto_category != "", *content_filter)
+        .group_by(ContentItem.platform)
+    ).all()
+    for plat, cnt in categorized_rows:
+        platforms.setdefault(plat or "unknown", {"platform": plat or "unknown"})["categorized"] = int(cnt or 0)
 
     # 分类分布（auto_category 判类结果）
     from app.core.process_settings import get_taxonomy

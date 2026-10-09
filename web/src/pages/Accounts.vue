@@ -34,6 +34,14 @@
           <dl class="acc-meta">
             <div><dt>到期</dt><dd>{{ fmt(row.expires_at) }}</dd></div>
             <div><dt>上次体检</dt><dd>{{ fmt(row.last_checked_at) }}</dd></div>
+            <div>
+              <dt>存储位置</dt>
+              <dd class="storage-cell" :title="row.storage_root_path || '默认目录'">
+                <span v-if="row.storage_root_name" class="ui-badge acc">{{ row.storage_root_name }}</span>
+                <span v-else class="ui-badge">默认目录</span>
+                <span class="storage-path mono ellip">{{ row.storage_root_path || '未配置根目录' }}</span>
+              </dd>
+            </div>
           </dl>
           <p v-if="row.status_message" class="acc-msg" :title="row.status_message">{{ row.status_message }}</p>
           <div class="acc-acts">
@@ -41,6 +49,7 @@
               {{ checking === row.id ? '体检中…' : '体检' }}
             </button>
             <button class="ui-btn sm" @click="openUpdate(row)">更新凭证</button>
+            <button class="ui-btn sm" @click="openStorage(row)">设置目录</button>
             <button class="ui-btn sm danger" @click="confirmRemove(row)">删除</button>
           </div>
         </article>
@@ -60,6 +69,32 @@
         </div>
       </div>
     </div>
+
+    <!-- 设置存储目录弹窗 -->
+    <el-dialog v-model="storageDialog" title="设置存储目录" width="520px" destroy-on-close>
+      <p class="storage-tip">
+        每个账号可以单独指定一个根目录，也可以共用同一个。留空则使用系统默认根目录。
+      </p>
+      <el-form label-width="90px">
+        <el-form-item label="根目录">
+          <el-select v-model="storageForm.storage_root_id" placeholder="使用默认根目录" clearable style="width: 100%">
+            <el-option
+              v-for="r in storageRoots"
+              :key="r.id"
+              :label="`${r.name}（${r.path}）`"
+              :value="r.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <p class="storage-tip">
+        子目录结构由「关注列表」里每个来源的模板决定，例如 {{ '{platform}/{account}/{creator}/{date}' }}。
+      </p>
+      <template #footer>
+        <el-button @click="storageDialog = false">取消</el-button>
+        <el-button type="primary" :loading="storageSaving" @click="saveStorage">保存</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 新建/更新账号弹窗 -->
     <el-dialog v-model="dialog" :title="editing ? '更新凭证' : '新建账号'" width="520px" destroy-on-close>
@@ -299,6 +334,36 @@ async function check(row: Account) {
 
 const removeTarget = ref<Account | null>(null)
 
+// 存储目录设置：账号级根目录绑定（NULL = 默认根）。
+const storageDialog = ref(false)
+const storageSaving = ref(false)
+const storageRoots = ref<Array<{ id: number; name: string; path: string }>>([])
+const storageForm = reactive<{ account: Account | null; storage_root_id: number | null }>({
+  account: null,
+  storage_root_id: null,
+})
+
+function openStorage(row: Account) {
+  storageForm.account = row
+  storageForm.storage_root_id = (row as any).storage_root_id ?? null
+  storageDialog.value = true
+}
+
+async function saveStorage() {
+  if (!storageForm.account) return
+  storageSaving.value = true
+  try {
+    await api.put(`/api/accounts/${storageForm.account.id}/storage`, {
+      storage_root_id: storageForm.storage_root_id,
+    })
+    ElMessage.success('存储目录已更新')
+    storageDialog.value = false
+    await load()
+  } finally {
+    storageSaving.value = false
+  }
+}
+
 function confirmRemove(row: Account) {
   removeTarget.value = row
 }
@@ -314,6 +379,7 @@ async function doRemove() {
 onMounted(async () => {
   const { data } = await api.get('/api/platforms')
   platforms.value = data
+  storageRoots.value = (await api.get('/api/system/storage-roots')).data
   await load()
 })
 onUnmounted(stopPolling)
@@ -409,6 +475,13 @@ onUnmounted(stopPolling)
   -webkit-box-orient: vertical; overflow: hidden;
 }
 .acc-acts { display: flex; gap: 6px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line-soft); flex-wrap: wrap; }
+.acc-id { margin: 0; font-size: var(--fs-xs); color: var(--muted); font-family: var(--font-mono); }
+.storage-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.storage-cell .storage-path { max-width: 150px; font-size: var(--fs-xs); color: var(--muted); }
+.mono { font-family: var(--font-mono); }
+.ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storage-tip { margin: 0 0 12px; font-size: var(--fs-sm); color: var(--muted); line-height: 1.6; }
+.storage-tip code { font-family: var(--font-mono); }
 .ui-badge .ui-dot { margin-right: 2px; }
 
 /* 确认弹层（与全局 ui-modal 一致，宽度收窄） */
