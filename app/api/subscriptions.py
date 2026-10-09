@@ -134,11 +134,14 @@ def update_subscription(sub_id: int, body: SubscriptionIn, db: Session = Depends
     sub = db.get(Subscription, sub_id)
     if sub is None or sub.deleted_at is not None:
         raise HTTPException(status_code=404, detail="订阅不存在")
-    account = db.get(PlatformAccount, body.account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    if account.is_system or account.status != "active":
-        raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用，无法绑定订阅")
+    if body.account_id != sub.account_id:
+        account = db.get(PlatformAccount, body.account_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        if account.is_system or account.status != "active":
+            raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用，无法绑定订阅")
+        if account.platform != sub.platform:
+            raise HTTPException(status_code=422, detail="订阅不能转移到其他平台账号")
     for k, v in body.model_dump().items():
         setattr(sub, k, v)
     db.commit()

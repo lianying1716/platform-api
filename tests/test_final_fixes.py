@@ -221,17 +221,7 @@ def test_import_article_rejects_deleted_account(session, monkeypatch):
     account = _account(session, platform="wechat_mp", status="deleted")
 
     async def fake_fetch(url):
-        return {
-            "external_id": "wx1",
-            "title": "T",
-            "author_name": "A",
-            "author_id": "a1",
-            "url": url,
-            "cover_url": "",
-            "published_at": None,
-            "html": "<p>x</p>",
-            "text": "x",
-        }
+        raise AssertionError("账号校验失败时不应发起文章抓取")
 
     monkeypatch.setattr(import_service.article_import, "fetch_article", fake_fetch)
     with pytest.raises(ValueError):
@@ -240,3 +230,29 @@ def test_import_article_rejects_deleted_account(session, monkeypatch):
                 session, "https://mp.weixin.qq.com/s/x", account_id=account.id
             )
         )
+
+
+def test_update_subscription_rejects_cross_platform_account(client, session):
+    account = _account(session, platform="bilibili")
+    other = _account(session, platform="douyin", name="D")
+    sub = Subscription(
+        account_id=account.id,
+        platform=account.platform,
+        source_type="favorite",
+        remote_id="f",
+        title="F",
+    )
+    session.add(sub)
+    session.commit()
+
+    resp = client.put(
+        f"/api/subscriptions/{sub.id}",
+        json={
+            "account_id": other.id,
+            "source_type": "favorite",
+            "remote_id": "f",
+            "title": "F",
+        },
+    )
+    assert resp.status_code == 422
+    assert "平台" in resp.json()["detail"]
