@@ -57,15 +57,19 @@ async def enqueue_due_subscriptions() -> None:
     走各自的 ``enabled``。入队用 dedup，避免重复堆积。
     """
     from app.core.queue import enqueue
-    from app.models import Subscription
+    from app.models import PlatformAccount, Subscription
 
     db = SessionLocal()
     try:
         now = datetime.utcnow()
         subs = db.scalars(
-            select(Subscription).where(
+            select(Subscription)
+            .join(PlatformAccount, PlatformAccount.id == Subscription.account_id)
+            .where(
                 Subscription.enabled.is_(True),
                 Subscription.deleted_at.is_(None),
+                # 停用/不可用账号的订阅不排队（排了也只会立刻报"账号已停用"）。
+                PlatformAccount.status == "active",
             )
         ).all()
         queued = 0
