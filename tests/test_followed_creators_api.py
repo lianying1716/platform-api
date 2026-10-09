@@ -64,8 +64,9 @@ def test_refresh_upserts_and_lists(client, session, monkeypatch):
     assert [c["author_name"] for c in rows] == ["老饭骨", "影视飓风"]
     assert rows[0]["avatar"] == "http://a/1.jpg"
     assert rows[0]["home_url"] == "https://space.bilibili.com/1001"
-    # 新关注默认不开启同步（开不开由用户决定）
-    assert rows[0]["sync_enabled"] is False
+    # 关注列表默认开启「关系跟踪」（对齐抖小云），但博主视频同步默认关闭，需手动开
+    assert rows[0]["sync_enabled"] is True
+    assert rows[0]["sync_videos"] is False
 
 
 def test_refresh_writes_creator_profile(client, session, monkeypatch):

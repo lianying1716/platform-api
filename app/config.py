@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     credential_key_file: Path | None = None
     # 账号定时体检间隔（分钟），0 表示关闭
     account_check_interval: int = 15
+    # 订阅同步扫描间隔（分钟）：按 subscription.interval_minutes 到期即入队 sync。
+    # 0 表示关闭（只保留手动同步）。
+    subscription_scan_interval: int = 5
     # 扫码会话有效期（秒）。抖音扫码后常有"手机上二次确认"步骤，180s 偏紧，
     # 用户还没点确认就超时了，所以给到 5 分钟。
     qr_session_ttl: int = 300

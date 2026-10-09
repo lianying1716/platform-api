@@ -139,6 +139,10 @@ class Subscription(Base):
     remote_id: Mapped[str] = mapped_column(String(128))  # 收藏夹ID / UP主mid / 合集ID
     title: Mapped[str] = mapped_column(String(256), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # creator 订阅专用：是否同步该博主名下的视频。
+    # 与 ``enabled``（关注关系是否跟踪）是两件事——导入关注列表默认跟踪关系，
+    # 但拉取博主投稿必须由用户手动开启（对齐抖小云的独立开关）。
+    sync_videos: Mapped[bool] = mapped_column(Boolean, default=False)
     auto_download: Mapped[bool] = mapped_column(Boolean, default=False)
     interval_minutes: Mapped[int] = mapped_column(Integer, default=360)
     subdir_template: Mapped[str] = mapped_column(String(256), default="{platform}/{account}/{creator}/{date}")
@@ -203,6 +207,8 @@ class SyncRun(Base):
     status: Mapped[str] = mapped_column(String(16), default="running")  # running/success/error
     fetched: Mapped[int] = mapped_column(Integer, default=0)
     added: Mapped[int] = mapped_column(Integer, default=0)
+    # 全量同步（only_new=false）时被刷新的已有内容条数；只看 added 看不出全量是否生效。
+    updated: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(String(512), default="")
 
 

@@ -2,16 +2,19 @@
 
 设计要点（消除与订阅源的重复）：
 - **不再有独立的"关注博主"表**。一条 ``source_type='creator'`` 的 ``Subscription``
-  就是"我关注了谁"；``enabled`` 即"是否开启同步"，``only_new`` 即"只同步新发布"。
+  就是"我关注了谁"；``enabled`` 即"是否跟踪这段关注关系"（导入即开启），
+  ``sync_videos`` 即"是否同步该博主名下的视频"（默认关闭，必须手动打开），
+  ``only_new`` 即"只同步新发布"。
 - 博主资料（头像/昵称/简介/粉丝）按 ``(platform, author_id)`` 存 ``creator_profile``，
   与「同步开关」这类关系状态分表，各存一份，因此不可能出现两处开关互相漂移。
-- 刷新关注列表 = 把平台上"我关注的人" upsert 成 creator 订阅（默认**不开启同步**，
-  用户想同步哪个再打开）。刷新不会改动已有记录的同步开关。
+- 刷新关注列表 = 把平台上"我关注的人" upsert 成 creator 订阅（默认**开启关系跟踪**，
+  与抖小云一致）；但"同步该博主名下视频"是更高一级的手动开关，默认关闭。
+  刷新不会改动已有记录的开关。
 
 接口：
 - GET    /api/followed-creators            列出我关注的博主（按账号/平台过滤）
 - POST   /api/followed-creators/refresh    从平台拉关注列表并入库（带缓存 + 风控冷却）
-- PUT    /api/followed-creators/{id}       {sync_enabled, full_sync} → 写 subscription.enabled/only_new
+- PUT    /api/followed-creators/{id}       {sync_enabled, sync_videos, full_sync} → 写订阅
 - POST   /api/followed-creators/{id}/sync  立即同步
 - DELETE /api/followed-creators/{id}       取消关注
 """
@@ -74,6 +77,7 @@ def _out(sub: Subscription, profile: CreatorProfile | None) -> dict:
         "like_count": 0,
         # 关系状态：全部来自 subscription（唯一真相）
         "sync_enabled": sub.enabled,
+        "sync_videos": sub.sync_videos,
         "full_sync": not sub.only_new,
         "last_synced_at": sub.last_sync_at.isoformat() if sub.last_sync_at else None,
     }
@@ -153,7 +157,8 @@ async def _enrich_stats(db: Session, adapter, account, credential, items: list[d
 async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
     """刷新关注列表：默认走 6h 缓存（不频繁拉取）；风控冷却期内只读缓存。
 
-    只做「新增没见过的关注」+「更新已有关注的资料」，**不碰用户的同步开关**：
+    只做「新增没见过的关注」+「更新已有关注的资料」，**不碰用户已设的开关**：
+    新导入的关注默认开启关系跟踪（关注列表默认同步），但绝不改动已有记录的开关。
     平台列表可能因分页/风控只返回一部分，据此判取关会误关用户开着的同步。
     返回 ``cached``/``cooling`` 供 UI 提示。
     """
@@ -232,18 +237,19 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
         count += 1
         sub = existing.get(author_id)
         if sub is None:
-            # 新关注：建订阅但**默认不开启同步**，开不开由用户决定
+            # 新关注：默认**开启关注关系跟踪**（对齐抖小云：关注列表默认同步），
+            # 但「同步该博主名下视频」（sync_videos）默认关闭，需要用户手动打开。
             sub = Subscription(
                 account_id=account.id,
                 platform=account.platform,
                 source_type="creator",
                 remote_id=author_id,
                 title=str(item.get("author_name") or author_id),
-                enabled=False,
+                enabled=True,
             )
             db.add(sub)
         else:
-            # 之前取消关注过（软删）：平台侧仍在关注 → 复活该行（保持原同步开关为关）。
+            # 之前取消关注过（软删）：平台侧仍在关注 → 复活该行，并保持用户原来的开关。
             if sub.deleted_at is not None:
                 sub.deleted_at = None
             if not sub.title:
@@ -275,6 +281,8 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
 class ToggleIn(BaseModel):
     sync_enabled: bool | None = None
     full_sync: bool | None = None
+    # 二级开关：是否同步该博主名下视频（与"关注关系"分开，默认关闭）。
+    sync_videos: bool | None = None
 
 
 def _get_creator_sub(fc_id: int, db: Session) -> Subscription:
@@ -290,6 +298,11 @@ def update_followed_creator(fc_id: int, body: ToggleIn, db: Session = Depends(ge
     sub = _get_creator_sub(fc_id, db)
     if body.sync_enabled is not None:
         sub.enabled = body.sync_enabled
+    if body.sync_videos is not None:
+        sub.sync_videos = body.sync_videos
+        # 打开"同步博主视频"必然要先跟踪这段关注关系，否则同步会被直接拒绝。
+        if body.sync_videos:
+            sub.enabled = True
     if body.full_sync is not None:
         sub.only_new = not body.full_sync
     db.commit()
@@ -302,7 +315,9 @@ def update_followed_creator(fc_id: int, body: ToggleIn, db: Session = Depends(ge
 async def sync_now(fc_id: int, db: Session = Depends(get_db)):
     """立即同步该博主：先确保同步开启，再跑一次订阅同步。"""
     sub = _get_creator_sub(fc_id, db)
+    # 立即同步等于是用户显式要这个博主的视频：把两个开关都打开，再跑一次。
     sub.enabled = True
+    sub.sync_videos = True
     db.commit()
     db.refresh(sub)
     run = await run_subscription_sync(db, sub)
@@ -311,6 +326,7 @@ async def sync_now(fc_id: int, db: Session = Depends(get_db)):
         "status": run.status,
         "fetched": run.fetched,
         "added": run.added,
+        "updated": run.updated,
         "error": run.error,
     }
 

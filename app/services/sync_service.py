@@ -43,6 +43,10 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
 
     if subscription.deleted_at is not None:
         return _finish(db, run, "error", error="订阅已删除，拒绝同步")
+    # 关注列表默认同步的是「关注关系」；拉取博主名下视频是二级手动开关（sync_videos）。
+    # 未开启时拒绝拉取，避免"看着开着、其实没同步"的假象。
+    if subscription.source_type == "creator" and not subscription.sync_videos:
+        return _finish(db, run, "error", error="未开启「同步博主视频」（该开关需手动打开）")
     account = db.get(PlatformAccount, subscription.account_id)
     if account is None or account.credential is None:
         return _finish(db, run, "error", error="账号不存在或未录入凭证")
@@ -66,6 +70,7 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     items = _apply_sync_settings(items, subscription)
 
     added = 0
+    updated = 0
     touched: list[ContentItem] = []
     for item in items:
         content, is_new = _upsert_content(db, subscription, item)
@@ -76,6 +81,9 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
             added += 1
             if subscription.auto_download and content.content_type == "video":
                 _ensure_download(db, content)
+        elif not subscription.only_new:
+            # 全量同步会覆盖刷新已有内容：必须能观测到"确实刷新了几条"。
+            updated += 1
     subscription.last_sync_at = datetime.utcnow()
     db.commit()
     events.publish("sync_done", {"subscription_id": subscription.id, "added": added})
@@ -104,7 +112,7 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     except Exception:  # noqa: BLE001 分档加工是增强项，失败不得翻转本次同步的成功状态
         db.rollback()
         logging.getLogger("platform.sync").exception("分档入队失败，已忽略（不影响本次同步）")
-    return _finish(db, run, "success", fetched=fetched_count, added=added)
+    return _finish(db, run, "success", fetched=fetched_count, added=added, updated=updated)
 
 
 async def _fetch_source_cached(db: Session, sub: Subscription, fetch, credential, limit: int) -> list[dict]:
@@ -332,11 +340,18 @@ def _ensure_download(db: Session, content: ContentItem) -> None:
 
 
 def _finish(
-    db: Session, run: SyncRun, status: str, fetched: int = 0, added: int = 0, error: str = ""
+    db: Session,
+    run: SyncRun,
+    status: str,
+    fetched: int = 0,
+    added: int = 0,
+    error: str = "",
+    updated: int = 0,
 ) -> SyncRun:
     run.status = status
     run.fetched = fetched
     run.added = added
+    run.updated = updated
     run.error = error[:500]
     run.finished_at = datetime.utcnow()
     db.commit()

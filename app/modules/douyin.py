@@ -449,6 +449,8 @@ class DouyinAdapter:
     label = "抖音"
     credential_kind = "cookie"
     supports_qr = True  # 经 browser_qr（Playwright），未装浏览器时 API 会返回明确报错
+    # 账号级单例同步源：整个账号只有一份，可在「账号」页用开关直接打开（对齐抖小云）。
+    singleton_sync_sources = ("favorite", "like")
     credential_fields = [
         {"key": "cookie", "label": "Cookie 字符串（整段粘贴）", "required": True},
         {"key": "sec_user_id", "label": "SecUserId（主页地址 /user/ 后面那串）", "required": False},

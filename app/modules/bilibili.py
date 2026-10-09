@@ -103,6 +103,8 @@ class BilibiliAdapter:
     label = "B站"
     credential_kind = "cookie"
     supports_qr = True
+    # B站收藏夹是「多个命名收藏夹」，不是账号级单例源，所以不提供账号级开关。
+    singleton_sync_sources: tuple[str, ...] = ()
     credential_fields = [
         {"key": "sessdata", "label": "SESSDATA", "required": True},
         {"key": "bili_jct", "label": "bili_jct", "required": True},

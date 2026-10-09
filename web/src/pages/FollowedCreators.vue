@@ -2,14 +2,14 @@
   <div class="ui-page">
     <div class="ui-head">
       <h1>关注列表</h1>
-      <span class="sub">这里是我跟踪的所有来源 —— 博主、收藏夹、合集。一条记录就是一个同步目标。</span>
+      <span class="sub">收藏、点赞、关注列表各自独立 —— 谁要同步，先手动打开。</span>
       <div class="grow" />
       <span v-if="cooling" class="ui-badge warn">风控冷却中 · 展示缓存</span>
     </div>
 
     <div class="bar">
       <button class="ui-btn primary" @click="openCreate">新建跟踪</button>
-      <el-tooltip content="从平台拉取「我关注的人」，拉回后默认不开启同步，你想同步哪个再打开">
+      <el-tooltip content="从平台拉取「我关注的人」。关注列表默认开始跟踪；某个博主名下视频要单独手动开启">
         <button class="ui-btn" :loading="refreshing" :disabled="!currentAccount" @click="refresh(false)">
           {{ refreshing ? '拉取中…' : '导入我的关注' }}
         </button>
@@ -18,8 +18,45 @@
         <button class="ui-btn" :disabled="refreshing || !currentAccount" @click="refresh(true)">强制刷新</button>
       </el-tooltip>
       <span class="grow" />
-      <span class="ui-badge">跟踪中 {{ rows.length }}</span>
-      <span class="ui-badge ok">已开启同步 {{ enabledCount }}</span>
+      <span class="ui-badge">跟踪中 {{ accountRows.length }}</span>
+      <span class="ui-badge ok">已开启 {{ enabledCount }}</span>
+    </div>
+
+    <!-- 同步开关面板：收藏 / 点赞 / 关注列表 —— 显眼、各自独立、默认可控 -->
+    <div v-if="switches.length" class="sync-panel">
+      <div class="panel-head">
+        <span class="panel-title">同步开关</span>
+        <span class="panel-sub">收藏、点赞需要手动打开才会同步</span>
+      </div>
+      <div class="switch-grid">
+        <div v-for="sw in switches" :key="sw.key" class="switch-card" :class="{ on: sw.enabled }">
+          <div class="sw-main">
+            <span class="sw-name">{{ sw.label }}</span>
+            <span class="sw-state" :class="sw.enabled ? 'ok' : 'off'">
+              {{ sw.enabled ? '已开启' : '未开启' }}
+            </span>
+          </div>
+          <p class="sw-desc">{{ sw.description }}</p>
+          <div class="sw-foot">
+            <span v-if="sw.key === 'creator'" class="sw-meta">
+              已跟踪 {{ sw.followed_count || 0 }} 位 · 其中 {{ sw.video_sync_count || 0 }} 位开了视频同步
+            </span>
+            <span v-else class="sw-meta">
+              {{ sw.last_sync_at ? `上次同步 ${fmt(sw.last_sync_at)}` : '从未同步' }}
+            </span>
+            <span class="grow" />
+            <button
+              class="ui-switch lg"
+              :class="{ on: sw.enabled }"
+              :disabled="togglingSwitch === sw.key || (!sw.exists && !sw.enabled && sw.key === 'creator')"
+              :aria-label="sw.enabled ? `关闭${sw.label}` : `开启${sw.label}`"
+              @click="toggleSwitch(sw)"
+            >
+              <i />
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 一级 tab：平台（只在有账号的平台里出现） -->
@@ -110,12 +147,46 @@
             <button class="ui-icon-btn" title="立即同步" @click="syncRow(row)">↻</button>
           </div>
 
-          <!-- 同步开关放头部，状态一眼可见；底部只放次级操作 -->
-          <div class="sync-bar" :class="{ on: row.enabled }">
+          <!-- 博主：两条独立链路。1) 关注关系默认跟踪；2) 博主名下视频要手动开关。 -->
+          <template v-if="isCreator(row)">
+            <div class="sync-bar" :class="{ on: row.sync_videos }">
+              <span class="sync-label">
+                <span class="ui-dot" :class="row.sync_videos ? 'ok' : ''" />
+                {{ row.sync_videos ? '视频同步已开启' : '视频同步未开启' }}
+              </span>
+              <span class="grow" />
+              <button
+                class="ui-switch lg"
+                :class="{ on: row.sync_videos }"
+                :aria-label="row.sync_videos ? '关闭视频同步' : '开启视频同步'"
+                @click="toggleVideos(row)"
+              >
+                <i />
+              </button>
+            </div>
+            <div class="relation-bar">
+              <span class="relation-text">
+                关注关系：{{ row.sync_enabled ? '跟踪中' : '已暂停' }}
+              </span>
+              <span class="grow" />
+              <button
+                class="ui-switch sm"
+                :class="{ on: row.sync_enabled }"
+                :aria-label="row.sync_enabled ? '暂停跟踪关注关系' : '恢复跟踪关注关系'"
+                @click="toggleEnabled(row)"
+              >
+                <i />
+              </button>
+            </div>
+          </template>
+
+          <!-- 收藏 / 点赞 / 合集：单条同步链路 -->
+          <div v-else class="sync-bar" :class="{ on: row.enabled }">
             <span class="sync-label">
               <span class="ui-dot" :class="row.enabled ? 'ok' : ''" />
-              {{ row.enabled ? '同步已开启' : '同步已关闭' }}
+              {{ row.enabled ? '同步已开启' : '同步未开启' }}
             </span>
+            <span class="grow" />
             <button
               class="ui-switch lg"
               :class="{ on: row.enabled }"
@@ -130,15 +201,15 @@
           <p v-else-if="!isCreator(row)" class="sig">{{ filterSummary(row) }}</p>
 
           <div class="foot">
-            <span v-if="row.enabled" class="ui-toggle">
+            <span v-if="syncActive(row)" class="ui-toggle">
               <span>全量</span>
               <button class="ui-switch sm" :class="{ on: !row.only_new }" @click="toggleFull(row)">
                 <i />
               </button>
             </span>
-            <span v-else class="ui-badge">仅收藏</span>
+            <span v-else class="ui-badge">{{ isCreator(row) ? '已跟踪' : '仅收藏' }}</span>
             <span class="grow" />
-            <button class="ui-btn ghost sm" @click="openRuns(row)">历史</button>
+            <button class="ui-btn ghost sm" :disabled="!syncActive(row)" @click="openRuns(row)">历史</button>
             <button class="ui-btn ghost sm" @click="openEdit(row)">设置</button>
             <button class="ui-btn ghost sm danger" @click="confirmRemove(row)">移除</button>
           </div>
@@ -187,7 +258,14 @@
         <el-form-item label="备注"><el-input v-model="form.title" placeholder="例如：技术收藏夹（可留空）" /></el-form-item>
 
         <div class="form-sec">同步</div>
-        <el-form-item label="启用同步"><el-switch v-model="form.enabled" /></el-form-item>
+        <el-form-item v-if="form.source_type === 'creator'" label="关注视频">
+          <el-switch v-model="form.sync_videos" />
+          <span class="detail">开启后才会同步该博主名下的视频（默认可先只跟踪关注关系）</span>
+        </el-form-item>
+        <el-form-item :label="form.source_type === 'creator' ? '跟踪关注关系' : '启用同步'">
+          <el-switch v-model="form.enabled" />
+          <span v-if="form.source_type === 'creator'" class="detail">关闭＝暂停跟踪这段关注关系</span>
+        </el-form-item>
         <el-form-item label="周期(分钟)"><el-input-number v-model="form.interval_minutes" :min="10" :step="10" /></el-form-item>
         <el-form-item label="最低播放量">
           <el-input-number v-model="form.min_play" :min="0" :step="1000" />
@@ -286,6 +364,7 @@
         </el-table-column>
         <el-table-column prop="fetched" label="抓取" width="70" />
         <el-table-column prop="added" label="新增" width="70" />
+        <el-table-column prop="updated" label="全量刷新" width="90" />
         <el-table-column label="错误">
           <template #default="{ row }">{{ row.error || '—' }}</template>
         </el-table-column>
@@ -310,6 +389,8 @@ interface TrackRow {
   remote_id: string
   title: string
   enabled: boolean
+  // creator 专用二级开关：是否同步该博主名下视频
+  sync_videos: boolean
   auto_download: boolean
   interval_minutes: number
   subdir_template: string
@@ -335,7 +416,22 @@ interface TrackRow {
 interface RemoteSource { remote_id: string; title: string }
 interface SyncRunRow {
   id: number; started_at: string | null; status: string
-  fetched: number; added: number; error: string
+  fetched: number; added: number; updated: number; error: string
+}
+
+/** 账号级同步开关（收藏 / 点赞 / 关注列表），由后端 /api/accounts/{id}/sync-switches 提供。 */
+interface SyncSwitch {
+  key: string
+  source_type: string
+  label: string
+  description: string
+  enabled: boolean
+  exists: boolean
+  subscription_id?: number | null
+  only_new?: boolean
+  last_sync_at?: string | null
+  followed_count?: number
+  video_sync_count?: number
 }
 
 const PLATFORM_LABELS: Record<string, string> = { douyin: '抖音', bilibili: 'B站' }
@@ -371,9 +467,11 @@ const rows = ref<TrackRow[]>([])
 const loading = ref(false)
 const refreshing = ref(false)
 const cooling = ref(false)
+const switches = ref<SyncSwitch[]>([])
+const togglingSwitch = ref<string | null>(null)
 const activePlatform = ref('douyin')
 const activeAccountId = ref('')
-const activeType = ref<'all' | 'creator' | 'source'>('all')
+const activeType = ref<'all' | 'creator' | 'favorite' | 'like' | 'other'>('all')
 const syncing = ref<number | null>(null)
 
 const dialog = ref(false)
@@ -396,6 +494,7 @@ const form = reactive({
   remote_id: '',
   title: '',
   enabled: true,
+  sync_videos: false,
   auto_download: false,
   interval_minutes: 360,
   subdir_template: DEFAULT_SUBDIR,
@@ -459,28 +558,34 @@ const storagePreview = computed(() => {
 const accountRows = computed(() =>
   rows.value.filter((r) => String(r.account_id) === activeAccountId.value),
 )
-const creatorRows = computed(() =>
-  accountRows.value.filter((r) => r.source_type === 'creator' && activeType.value !== 'source'),
-)
-const sourceRows = computed(() =>
-  accountRows.value.filter((r) => r.source_type !== 'creator' && activeType.value !== 'creator'),
-)
-const visibleRows = computed(() => [...creatorRows.value, ...sourceRows.value])
+const visibleRows = computed(() => {
+  const t = activeType.value
+  if (t === 'all') return accountRows.value
+  return accountRows.value.filter((r) => matchType(r, t))
+})
 function isCreator(row: TrackRow) { return row.source_type === 'creator' }
 /** 收藏夹/合集没有头像，用一个几何符号代替，保证卡片结构一致。 */
 function sourceGlyph(t: string) {
   return ({ favorite: '☆', collection: '▤', like: '♥', collect_folder: '❏', series: '▧' } as Record<string, string>)[t] ?? '▦'
 }
-const enabledCount = computed(() => rows.value.filter((r) => r.enabled).length)
+const enabledCount = computed(() => accountRows.value.filter((r) => syncActive(r)).length)
 
 const typeFilters = [
   { value: 'all' as const, label: '全部' },
   { value: 'creator' as const, label: '博主' },
-  { value: 'source' as const, label: '收藏夹 / 合集' },
+  { value: 'favorite' as const, label: '收藏' },
+  { value: 'like' as const, label: '点赞' },
+  { value: 'other' as const, label: '收藏夹 / 合集' },
 ]
-function typeCount(v: 'creator' | 'source') {
-  return accountRows.value.filter((r) =>
-    v === 'creator' ? r.source_type === 'creator' : r.source_type !== 'creator').length
+function typeCount(v: 'creator' | 'favorite' | 'like' | 'other') {
+  return accountRows.value.filter((r) => matchType(r, v)).length
+}
+function matchType(r: TrackRow, v: string) {
+  if (v === 'creator') return r.source_type === 'creator'
+  if (v === 'favorite') return r.source_type === 'favorite'
+  if (v === 'like') return r.source_type === 'like'
+  if (v === 'other') return !['creator', 'favorite', 'like'].includes(r.source_type)
+  return true
 }
 function countFor(platform: string) {
   return rows.value.filter((r) => r.platform === platform).length
@@ -512,6 +617,7 @@ async function load() {
       api.get('/api/subscriptions'),
       api.get('/api/followed-creators'),
     ])
+    void loadSwitches()
     const byId = new Map<number, TrackRow>()
     for (const s of subs.data as TrackRow[]) byId.set(s.id, { ...s })
     // 用 creator 视图补上博主资料字段（头像/主页/签名/粉丝）
@@ -541,8 +647,12 @@ function syncAccountSelection() {
 function switchPlatform(platform: string) {
   activePlatform.value = platform
   syncAccountSelection()
+  void loadSwitches()
 }
-function switchAccount(id: string) { activeAccountId.value = id }
+function switchAccount(id: string) {
+  activeAccountId.value = id
+  void loadSwitches()
+}
 
 async function refresh(force: boolean) {
   if (!currentAccount.value) return
@@ -570,16 +680,35 @@ async function toggleEnabled(row: TrackRow) {
   row.enabled = next            // 乐观更新
   try {
     if (row.source_type === 'creator') {
-      await api.put(`/api/followed-creators/${row.id}`, {
-        sync_enabled: next, full_sync: !row.only_new,
-      })
+      // 只改「关注关系」这一个开关，不能顺手改动 sync_videos。
+      await api.put(`/api/followed-creators/${row.id}`, { sync_enabled: next })
     } else {
-      await api.put(`/api/subscriptions/${row.id}`, subPayload(row, { enabled: next }))
+      await api.put(`/api/subscriptions/${row.id}`, subPayload(row, { enabled: next, sync_videos: row.sync_videos }))
     }
+    void loadSwitches()
   } catch (e: any) {
     row.enabled = !next
     ElMessage.error(e?.response?.data?.detail || '操作失败')
   }
+}
+
+/** 博主卡片上的二级开关：是否同步该博主名下视频。 */
+async function toggleVideos(row: TrackRow) {
+  const next = !row.sync_videos
+  row.sync_videos = next
+  if (next) row.enabled = true   // 开后端会一并打开关注关系，前端保持同步
+  try {
+    await api.put(`/api/followed-creators/${row.id}`, { sync_videos: next })
+    void loadSwitches()
+  } catch (e: any) {
+    row.sync_videos = !next
+    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  }
+}
+
+/** 该行现在是否会真的去同步内容（决定"全量/历史"是否有意义）。 */
+function syncActive(row: TrackRow) {
+  return isCreator(row) ? (row.enabled && row.sync_videos) : row.enabled
 }
 
 async function toggleFull(row: TrackRow) {
@@ -589,9 +718,7 @@ async function toggleFull(row: TrackRow) {
     // 按来源类型走各自的写入口：creator 用关注博主接口，收藏夹/合集用订阅接口。
     // 之前这里硬编码 followed-creators，收藏夹/合集会 404「关注博主不存在」。
     if (row.source_type === 'creator') {
-      await api.put(`/api/followed-creators/${row.id}`, {
-        sync_enabled: row.enabled, full_sync: nextFull,
-      })
+      await api.put(`/api/followed-creators/${row.id}`, { full_sync: nextFull })
     } else {
       await api.put(`/api/subscriptions/${row.id}`, subPayload(row, { only_new: !nextFull }))
     }
@@ -609,13 +736,40 @@ async function syncRow(row: TrackRow) {
       : `/api/subscriptions/${row.id}/sync`
     const { data } = await api.post(url)
     if (data.status === 'success') {
-      ElMessage.success(`同步完成：抓取 ${data.fetched} 条，新增 ${data.added} 条`)
+      const upd = data.updated ? `，全量刷新 ${data.updated} 条` : ''
+      ElMessage.success(`同步完成：抓取 ${data.fetched} 条，新增 ${data.added} 条${upd}`)
     } else {
       ElMessage({ message: data.error || `同步未完成（${data.status}）`, type: 'warning' })
     }
     await load()
   } finally {
     syncing.value = null
+  }
+}
+
+async function loadSwitches() {
+  const acc = currentAccount.value
+  if (!acc) { switches.value = []; return }
+  try {
+    switches.value = (await api.get(`/api/accounts/${acc.id}/sync-switches`)).data.switches
+  } catch {
+    switches.value = []
+  }
+}
+
+async function toggleSwitch(sw: SyncSwitch) {
+  const acc = currentAccount.value
+  if (!acc) return
+  const next = !sw.enabled
+  togglingSwitch.value = sw.key
+  try {
+    await api.put(`/api/accounts/${acc.id}/sync-switches/${sw.key}`, { enabled: next })
+    ElMessage.success(next ? `已开启${sw.label}` : `已关闭${sw.label}`)
+    await Promise.all([loadSwitches(), load()])
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  } finally {
+    togglingSwitch.value = null
   }
 }
 
@@ -645,7 +799,8 @@ function openEdit(row: TrackRow) {
   editing.value = row
   Object.assign(form, {
     account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
-    title: row.title, enabled: row.enabled, auto_download: row.auto_download,
+    title: row.title, enabled: row.enabled, sync_videos: row.sync_videos,
+    auto_download: row.auto_download,
     interval_minutes: row.interval_minutes, subdir_template: row.subdir_template,
     // PUT 是全字段覆盖：这里必须回带 storage_root_id，否则开关/全量等局部更新会
     // 把订阅级自定义存储根静默清空（回落到账号目录）。
@@ -656,7 +811,6 @@ function openEdit(row: TrackRow) {
     auto_transcribe: row.auto_transcribe, auto_analyze: row.auto_analyze,
     // 回显该来源已指定的存储根；未指定则继承账号目录（账号绑定在账号中心管理）。
     storage_mode: row.storage_root_id ? 'custom' : 'account',
-    storage_root_id: row.storage_root_id ?? null,
   })
   dialog.value = true
 }
@@ -682,7 +836,8 @@ async function doRemove() {
 function subPayload(row: TrackRow, extra: Record<string, unknown> = {}) {
   return {
     account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
-    title: row.title, enabled: row.enabled, auto_download: row.auto_download,
+    title: row.title, enabled: row.enabled, sync_videos: row.sync_videos,
+    auto_download: row.auto_download,
     interval_minutes: row.interval_minutes, subdir_template: row.subdir_template,
     min_play: row.min_play, publish_after_days: row.publish_after_days,
     max_items: row.max_items, only_new: row.only_new,
@@ -695,7 +850,7 @@ function subPayload(row: TrackRow, extra: Record<string, unknown> = {}) {
 function resetForm() {
   Object.assign(form, {
     account_id: null, source_type: 'favorite', remote_id: '', title: '',
-    enabled: true, auto_download: false, interval_minutes: 360,
+    enabled: true, sync_videos: false, auto_download: false, interval_minutes: 360,
     subdir_template: DEFAULT_SUBDIR, min_play: 0, publish_after_days: 0,
     max_items: 50, only_new: true, download_quality: 'best', with_comments: false,
     auto_transcribe: false, auto_analyze: false,
@@ -755,7 +910,8 @@ async function submit() {
     // 存储根：继承账号 -> null（后端回退账号绑定/默认根）；指定 -> 具体 root id。
     const rootOverride = form.storage_mode === 'custom' ? form.storage_root_id : null
     const common = {
-      title: form.title, enabled: form.enabled, auto_download: form.auto_download,
+      title: form.title, enabled: form.enabled, sync_videos: form.sync_videos,
+      auto_download: form.auto_download,
       interval_minutes: form.interval_minutes, subdir_template: form.subdir_template,
       storage_root_id: rootOverride,
       min_play: form.min_play, publish_after_days: form.publish_after_days,
@@ -802,6 +958,38 @@ onMounted(async () => {
 
 <style scoped>
 .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+
+/* 同步开关面板：收藏/点赞/关注列表三块独立开关，摆在页面最显眼处 */
+.sync-panel {
+  border: 1px solid var(--ink); background: var(--surface);
+  box-shadow: var(--shadow-1); padding: var(--sp-4); margin-bottom: 16px;
+  min-width: 0;
+}
+.panel-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.panel-title { font-size: var(--fs-md); font-weight: 750; color: var(--ink); }
+.panel-sub { font-size: var(--fs-sm); color: var(--muted); }
+.switch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 12px; min-width: 0; }
+.switch-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px; border: 1px solid var(--line-soft); background: var(--surface-2);
+  transition: border-color .14s ease-out, background .14s ease-out;
+}
+.switch-card.on { border-color: color-mix(in oklab, var(--ok) 45%, var(--ink)); background: var(--ok-soft); }
+.sw-main { display: flex; align-items: center; gap: 8px; }
+.sw-name { font-weight: 700; color: var(--ink); }
+.sw-state { font-size: var(--fs-xs); font-weight: 700; padding: 1px 6px; border: 1px solid var(--line-soft); }
+.sw-state.ok { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 40%, var(--line-soft)); }
+.sw-state.off { color: var(--muted); }
+.sw-desc { margin: 0; font-size: var(--fs-sm); color: var(--ink-2); }
+.sw-foot { display: flex; align-items: center; gap: 8px; }
+.sw-meta { font-size: var(--fs-xs); color: var(--muted); }
+.ui-switch[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* 博主卡片：关注关系是次级信息，独立一行 */
+.relation-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 2px; font-size: var(--fs-sm); color: var(--muted);
+}
 .hint { font-size: var(--fs-sm); color: var(--muted); }
 .grid-wrap { display: flex; flex-direction: column; gap: 16px; }
 .ui-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }

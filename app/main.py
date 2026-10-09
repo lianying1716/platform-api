@@ -19,6 +19,7 @@ from app.api import (
     pipeline,
     skills,
     subscriptions,
+    sync_switches,
     system,
 )
 from app.core.events import subscribe
@@ -52,6 +53,7 @@ app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(subscriptions.router)
 app.include_router(followed_creators.router)
+app.include_router(sync_switches.router)
 app.include_router(assets.router)
 app.include_router(crawl_tasks.router)
 app.include_router(imports.router)

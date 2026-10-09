@@ -27,7 +27,10 @@ class SubscriptionIn(BaseModel):
     source_type: str
     remote_id: str
     title: str = ""
+    # 是否开启同步。收藏/点赞/合集默认关闭，需要用户手动打开（对齐抖小云的独立开关）；
+    # 关注列表（creator）默认开启「关系跟踪」，但博主视频另有 sync_videos 二级开关。
     enabled: bool = True
+    sync_videos: bool = False
     auto_download: bool = False
     interval_minutes: int = Field(360, ge=10)
     subdir_template: str = "{platform}/{account}/{creator}/{date}"
@@ -61,6 +64,7 @@ class SubscriptionOut(BaseModel):
     remote_id: str
     title: str
     enabled: bool
+    sync_videos: bool = False
     auto_download: bool
     interval_minutes: int
     subdir_template: str = "{platform}/{account}/{creator}/{date}"
@@ -130,7 +134,11 @@ def create_subscription(body: SubscriptionIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="账号不存在")
     if account.is_system or account.status != "active":
         raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用，无法创建订阅")
-    sub = Subscription(platform=account.platform, **body.model_dump())
+    data = body.model_dump()
+    if "enabled" not in body.model_fields_set:
+        # 未显式指定时：只有「关注列表」默认开启关系跟踪，收藏/点赞等默认关闭。
+        data["enabled"] = body.source_type == "creator"
+    sub = Subscription(platform=account.platform, **data)
     db.add(sub)
     db.commit()
     db.refresh(sub)
@@ -151,7 +159,9 @@ def update_subscription(sub_id: int, body: SubscriptionIn, db: Session = Depends
         if account.platform != sub.platform:
             raise HTTPException(status_code=422, detail="订阅不能转移到其他平台账号")
     for k, v in body.model_dump().items():
-        setattr(sub, k, v)
+        # 全字段覆盖：只有显式带来的字段才写，避免局部更新把开关重置回默认值。
+        if k in body.model_fields_set or k not in ("enabled", "only_new", "sync_videos"):
+            setattr(sub, k, v)
     db.commit()
     db.refresh(sub)
     return sub
@@ -178,7 +188,14 @@ async def trigger_sync(sub_id: int, db: Session = Depends(get_db)):
     if sub is None or sub.deleted_at is not None:
         raise HTTPException(status_code=404, detail="订阅不存在")
     run = await run_subscription_sync(db, sub)
-    return {"run_id": run.id, "status": run.status, "fetched": run.fetched, "added": run.added, "error": run.error}
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "fetched": run.fetched,
+        "added": run.added,
+        "updated": run.updated,
+        "error": run.error,
+    }
 
 
 @router.get("/subscriptions/{sub_id}/runs")
@@ -194,6 +211,7 @@ def sync_runs(sub_id: int, db: Session = Depends(get_db)):
             "status": r.status,
             "fetched": r.fetched,
             "added": r.added,
+            "updated": r.updated,
             "error": r.error,
         }
         for r in rows
