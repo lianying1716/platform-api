@@ -172,23 +172,188 @@ account = db.scalar(select(PlatformAccount).where(
 
 ---
 
-## 4. 实施顺序（建议）
+## 4. 数据隔离现状（二次深挖，实测）
 
-| 优先级 | 事项 | 理由 |
+上一节解决"**加得进**"，本节解决"**分得开**"——即累加账号后数据怎么隔离。
+
+### 4.1 现状：26 张表里只有 1 张带账号归属
+
+| 层级 | 表 | 有 `account_id`？ |
 |---|---|---|
-| **P0** | 修缺陷 A（静默覆盖）+ B（多账号阻塞） | 数据损坏 + 功能不可用，当前就影响你 |
-| **P1** | 修缺陷 C（手动录入去重） | 防重复账号 |
-| **P1** | B站按账号自动刷新 | 唯一真正的"长期稳定"，你反复强调 |
-| **P2** | 抖音守恒清单落注释/测试（防未来误"优化"） | 防止再走弯路 |
-| **P2** | B站 `_cookies()` 补 `ac_time_value` | 与 bili-sync 对齐（低成本） |
-| **P3** | 抖音 cookie 域过滤核查（整串是否被裁剪） | 守恒的细节验证 |
+| 账号 | `platform_account` / `account_credential` / `credential_audit_log` | ✅ |
+| **订阅** | `subscription` | ✅ **唯一真正的隔离边界** |
+| | `sync_run` | ❌（仅靠 `subscription_id` 间接） |
+| **内容** | `content_item` | ❌ |
+| | `content_metric_snapshot` / `comment` / `raw_payload` | ❌（靠 `content_id`） |
+| 创作者 | `creator_profile` | ❌（`(platform, author_id)` 全局唯一） |
+| 素材 | `media_asset` / `transcript` / `analysis_result` / `video_understanding` | ❌ |
+| 采集 | `crawl_task` / `crawl_run` | ❌ |
+| 其他 | `fetch_cache` / `task_log` / `job_queue` | ❌ |
+
+### 4.2 实测复现的三个隔离缺陷
+
+**缺陷 E：同一视频被多账号收藏时，只有第一条归属被记录**
+
+去重键 `(platform, external_id)` **不含账号**（这个去重本身是对的——同一视频应是同一条内容），
+但 `content_item` 只有一个 `source_id`，于是：
+
+```
+B 同步同一视频 V1 时：
+  去重命中已存在内容？ True | source_kind/source_id = subscription 1
+  → B 的订阅关系【不会】被记录；内容只归属 A 的订阅
+```
+
+**后果**：B 的"我收藏了它"丢失，前端按 B 过滤时看不到这条。**内容全局唯一是对的，但归属必须是多对多。**
+
+**缺陷 F：删账号后内容变孤儿**
+
+`content_item.source_id` 是**裸整数，不是外键**，删账号时 `subscription` 被 CASCADE 删掉，`content_item` 残留：
+
+```
+删账号 A 后：
+  剩余内容条数 = 1（视频 V1 还在，但 source_id=1 已成孤儿）
+  → 内容变成无主孤儿：既不属于 A（已删），也未归属 B
+```
+
+> 另记：SQLite 下**未开 `PRAGMA foreign_keys=ON`**（`app/db.py` 无相关监听），
+> 本地开发/测试的 CASCADE 其实**不生效**，与生产 PG 行为不一致。
+
+**缺陷 G：素材库 / 看板无账号维度**
+
+- `list_assets()` 支持 platform/author/category… 但**无 `account_id`**
+- `analytics` 按平台聚合，**无账号维度**
+- 前端 `Assets.vue` 只有"平台"筛选，没有账号筛选
+
+**对的（非缺陷）**：`creator_profile` 按 `(platform, author_id)` 全局唯一——博主资料与"谁关注了他"无关，
+两个账号关注同一博主共享一份资料是**正确的**。
+
+### 4.3 目标模型：内容全局唯一 + 归属多对多
+
+```
+platform_account ──1:N──> subscription ──┐
+                                          │ 同步产生
+                                          ▼
+content_item (platform, external_id 唯一)  ←── 内容实体，全局一份
+      ▲
+      │ 多对多
+content_account_link(content_id, account_id, subscription_id, first_seen_at)
+```
+
+- `content_item`：保持全局唯一，**不加** `account_id`（一条视频可被多个号收）
+- **新增 `content_account_link`**：记录"哪个账号、经哪条订阅、何时收到这条内容"——这是隔离的真相
+- `subscription`：不变（已是账号级）
 
 ---
 
-## 5. 红线（不可违反）
+## 5. 完整改造清单
+
+目标：**多账号"加得进、分得开、删得净、长期稳"**。分 6 个阶段，每阶段可独立验收。
+缺陷编号沿用上文（A/B/C/D 见 §3.3，E/F/G 见 §4）。
+
+### 阶段 1：账号身份与去重（P0，先做）
+
+> 不解此阶段，第二/第三个账号加不进或互相覆盖。
+
+| # | 改动 | 涉及文件 | 验收 |
+|---|---|---|---|
+| 1.1 | 修**缺陷 A**：`qr_login_poll` 的"复用唯一账号"收紧——仅当 `poll.external_id` 与现有账号一致、**或**现有账号 `external_id` 为空时才复用；否则**新建** | `app/api/accounts.py` | 加 B 后 A 完好、B 独立成行 |
+| 1.2 | 修**缺陷 B**：各平台登录后**必须回填稳定身份**。抖音补 `_douyin_profile` 的 `sec_uid/uid` 写入 poll；小红书取 `user_id`；快手/知乎用各自 id；公众号用 `token` 派生标识。取不到 → **明确提示**，不静默 | `app/modules/{douyin,xhs,crawl_platforms,wechat_mp}.py`、`app/api/accounts.py` | 同平台可连续加 3 个账号 |
+| 1.3 | 修**缺陷 C**：`create_account` 按 `(platform, external_id)` 查重，命中**更新**该账号凭证 | `app/api/accounts.py` | 重复录入同一号 = 更新而非新增 |
+| 1.4 | 账号删除前检查：有订阅/内容时**明确提示**而非静默连删 | `app/api/accounts.py` | 删账号有明确提示 |
+| 1.5 | 补测试：`tests/test_multi_account.py`（A 不覆盖、B 可累加、C 去重） | `tests/` | 三个场景全绿 |
+
+### 阶段 2：内容归属多对多（P0，隔离核心）
+
+> 不解此阶段，加了账号也"分不开"。
+
+| # | 改动 | 涉及文件 | 验收 |
+|---|---|---|---|
+| 2.1 | 新增表 `content_account_link(id, content_id, account_id, subscription_id, first_seen_at)`，唯一键 `(content_id, account_id)`；`content_id`/`account_id` 均真 FK + CASCADE | `app/models.py`、新迁移 `0012_*` | 迁移可 upgrade/downgrade |
+| 2.2 | 同步入库时**同时写 link**：内容已存在也补写"本账号的归属"（修缺陷 E） | `app/services/sync_service.py` | 同一视频被 A/B 收 → 两条 link |
+| 2.3 | 迁移时**回填历史数据**：按 `content_item.source_id → subscription.account_id` 生成 link | 迁移 `0012` | 老数据不漏 |
+| 2.4 | 内容查询统一改为"经 link 关联账号" | `app/api/assets.py`、`analytics.py` | 可按 account 过滤 |
+| 2.5 | `list_assets` 增加 `account_id` 参数；看板增加账号维度 | `app/api/assets.py`、`app/api/analytics.py` | API 支持 |
+| 2.6 | 补测试：跨账号同视频 → 两条归属；按 account 过滤互不串 | `tests/test_content_multi_account.py` | 全绿 |
+
+### 阶段 3：孤儿与级联（P1）
+
+> 保证"删得净"。
+
+| # | 改动 | 涉及文件 | 验收 |
+|---|---|---|---|
+| 3.1 | 修**缺陷 F**：`content_item.source_id` 语义收敛（改真 FK 到 `subscription`，或明确标记为"仅溯源"），删账号时内容**不孤儿化**——由 link 兜底归属 | `app/models.py`、迁移 `0012` | 删 A 后内容仍归属 B |
+| 3.2 | 统一 SQLite `PRAGMA foreign_keys=ON`（消除本地/生产行为差异） | `app/db.py` | 测试能验出 CASCADE |
+| 3.3 | 删账号的收尾策略：无 link 的内容 → 标记或转交，**不留裸整数孤儿** | `app/api/accounts.py`、`app/services/` | 无孤儿 |
+
+### 阶段 4：采集与任务带账号（P1，修缺陷 D）
+
+| # | 改动 | 涉及文件 | 验收 |
+|---|---|---|---|
+| 4.1 | `crawl_task` 加可选 `account_id`（FK，SET NULL） | `app/models.py`、迁移 `0013_*` | 迁移 OK |
+| 4.2 | `_platform_cookie()` 改为：优先任务指定账号 → 否则"最近体检在线"（非 id 最小），并在 `crawl_run` 记录实际账号 | `app/services/crawl_service.py` | 指定账号生效 |
+| 4.3 | 采集页支持选账号 | `web/src/pages/Crawl.vue` | UI 可选 |
+| 4.4 | 补测试：任务指定账号 / 未指定时的选择策略 | `tests/test_crawl_multi_account.py` | 全绿 |
+
+### 阶段 5：前端账号维度（P1）
+
+| # | 改动 | 涉及文件 | 验收 |
+|---|---|---|---|
+| 5.1 | 素材库加**账号筛选**（平台 tab + 账号 chips，沿用关注博主页模式） | `web/src/pages/Assets.vue` | 可切账号 |
+| 5.2 | 看板加账号维度（或至少账号过滤） | `web/src/pages/Overview.vue`、`analytics.py` | 数据分开 |
+| 5.3 | 账号中心：卡片显示 `external_id` 尾号 + 平台，**同平台多号能一眼区分** | `web/src/pages/Accounts.vue` | 不混淆 |
+| 5.4 | 关注博主页已正确（平台 tab + 账号 chips）——**保持**，作为其他页的样板 | — | — |
+
+### 阶段 6：长期稳定（P2，与隔离解耦，可并行）
+
+| # | 改动 | 涉及文件 | 验收 |
+|---|---|---|---|
+| 6.1 | **B站按账号自动刷新**（§2.1 六步算法），体检发现 need_refresh 即刷新回写 | `app/modules/bilibili.py`、`app/services/` | 刷新后凭证更新、`buvid3` 保留 |
+| 6.2 | B站 `_cookies()` 补 `ac_time_value`（与 bili-sync 对齐） | `app/modules/bilibili.py` | 一致 |
+| 6.3 | **抖音守恒**落注释 + 测试（整串 cookie 不被裁剪、参数模板不被随机化） | `app/modules/douyin.py`、`tests/` | 测试锁死行为 |
+| 6.4 | 抖音 cookie 域过滤核查：确保抓取时整串不漏域 | `app/modules/browser_qr.py` | 整串完整 |
+
+### 依赖与顺序
+
+```
+阶段1(能加) ──> 阶段2(分得开) ──> 阶段3(删得净)
+                     │
+                     └──> 阶段5(前端维度)
+阶段4(采集带账号) 依赖 阶段1
+阶段6(长期稳定) 与 2/3/4/5 并行，互不阻塞
+```
+
+**最小可用闭环 = 阶段 1 + 阶段 2**：能加第二个账号，且两个账号的内容分得开、筛得出。
+
+---
+
+## 6. 后续改造升级路线（版本视角）
+
+把 §5 的阶段打包成可交付的版本，给出"到哪一步达成什么"。
+
+| 版本 | 内容 | 达成状态 | 依赖 |
+|---|---|---|---|
+| **v0.1 · 能加号** | 阶段 1（身份与去重 A/B/C + 测试） | 同平台可加任意多个账号，互不覆盖 | — |
+| **v0.2 · 分得开** | 阶段 2（`content_account_link` + 回填 + API/看板账号维度） | 每个账号的内容/收藏夹可独立查看与筛选 | v0.1 |
+| **v0.3 · 删得净** | 阶段 3（孤儿治理 + SQLite FK 一致）+ 阶段 4（采集带账号） | 删账号不留孤儿；采集可用指定账号 | v0.2 |
+| **v0.4 · 看得到** | 阶段 5（前端账号筛选、账号卡片区分） | 全部前端页面支持账号维度 | v0.2 |
+| **v0.5 · 长期稳** | 阶段 6（B站自动刷新 + 抖音守恒锁死） | B站可无人值守续期；抖音行为被测试锁死 | 独立 |
+
+**验收基线（每个版本都要过）**：`uv run pytest tests/ -q` 全绿 + 前端 `npm run build` 成功 +
+（涉及 UI 的）真机走一遍多账号流程。
+
+**里程碑建议**：先交付 **v0.1 + v0.2**（最小可用闭环），确认多账号真的"加得进、分得开"，
+再按 v0.3/v0.4 补全，v0.5 可随时插入（与隔离解耦）。
+
+---
+
+## 7. 红线（不可违反）
 
 1. **凭证始终加密**；刷新/回写走既有 `_save_credential`，绝不落明文。
 2. **每账号独立**：刷新、体检、同步都用该账号自己的凭证，禁止跨账号复用设备标识。
 3. **不做持久化浏览器 profile**（多账号会争用/串号，且两个上游都证明不需要）。
 4. **抖音保持守恒**——任何"主动变更设备身份"的改动都必须先回到本文档论证。
 5. 上游代码/算法照抄须保留来源署名（B站刷新算法源自 bili-sync，MIT）。
+6. **内容全局唯一、归属多对多**：`content_item` **不加** `account_id`；账号归属一律经
+   `content_account_link` 表达。任何"给内容直接挂一个 account_id"的改动都是错的（同一条视频可被多个号收）。
+7. **账号身份只认平台返回的稳定 ID**：禁止用"该平台只有一个账号"之类启发式来猜归属。
+8. **每账号数据必须可独立查询**：新增任何内容/任务类 API 都要考虑 `account_id` 过滤维度。
