@@ -328,6 +328,47 @@ def stream_media(asset_id: int, request: Request, db: Session = Depends(get_db))
     return resp
 
 
+@router.get("/assets/{asset_id}/cover")
+async def proxy_cover(asset_id: int, db: Session = Depends(get_db)):
+    """封面图代理：服务端带 Referer/UA 拉取后回传，避免前端直连被签名/防盗链卡住。
+
+    抖音封面是**带 sign 的 CDN 地址会过期**，B站封面也有防盗链（缺 Referer 直接 403）。
+    照抄抖小云把封面落到本地；web 场景下用服务端代理等效解决：浏览器只请求我们的
+    /api/assets/{id}/cover，由服务端补 Referer 去取，过期/失效时也有明确回退。
+    """
+    import httpx
+
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    content = db.get(ContentItem, asset.content_id)
+    url = (content.cover_url if content else "") or ""
+    if not url:
+        raise HTTPException(status_code=404, detail="该素材没有封面")
+    platform = content.platform if content else ""
+    referer = "https://www.douyin.com/" if platform == "douyin" else "https://www.bilibili.com/"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Referer": referer,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"封面获取失败: {exc}") from exc
+    if resp.status_code != 200 or not resp.content:
+        raise HTTPException(status_code=502, detail=f"封面获取失败：HTTP {resp.status_code}")
+    ctype = (resp.headers.get("content-type") or "image/jpeg").split(";")[0]
+    return StreamingResponse(
+        iter([resp.content]),
+        media_type=ctype,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
 @router.get("/assets/{asset_id}/article")
 def get_article(asset_id: int, db: Session = Depends(get_db)):
     """文章正文：公众号等文本内容的阅读视图数据源。"""

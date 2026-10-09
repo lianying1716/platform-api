@@ -63,8 +63,10 @@
             :title="coverHint(a)"
             @click="onCoverClick(a)"
           >
-            <!-- 封面用真实 <img>：加载失败时自动退回占位符，避免留下空白/破图 -->
-            <img v-if="a.cover_url && !coverFailed(a.asset_id)" :src="a.cover_url" alt=""
+            <!-- 封面走服务端代理：抖音/B站封面是签名防盗链地址，直连会过期或 403。
+                 加载失败时自动退回占位符，避免留下空白/破图。 -->
+            <img v-if="a.cover_url && !coverFailed(a.asset_id)"
+              :src="`/api/assets/${a.asset_id}/cover`" alt=""
               loading="lazy" @error="markCoverFailed(a.asset_id)" />
             <span v-else class="ph">{{ typeLabel(a.content_type) }}</span>
             <span class="badge-plat"><PlatformMark :platform="a.platform" :show-label="false" size="sm" :colored="false" /></span>

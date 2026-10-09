@@ -157,3 +157,66 @@ def test_download_direct_rejects_empty_out_dir():
     result = asyncio.run(media_download.download_direct("https://x/y", ""))
     assert not result.ok
     assert "目录" in result.message
+
+
+def test_cover_proxy_returns_404_without_cover(client, session):
+    """没有封面的素材：代理返回 404，而不是 500。"""
+    from app.models import ContentItem, MediaAsset, PlatformAccount
+
+    acc = PlatformAccount(platform="douyin", display_name="d")
+    session.add(acc)
+    session.commit()
+    c = ContentItem(account_id=acc.id, platform="douyin", external_id="v1", title="t", url="u")
+    session.add(c)
+    session.commit()
+    a = MediaAsset(content_id=c.id)
+    session.add(a)
+    session.commit()
+    r = client.get(f"/api/assets/{a.id}/cover")
+    assert r.status_code == 404
+
+
+def test_cover_proxy_sends_referer_and_streams_image(client, session, monkeypatch):
+    """封面走服务端代理并带 Referer（抖音/B站封面防盗链+签名会过期）。"""
+    import httpx
+    from app.models import ContentItem, MediaAsset, PlatformAccount
+
+    acc = PlatformAccount(platform="douyin", display_name="d")
+    session.add(acc)
+    session.commit()
+    c = ContentItem(account_id=acc.id, platform="douyin", external_id="v2", title="t",
+                    url="u", cover_url="https://p3.douyinpic.com/x.jpeg?sign=1")
+    session.add(c)
+    session.commit()
+    a = MediaAsset(content_id=c.id)
+    session.add(a)
+    session.commit()
+
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+        content = b"\xff\xd8\xff\xe0jpegdata"
+        headers = {"content-type": "image/jpeg"}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            seen["url"] = url
+            seen["headers"] = headers or {}
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    r = client.get(f"/api/assets/{a.id}/cover")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/jpeg")
+    assert r.content.startswith(b"\xff\xd8")
+    assert "douyin.com" in seen["headers"].get("Referer", ""), "必须补 Referer 绕防盗链"
