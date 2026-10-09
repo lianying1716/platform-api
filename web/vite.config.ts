@@ -3,8 +3,10 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   plugins: [vue()],
+  // 默认输出到 web/dist —— 中性的开发构建产物，不碰正式包目录 app/static。
+  // 正式包请用 `npm run build:release`（或 ./dev.sh web），二者互不污染。
   build: {
-    outDir: '../app/static',
+    outDir: 'dist',
     emptyOutDir: true,
   },
   server: {

@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     auto_create_tables: bool = True
     host: str = "0.0.0.0"
     port: int = 9100
+    # 是否由后端托管前端构建产物（app/static）。
+    # 开发默认 False：后端只提供 /api，前端走 Vite dev server(:5173)，
+    #   避免"存在 app/static 就静默托管旧正式包"导致开发和正式包互相污染。
+    # 生产（Docker）显式置 true。
+    serve_frontend: bool = False
     # 凭证加密密钥来源（优先级见 core/crypto.py）：
     #   1) 环境变量 PLATFORM_CREDENTIAL_ENC_KEY（base64 的 32 字节）
     #   2) credential_key_file 指向的文件

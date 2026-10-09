@@ -6,6 +6,7 @@ services:
     environment:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
       PLATFORM_AUTO_CREATE_TABLES: "false"
+      PLATFORM_SERVE_FRONTEND: "true"
       PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
       PLATFORM_ACCOUNT_CHECK_INTERVAL: "15"
     volumes:

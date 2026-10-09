@@ -52,12 +52,33 @@ uv run alembic upgrade head
 uv run pytest tests/ -q
 ```
 
-前端开发：
+前端开发（**默认就在开发模式，不需要、也不要构建正式包**）：
 
 ```bash
+./dev.sh serve              # 后端 API :9100（开发默认，不托管前端）
 cd web && npm install && npm run dev      # Vite dev server :5173，/api 代理到 :9100
-npm run build                              # 产物输出到 ../app/static
 ```
+
+**开发 / 正式包是隔离的**（这是硬约束，见下）：开发时访问 `:5173`（Vite，热更新），
+后端只提供 `/api`。只有明确要出正式包时才构建：
+
+```bash
+npm run build              # 仅编译校验，产物落 web/dist（不碰正式包目录）
+./dev.sh web               # 【正式包】构建到 app/static，需确认
+./dev.sh preview           # 以正式包模式本地预览（托管 app/static）
+```
+
+### 开发与正式包隔离（勿绕过）
+
+| | 开发（默认） | 正式包 |
+|---|---|---|
+| 前端来源 | Vite dev server `:5173` | `app/static/` 构建产物 |
+| 后端行为 | `PLATFORM_SERVE_FRONTEND=false`，**只提供 `/api`** | `=true`，托管 `app/static` 并做 SPA 回退 |
+| 构建命令 | `npm run dev` | `./dev.sh web`（需确认）或 Docker |
+
+- 后端**只有在 `PLATFORM_SERVE_FRONTEND=true` 时**才托管前端；
+  开发默认 false，因此不会再出现「存在 `app/static` 就静默托管旧正式包」。
+- **开发阶段不要跑 `./dev.sh web` / `npm run build:release`**，除非用户明确确认要出正式包。
 
 ## AI 接入（API Key / MCP）
 
@@ -102,6 +123,7 @@ MCP 是本地 **stdio** 小进程（`mcp_server/server.py`），不是 HTTP 端�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `PLATFORM_PORT` | 9100 | 监听端口 |
+| `PLATFORM_SERVE_FRONTEND` | false | 是否托管前端正式包 `app/static`；生产置 true |
 | `PLATFORM_DATABASE_URL` | 本地 PG `…@127.0.0.1:5433/platform` | 生产配 PostgreSQL DSN |
 | `PLATFORM_ACCOUNT_CHECK_INTERVAL` | 15 | 体检间隔（分钟），0 关闭 |
 | `PLATFORM_CREDENTIAL_ENC_KEY` | （空） | base64 的 32 字节凭证密钥，生产首选 |

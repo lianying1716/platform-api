@@ -18,7 +18,8 @@ COPY alembic/ alembic/
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 COPY --from=web /build/dist app/static
-ENV PLATFORM_HOST=0.0.0.0 PLATFORM_PORT=9100 PLATFORM_DATA_DIR=/data
+ENV PLATFORM_HOST=0.0.0.0 PLATFORM_PORT=9100 PLATFORM_DATA_DIR=/data \
+    PLATFORM_SERVE_FRONTEND=true
 VOLUME /data
 EXPOSE 9100
 # 同一镜像两种角色：默认起 API；worker 由 compose 用 command 覆盖为

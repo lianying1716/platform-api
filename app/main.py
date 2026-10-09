@@ -22,6 +22,7 @@ from app.api import (
     sync_switches,
     system,
 )
+from app.config import settings
 from app.core.events import subscribe
 from app.core.scheduler import start_scheduler, stop_scheduler
 from app.db import init_db
@@ -71,8 +72,14 @@ async def events_stream():
     return StreamingResponse(subscribe(), media_type="text/event-stream")
 
 
-# 生产模式：托管前端构建产物（web/dist 构建后复制/软链到 app/static），SPA 回退
-if _STATIC_DIR.is_dir():
+# 前端托管（仅正式包）：由 PLATFORM_SERVE_FRONTEND 控制，开发默认关闭。
+# 这样开发时后端只提供 /api，前端走 Vite dev server，不会误托管 app/static 里的旧构建产物。
+if settings.serve_frontend:
+    if not _STATIC_DIR.is_dir():
+        raise RuntimeError(
+            "PLATFORM_SERVE_FRONTEND=true 但未找到前端构建产物 app/static/；"
+            "请先构建正式包（./dev.sh web 或 cd web && npm run build:release）或关闭该开关。"
+        )
     app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -81,12 +88,19 @@ if _STATIC_DIR.is_dir():
         if full_path and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(_STATIC_DIR / "index.html")
+else:
+    @app.get("/", include_in_schema=False)
+    def dev_index():
+        # 开发模式：后端不托管前端，给出明确指引（否则访问根路径会 404 到令人困惑）
+        return {
+            "service": "platform-api (dev)",
+            "frontend": "开发模式不由后端托管前端，请访问 Vite dev server：http://<host>:5173",
+            "api_docs": "/docs",
+        }
 
 
 def run() -> None:
     import uvicorn
-
-    from app.config import settings
 
     uvicorn.run("app.main:app", host=settings.host, port=settings.port)
 
