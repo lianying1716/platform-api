@@ -5,7 +5,13 @@
 扫码：官方 passport 接口，纯 HTTP，无需浏览器。
 """
 
+import base64
+import re
+import time
+
 import httpx
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 from app.modules.base import CheckResult, QrPoll, QrStart, make_qr_png_b64, register
 from app.modules.crawler import bili_sign
@@ -32,6 +38,17 @@ _NAV = "https://api.bilibili.com/x/web-interface/nav"
 _FAV_LIST_ALL = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"
 _SEASONS_SERIES = "https://api.bilibili.com/x/polymer/web-space/seasons_series_list"
 _FOLLOWINGS = "https://api.bilibili.com/x/relation/followings"
+_CORRESPOND = "https://www.bilibili.com/correspond/1/"
+_REFRESH = "https://passport.bilibili.com/x/passport-login/web/cookie/refresh"
+_CONFIRM_REFRESH = "https://passport.bilibili.com/x/passport-login/web/confirm/refresh"
+
+# bili-sync 内置公钥（MIT）：用于生成 cookie refresh 的 correspond path。
+_REFRESH_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDLgd2OAkcGVtoE3ThUREbio0Eg
+Uc/prcajMKXvkCKFCWhJYJcLkcM2DKKcSeFpD/j6Boy538YXnR6VhcuUJOhH2x71
+nzPjfdTcqMz7djHum0qSZA0AyCBDABUqCrfNgCiJ00Ra7GmRj+YCK1NJEuewlb40
+JNrRuoEUXpabUzGB8QIDAQAB
+-----END PUBLIC KEY-----"""
 
 # 扫码 poll 的 data.code 含义
 _CODE_SUCCESS = 0
@@ -50,7 +67,27 @@ def _cookies(credential: dict) -> dict:
         "bili_jct": credential.get("bili_jct", ""),
         "buvid3": credential.get("buvid3", ""),
         "DedeUserID": credential.get("dedeuserid", ""),
+        "ac_time_value": credential.get("ac_time_value", ""),
     }
+
+
+def _correspond_path() -> str:
+    """RSA-OAEP(SHA256) 加密 refresh_{毫秒-20s}，hex 编码（照抄 bili-sync）。"""
+    public_key = serialization.load_pem_public_key(_REFRESH_PUBLIC_KEY.encode())
+    plaintext = f"refresh_{int(time.time() * 1000) - 20_000}".encode()
+    encrypted = public_key.encrypt(
+        plaintext,
+        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+    )
+    return encrypted.hex()
+
+
+def _set_cookie_map(response) -> dict:
+    """兼容 httpx Cookies 与测试里的普通 dict。"""
+    raw = response.cookies
+    if hasattr(raw, "get"):
+        return {k: raw.get(k, "") for k in ("SESSDATA", "bili_jct", "DedeUserID")}
+    return {}
 
 
 def _https(url) -> str:
@@ -100,7 +137,7 @@ class BilibiliAdapter:
             name = nav_data.get("uname", "")
             mid = str(nav_data.get("mid", "") or "")
             msg = "在线（平台建议刷新 Cookie）" if need_refresh else "在线"
-            return CheckResult(ok=True, message=msg, external_id=mid, display_name=name)
+            return CheckResult(ok=True, message=msg, external_id=mid, display_name=name, need_refresh=need_refresh)
 
     async def qr_start(self) -> QrStart:
         async with _client() as client:
@@ -111,6 +148,57 @@ class BilibiliAdapter:
             url = data["data"]["url"]
             qrcode_key = data["data"]["qrcode_key"]
             return QrStart(session_data={"qrcode_key": qrcode_key}, qr_image_b64=make_qr_png_b64(url))
+
+    async def refresh(self, credential: dict) -> dict:
+        """B站 Cookie 主动刷新（算法照抄 bili-sync，MIT）。
+
+        步骤：correspond_path → refresh_csrf → cookie/refresh → confirm/refresh。
+        新凭证保留旧 buvid3（设备指纹一致性）。
+        """
+        refresh_token = (credential.get("ac_time_value") or "").strip()
+        if not refresh_token:
+            raise ValueError("缺少 ac_time_value，无法自动刷新 B站 Cookie")
+        async with _client() as client:
+            correspond = await client.get(_CORRESPOND + _correspond_path(), cookies=_cookies(credential))
+            match = re.search(r'<div id="1-name">(.+?)</div>', correspond.text)
+            if not match:
+                raise RuntimeError("获取 refresh_csrf 失败：响应中找不到 1-name")
+            refresh_csrf = match.group(1)
+
+            resp = await client.post(
+                _REFRESH,
+                cookies=_cookies(credential),
+                data={
+                    "csrf": credential.get("bili_jct", ""),
+                    "refresh_csrf": refresh_csrf,
+                    "refresh_token": refresh_token,
+                    "source": "main_web",
+                },
+            )
+            body = resp.json()
+            if body.get("code") != 0:
+                raise RuntimeError(f"刷新凭证失败: {body.get('message', body.get('code'))}")
+            cookies = _set_cookie_map(resp)
+            new_credential = {
+                "sessdata": cookies.get("SESSDATA") or credential.get("sessdata", ""),
+                "bili_jct": cookies.get("bili_jct") or credential.get("bili_jct", ""),
+                "dedeuserid": cookies.get("DedeUserID") or credential.get("dedeuserid", ""),
+                "ac_time_value": body.get("data", {}).get("refresh_token", ""),
+                "buvid3": credential.get("buvid3", ""),
+            }
+
+            confirm = await client.post(
+                _CONFIRM_REFRESH,
+                cookies=_cookies(new_credential),
+                data={
+                    "csrf": new_credential["bili_jct"],
+                    "refresh_token": refresh_token,  # 用旧 token 确认
+                },
+            )
+            confirm_body = confirm.json()
+            if confirm_body.get("code") != 0:
+                raise RuntimeError(f"确认刷新失败: {confirm_body.get('message', confirm_body.get('code'))}")
+            return new_credential
 
     async def qr_poll(self, session_data: dict) -> QrPoll:
         async with _client() as client:

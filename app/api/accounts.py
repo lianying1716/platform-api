@@ -59,6 +59,15 @@ async def _run_check(db: Session, account: PlatformAccount, actor: str = "admin"
         else:
             account.status = "active" if result.ok else "expired"
             account.status_message = result.message
+            if result.ok and getattr(result, "need_refresh", False) and account.platform == "bilibili":
+                refresh = getattr(adapter, "refresh", None)
+                if refresh is not None:
+                    try:
+                        refreshed = await refresh(plain)
+                        _save_credential(db, account, refreshed)
+                        account.status_message = "在线（已自动刷新 Cookie）"
+                    except Exception as exc:  # noqa: BLE001 刷新失败不判死，留待人工重登
+                        account.status_message = f"在线，但 Cookie 自动刷新失败: {exc}"
             if result.external_id:
                 conflict = db.scalar(
                     select(PlatformAccount).where(

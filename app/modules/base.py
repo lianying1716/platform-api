@@ -14,6 +14,7 @@ class CheckResult:
     message: str = ""
     external_id: str = ""  # 体检顺带拿到的平台侧用户 ID（有则回填账号）
     display_name: str = ""  # 顺带拿到的昵称
+    need_refresh: bool = False  # 平台明确建议刷新凭证（目前 B站使用）
 
 
 @dataclass
