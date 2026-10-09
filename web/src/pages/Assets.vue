@@ -370,8 +370,11 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import PlatformMark from '../components/PlatformMark.vue'
 import { api } from '../api'
+
+const route = useRoute()
 
 const assets = ref<any[]>([])
 const selected = ref<any[]>([])
@@ -769,6 +772,10 @@ async function exportSel(format: string) {
 }
 
 onMounted(() => {
+  const qPlatform = String(route.query.platform || '')
+  const qAccount = Number(route.query.account_id || 0)
+  if (qPlatform) filters.platform = qPlatform
+  if (qAccount) filters.account_id = qAccount
   loadAccounts()
   loadTaxonomy()
   load()

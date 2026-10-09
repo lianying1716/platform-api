@@ -9,6 +9,14 @@
           {{ r.label }}
         </button>
       </div>
+      <el-select v-model="accountId" placeholder="全部账号" clearable size="small" style="width: 180px" @change="load">
+        <el-option
+          v-for="a in accounts"
+          :key="a.id"
+          :label="a.display_name || `${a.platform_label || a.platform} #${a.id}`"
+          :value="a.id"
+        />
+      </el-select>
       <button class="ui-btn" :disabled="loading" @click="load">刷新</button>
     </div>
 
@@ -95,7 +103,11 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="p in platforms" :key="p.platform" @click="go(`/assets?platform=${p.platform}`)">
+          <tr
+            v-for="p in platforms"
+            :key="p.platform"
+            @click="go(`/assets?platform=${p.platform}${accountId ? `&account_id=${accountId}` : ''}`)"
+          >
             <td><PlatformMark :platform="p.platform" size="sm" /></td>
             <td class="num">{{ num(p.total) }}</td>
             <td class="num">{{ num(p.video) }}</td>
@@ -251,6 +263,8 @@ import EChart from '../components/charts/EChart.vue'
 
 const router = useRouter()
 const loading = ref(false)
+const accountId = ref<number | null>(null)
+const accounts = ref<Array<{ id: number; platform: string; platform_label?: string; display_name: string }>>([])
 const content = ref({ total: 0, video: 0, article: 0, duration_sec: 0 })
 const platforms = ref<any[]>([])
 const categories = ref<any[]>([])
@@ -458,8 +472,10 @@ async function load() {
   loading.value = true
   try {
     const [{ data }, creatorsResp] = await Promise.all([
-      api.get('/api/dashboard/summary'),
-      api.get('/api/analytics/creators', { params: { limit: 8 } }).catch(() => ({ data: [] })),
+      api.get('/api/dashboard/summary', { params: accountId.value ? { account_id: accountId.value } : {} }),
+      api.get('/api/analytics/creators', {
+        params: { limit: 8, ...(accountId.value ? { account_id: accountId.value } : {}) },
+      }).catch(() => ({ data: [] })),
     ])
     content.value = data.content || content.value
     platforms.value = data.platforms || []
@@ -481,7 +497,15 @@ async function load() {
   }
 }
 
-onMounted(load)
+async function loadAccounts() {
+  const { data } = await api.get('/api/accounts')
+  accounts.value = data
+}
+
+onMounted(async () => {
+  await loadAccounts()
+  await load()
+})
 </script>
 
 <style scoped>

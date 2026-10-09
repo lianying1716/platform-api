@@ -31,9 +31,12 @@ router = APIRouter(prefix="/api", tags=["analytics"], dependencies=[Depends(secu
 
 
 @router.get("/dashboard/summary")
-def dashboard_summary(db: Session = Depends(get_db)):
+def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = None):
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     week_ago = today - timedelta(days=7)
+
+    content_filter = [ContentItem.account_id == account_id] if account_id is not None else []
+    asset_filter = content_filter
 
     accounts_total = (
         db.scalar(
@@ -50,20 +53,32 @@ def dashboard_summary(db: Session = Depends(get_db)):
         )
         or 0
     )
-    today_content = db.scalar(select(func.count(ContentItem.id)).where(ContentItem.created_at >= today)) or 0
+    today_content = (
+        db.scalar(select(func.count(ContentItem.id)).where(ContentItem.created_at >= today, *content_filter)) or 0
+    )
     week_content = (
-        db.scalar(select(func.count(ContentItem.id)).where(ContentItem.created_at >= week_ago)) or 0
+        db.scalar(select(func.count(ContentItem.id)).where(ContentItem.created_at >= week_ago, *content_filter))
+        or 0
     )
     jobs_pending = (
         db.scalar(select(func.count(JobQueue.id)).where(JobQueue.status.in_(("queued", "running")))) or 0
     )
     jobs_failed = db.scalar(select(func.count(JobQueue.id)).where(JobQueue.status == "error")) or 0
-    assets_total = db.scalar(select(func.count(MediaAsset.id))) or 0
+    assets_total = (
+        db.scalar(
+            select(func.count(MediaAsset.id))
+            .join(ContentItem, MediaAsset.content_id == ContentItem.id)
+            .where(*asset_filter)
+        )
+        or 0
+    )
 
     # 内容类型分布：视频 / 文章 / 图文
     by_type: dict[str, int] = {"video": 0, "article": 0, "image": 0}
     for ctype, cnt in db.execute(
-        select(ContentItem.content_type, func.count(ContentItem.id)).group_by(ContentItem.content_type)
+        select(ContentItem.content_type, func.count(ContentItem.id))
+        .where(*content_filter)
+        .group_by(ContentItem.content_type)
     ).all():
         by_type[str(ctype or "video")] = int(cnt)
     video_total = by_type.get("video", 0)
@@ -73,7 +88,8 @@ def dashboard_summary(db: Session = Depends(get_db)):
     duration_total = (
         db.scalar(
             select(func.coalesce(func.sum(ContentItem.duration_sec), 0)).where(
-                ContentItem.content_type == "video"
+                ContentItem.content_type == "video",
+                *content_filter,
             )
         )
         or 0
@@ -85,7 +101,9 @@ def dashboard_summary(db: Session = Depends(get_db)):
             ContentItem.platform,
             ContentItem.content_type,
             func.count(ContentItem.id),
-        ).group_by(ContentItem.platform, ContentItem.content_type)
+        )
+        .where(*content_filter)
+        .group_by(ContentItem.platform, ContentItem.content_type)
     ).all()
     platforms: dict[str, dict] = {}
     for plat, ctype, cnt in platform_rows:
@@ -118,6 +136,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
         )
         .join(ContentMetricSnapshot, ContentMetricSnapshot.content_id == ContentItem.id)
         .join(latest, (latest.c.content_id == ContentMetricSnapshot.content_id) & (latest.c.ts == ContentMetricSnapshot.captured_at))
+        .where(*content_filter)
         .group_by(ContentItem.platform)
     ).all()
     totals = {"play": 0, "like": 0, "comment": 0, "favorite": 0}
@@ -139,6 +158,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
     taxonomy = get_taxonomy(db)
     category_rows = db.execute(
         select(ContentItem.auto_category, func.count(ContentItem.id))
+        .where(*content_filter)
         .group_by(ContentItem.auto_category)
         .order_by(desc(func.count(ContentItem.id)))
     ).all()
@@ -153,8 +173,22 @@ def dashboard_summary(db: Session = Depends(get_db)):
     ]
 
     # 加工进度
-    transcribed = db.scalar(select(func.count(MediaAsset.id)).where(MediaAsset.transcribe_status == "done")) or 0
-    understood = db.scalar(select(func.count(MediaAsset.id)).where(MediaAsset.understand_status == "done")) or 0
+    transcribed = (
+        db.scalar(
+            select(func.count(MediaAsset.id))
+            .join(ContentItem, MediaAsset.content_id == ContentItem.id)
+            .where(MediaAsset.transcribe_status == "done", *asset_filter)
+        )
+        or 0
+    )
+    understood = (
+        db.scalar(
+            select(func.count(MediaAsset.id))
+            .join(ContentItem, MediaAsset.content_id == ContentItem.id)
+            .where(MediaAsset.understand_status == "done", *asset_filter)
+        )
+        or 0
+    )
 
     # 存储占用：按素材累加本地文件体积（文件不存在计 0）
     from app.core import storage
@@ -163,6 +197,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
     storage_by_platform: dict[str, int] = {}
     for asset, content in db.execute(
         select(MediaAsset, ContentItem).join(ContentItem, MediaAsset.content_id == ContentItem.id)
+        .where(*asset_filter)
     ).all():
         size = storage.file_size(storage.resolve_asset_file(db, asset)) if asset.video_file else 0
         if not size and asset.relative_path:
@@ -195,7 +230,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
         cnt = (
             db.scalar(
                 select(func.count(ContentItem.id)).where(
-                    ContentItem.created_at >= day, ContentItem.created_at < nxt
+                    ContentItem.created_at >= day, ContentItem.created_at < nxt, *content_filter
                 )
             )
             or 0
@@ -207,7 +242,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
     hot_rows = db.execute(
         select(ContentItem.title, ContentItem.platform, ContentItem.author_name, func.max(ContentMetricSnapshot.play))
         .join(ContentMetricSnapshot, ContentMetricSnapshot.content_id == ContentItem.id)
-        .where(ContentMetricSnapshot.captured_at >= since)
+        .where(ContentMetricSnapshot.captured_at >= since, *content_filter)
         .group_by(ContentItem.id, ContentItem.title, ContentItem.platform, ContentItem.author_name)
         .order_by(desc(func.max(ContentMetricSnapshot.play)))
         .limit(10)
@@ -253,20 +288,23 @@ def dashboard_summary(db: Session = Depends(get_db)):
 
 
 @router.get("/analytics/creators")
-def analytics_creators(db: Session = Depends(get_db), limit: int = 20):
+def analytics_creators(db: Session = Depends(get_db), limit: int = 20, account_id: int | None = None):
     """作者维度：发布量 + 最新累计互动。优先补 creator_profile 的粉丝/认证信息。"""
-    rows = db.execute(
-        select(
+    stmt = select(
             ContentItem.author_id,
             ContentItem.author_name,
             ContentItem.platform,
             func.count(ContentItem.id).label("cnt"),
         )
-        .where(ContentItem.author_id != "")
-        .group_by(ContentItem.author_id, ContentItem.author_name, ContentItem.platform)
+    stmt = stmt.where(ContentItem.author_id != "")
+    if account_id is not None:
+        stmt = stmt.where(ContentItem.account_id == account_id)
+    stmt = (
+        stmt.group_by(ContentItem.author_id, ContentItem.author_name, ContentItem.platform)
         .order_by(desc("cnt"))
         .limit(limit)
-    ).all()
+    )
+    rows = db.execute(stmt).all()
     profiles = {
         (p.platform, p.author_id): p
         for p in db.scalars(

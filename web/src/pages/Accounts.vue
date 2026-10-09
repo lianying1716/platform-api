@@ -28,6 +28,9 @@
             </span>
           </div>
           <div class="acc-name">{{ row.display_name || row.external_id || '未命名账号' }}</div>
+          <p class="acc-id" :title="row.external_id">
+            {{ row.platform_label }} · ID {{ row.external_id ? row.external_id.slice(-8) : '待识别' }}
+          </p>
           <dl class="acc-meta">
             <div><dt>到期</dt><dd>{{ fmt(row.expires_at) }}</dd></div>
             <div><dt>上次体检</dt><dd>{{ fmt(row.last_checked_at) }}</dd></div>
