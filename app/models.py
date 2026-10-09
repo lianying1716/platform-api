@@ -161,6 +161,9 @@ class Subscription(Base):
     download_quality: Mapped[str] = mapped_column(String(16), default="best")  # best/1080/720/audio
     with_comments: Mapped[bool] = mapped_column(Boolean, default=False)  # 本批是否走评论门控
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 最后一次**尝试**同步的时间（无论成败）。用于失败退避：last_sync_at 只在成功时更新，
+    # 拿它判到期会让持续失败的订阅被反复入队、在风控期反复打平台。
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

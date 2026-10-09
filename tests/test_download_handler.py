@@ -109,8 +109,9 @@ async def test_douyin_uses_direct_play_url(session, monkeypatch):
 
     called = {}
 
-    async def fake_direct(url, out_dir, cookie=""):
+    async def fake_direct(url, out_dir, cookie="", **kwargs):
         called["direct"] = url
+        called["mirrors"] = kwargs.get("mirror_urls")
         return DownloadResult(ok=True, video_file="v0200abc.mp4")
 
     async def fake_ytdlp(*a, **k):

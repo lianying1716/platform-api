@@ -116,7 +116,11 @@
 
             <div class="foot">
               <span class="size">{{ bytes(a.size_bytes) }}</span>
-              <span class="ui-badge" :class="statusTone(a.download_status)">{{ s(a.download_status) }}</span>
+              <span
+                class="ui-badge"
+                :class="statusTone(a.download_status)"
+                :title="a.download_status === 'error' ? (a.error || '下载失败') : ''"
+              >{{ s(a.download_status) }}</span>
               <span class="grow" />
               <label v-if="selected.length || pickMode" class="pick">
                 <input type="checkbox" :checked="isPicked(a)" @change="togglePick(a)" />
@@ -125,10 +129,25 @@
 
             <div class="acts">
               <button class="ui-btn sm" @click="openDetail(a.asset_id)">详情</button>
-              <button class="ui-btn sm" @click="act(a.asset_id, 'transcribe')">
+              <button
+                v-if="a.download_status === 'error' || a.download_status === 'pending'"
+                class="ui-btn sm"
+                @click="act(a.asset_id, 'download')"
+              >
+                {{ a.download_status === 'error' ? '重新下载' : '开始下载' }}
+              </button>
+              <button
+                class="ui-btn sm"
+                :disabled="a.download_status !== 'done'"
+                @click="act(a.asset_id, 'transcribe')"
+              >
                 {{ isTranscribed(a) ? '重新转录' : '转录' }}
               </button>
-              <button class="ui-btn sm" @click="act(a.asset_id, 'analyze')">
+              <button
+                class="ui-btn sm"
+                :disabled="a.download_status !== 'done'"
+                @click="act(a.asset_id, 'analyze')"
+              >
                 {{ isAnalyzed(a) ? '重新分析' : '分析' }}
               </button>
             </div>

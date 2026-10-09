@@ -38,6 +38,9 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     """执行一次订阅同步，返回 SyncRun。"""
     run = SyncRun(subscription_id=subscription.id, status="running")
     db.add(run)
+    # 无论成败都记一次尝试时间：调度器据此退避，避免失败订阅被反复入队打平台
+    # （风控期尤其重要）。
+    subscription.last_attempt_at = datetime.utcnow()
     db.commit()
     db.refresh(run)
 

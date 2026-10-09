@@ -224,6 +224,8 @@ def list_assets(
                 "playable": has_file,
                 "tier": asset.process_tier or "",
                 "download_status": asset.download_status,
+                # 失败原因：列表页也要能看到"为什么失败"，否则只有一个"失败"标签没法排查。
+                "error": asset.error or "",
                 "transcribe_status": asset.transcribe_status,
                 "analyze_status": asset.analyze_status,
                 "understand_status": asset.understand_status,

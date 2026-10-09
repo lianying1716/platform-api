@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     qr_session_ttl: int = 300
     # worker 并发槽数（下载/转录重活，单机几十条/天，低并发即可）
     worker_concurrency: int = 2
+    # 连续下载之间的最小间隔（秒）。抖音/CDN 对密集直链请求敏感，批量同步会一次入队
+    # 几十条下载，必须拉开间隔（照抄抖小云在下载循环里的 Task.Delay）。
+    download_min_gap_seconds: float = 2.0
+    # 间隔上浮的随机抖动上限（秒）；实际间隔 = gap + random(0, jitter)。
+    download_jitter_seconds: float = 3.0
     # 转录默认模型与设备（faster-whisper）
     whisper_model: str = "base"
     whisper_device: str = "auto"  # auto / cpu / cuda

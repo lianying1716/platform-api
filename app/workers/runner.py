@@ -79,13 +79,26 @@ async def _worker_loop(slot: int) -> None:
 
 
 async def _janitor() -> None:
-    """周期回收卡死的 running 任务。"""
+    """周期回收卡死的 running 任务，并把中断的素材状态拉回真实值。
+
+    ``reset_stale_running`` 只处理任务行；素材行上的 ``downloading/transcribing/analyzing``
+    是 handler 在干活前写下的，worker 崩溃后没人复位 → 前端永远显示"下载中"。
+    这里一并对账（见 services/asset_state）。
+    """
+    from app.services.asset_state import clear_success_error, reset_stale_assets
+
     while not _stop.is_set():
         db = SessionLocal()
         try:
             n = queue.reset_stale_running(db, older_than_minutes=30)
             if n:
                 logger.info("回收卡死任务 %s 个", n)
+            fixed = reset_stale_assets(db, older_than_minutes=30)
+            if fixed:
+                logger.info("复位中断的素材状态 %s", fixed)
+            cleaned = clear_success_error(db)
+            if cleaned:
+                logger.info("清理成功素材上的残留错误 %s 条", cleaned)
         except Exception:  # noqa: BLE001
             logger.exception("janitor 异常")
         finally:
@@ -93,9 +106,31 @@ async def _janitor() -> None:
         await asyncio.sleep(120)
 
 
+async def _startup_reconcile() -> None:
+    """启动时先对账一次：worker 重启往往正是上一次崩溃的现场，早复位早可见。"""
+    from app.services.asset_state import clear_success_error, reset_stale_assets
+
+    db = SessionLocal()
+    try:
+        n = queue.reset_stale_running(db, older_than_minutes=30)
+        if n:
+            logger.info("启动回收卡死任务 %s 个", n)
+        fixed = reset_stale_assets(db, older_than_minutes=30)
+        if fixed:
+            logger.info("启动复位中断的素材状态 %s", fixed)
+        cleaned = clear_success_error(db)
+        if cleaned:
+            logger.info("启动清理成功素材上的残留错误 %s 条", cleaned)
+    except Exception:  # noqa: BLE001 启动对账失败不应阻止 worker 起来
+        logger.exception("启动对账异常")
+    finally:
+        db.close()
+
+
 async def main() -> None:
     concurrency = max(1, settings.worker_concurrency)
     logger.info("worker 启动，并发槽 %s", concurrency)
+    await _startup_reconcile()
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

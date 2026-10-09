@@ -8,6 +8,7 @@
 """
 
 import asyncio
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
@@ -355,3 +356,61 @@ def test_scheduler_respects_interval_minutes(session, monkeypatch):
 
     asyncio.run(sched.enqueue_due_subscriptions())
     assert session.scalars(select(JobQueue).where(JobQueue.job_type == "sync")).all() == []
+
+
+def test_failed_sync_backs_off_instead_of_hammering(session, monkeypatch):
+    """失败也要退避：last_attempt_at 更新后，同一 interval 内不再入队。
+
+    回归背景：此前只用 last_sync_at（仅成功时更新）判到期，持续失败的订阅
+    被每 5 分钟扫描重新入队 → 在平台风控期反复打平台。
+    """
+    import app.core.scheduler as sched
+    from app.models import JobQueue
+
+    monkeypatch.setattr(sched, "SessionLocal", lambda: session)
+    acc = _account(session)
+    sub = _favorite_sub(session, acc)
+    sub.interval_minutes = 360
+    sub.last_sync_at = None                 # 从未成功过
+    sub.last_attempt_at = datetime.utcnow()  # 刚刚尝试过（且失败）
+    session.commit()
+
+    asyncio.run(sched.enqueue_due_subscriptions())
+    assert session.scalars(select(JobQueue).where(JobQueue.job_type == "sync")).all() == [], \
+        "刚尝试过的订阅不应立刻重排"
+
+
+def test_sync_records_attempt_even_on_failure(session, monkeypatch):
+    """run_subscription_sync 无论成败都要写 last_attempt_at。"""
+    acc = _account(session)
+    sub = _favorite_sub(session, acc)
+    sub.last_attempt_at = None
+    session.commit()
+
+    # 账号不可用 → 必然失败
+    acc2 = session.get(type(acc), acc.id)
+    acc2.status = "deleted"
+    session.commit()
+
+    run = asyncio.run(sync_service.run_subscription_sync(session, sub))
+    assert run.status == "error"
+    session.expire_all()
+    assert session.get(Subscription, sub.id).last_attempt_at is not None, \
+        "失败也要记尝试时间，调度器才能退避"
+
+
+def test_stale_attempt_after_interval_is_due(session, monkeypatch):
+    """超过 interval 后即使一直失败，也应该再试一次（不是永久停摆）。"""
+    import app.core.scheduler as sched
+    from app.models import JobQueue
+
+    monkeypatch.setattr(sched, "SessionLocal", lambda: session)
+    acc = _account(session)
+    sub = _favorite_sub(session, acc)
+    sub.interval_minutes = 60
+    sub.last_sync_at = None
+    sub.last_attempt_at = datetime.utcnow() - timedelta(hours=2)
+    session.commit()
+
+    asyncio.run(sched.enqueue_due_subscriptions())
+    assert len(session.scalars(select(JobQueue).where(JobQueue.job_type == "sync")).all()) == 1

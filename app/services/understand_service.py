@@ -373,18 +373,31 @@ async def run_understand(
         content.auto_category = category
         content.category_confidence = conf
         asset.understand_status = "done"
-        asset.error = ""
         asset.process_tier = "advanced"
+        # 注意：不要写 asset.error。media_asset.error 是**共享**的下载/整体错误位，
+        # 视频理解失败时写进去会让「已下载成功」的素材在前端显示成失败（实测 bug）。
+        # 理解自身的错误只落 VideoUnderstanding.error。
         db.commit()
         db.refresh(existing)
         events.publish("asset_status", {"asset_id": asset_id, "understand": "done"})
         return existing
     except Exception as exc:
         db.rollback()
-        asset = db.get(MediaAsset, asset_id)
-        if asset is not None:
-            asset.understand_status = "error"
-            asset.error = str(exc)[:512]
-            db.commit()
+        _record_understand_error(db, asset_id, str(exc))
         events.publish("asset_status", {"asset_id": asset_id, "understand": "error"})
         raise
+
+
+def _record_understand_error(db: Session, asset_id: int, message: str) -> None:
+    """把理解失败落到理解自己的记录上，绝不污染 media_asset.error。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        return
+    asset.understand_status = "error"
+    row = db.scalar(select(VideoUnderstanding).where(VideoUnderstanding.asset_id == asset_id))
+    if row is None:
+        row = VideoUnderstanding(asset_id=asset_id)
+        db.add(row)
+    row.status = "error"
+    row.error = message[:512]
+    db.commit()

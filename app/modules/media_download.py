@@ -36,6 +36,22 @@ _SAFE_OPTS = {
 }
 
 
+def _as_dir(out_dir) -> Path | None:
+    """统一把输出目录规整成 Path；空目录返回 None（调用方需判空）。
+
+    ``resolve_asset_dir`` 返回的是 str（storage_root + relative_path 拼出来的），
+    而本模块按 Path 使用（``.mkdir()`` / ``.glob()``）。在边界处归一化，
+    避免 ``'str' object has no attribute 'mkdir'`` 这类只在真实下载时才炸的错。
+    注意 ``Path("")`` 会变成 ``"."``，所以空值必须在这里就挡掉。
+    """
+    if out_dir is None:
+        return None
+    if isinstance(out_dir, Path):
+        return out_dir
+    text = str(out_dir).strip()
+    return Path(text) if text else None
+
+
 def _build_opts(out_dir: Path, audio_only: bool, cookie: str = "") -> dict:
     opts = dict(_SAFE_OPTS)
     opts["outtmpl"] = str(out_dir / "%(id)s.%(ext)s")
@@ -59,6 +75,9 @@ def _run_download(url: str, out_dir: Path, audio_only: bool, cookie: str) -> Dow
     except ImportError:
         return DownloadResult(ok=False, message="yt-dlp 未安装（uv sync 时应已包含）")
 
+    out_dir = _as_dir(out_dir)
+    if out_dir is None:
+        return DownloadResult(ok=False, message="未指定下载目录（存储根未配置）")
     out_dir.mkdir(parents=True, exist_ok=True)
     opts = _build_opts(out_dir, audio_only, cookie)
     try:
@@ -88,47 +107,88 @@ def _run_download(url: str, out_dir: Path, audio_only: bool, cookie: str) -> Dow
     )
 
 
-async def download(url: str, out_dir: Path, audio_only: bool = False, cookie: str = "") -> DownloadResult:
-    """异步包装：yt-dlp 是同步阻塞的，丢到线程池执行。"""
+async def download(url: str, out_dir: "Path | str", audio_only: bool = False, cookie: str = "") -> DownloadResult:
+    """异步包装：yt-dlp 是同步阻塞的，丢到线程池执行。
+
+    ``out_dir`` 允许是 str（``resolve_asset_dir`` 的返回值），内部会归一化成 Path。
+    """
     return await asyncio.to_thread(_run_download, url, out_dir, audio_only, cookie)
 
-async def download_direct(url: str, out_dir: Path, cookie: str = "") -> DownloadResult:
-    """直链下载（照抄抖小云 TryDownloadOnceAsync）。
+async def download_direct(
+    url: str,
+    out_dir: "Path | str",
+    cookie: str = "",
+    *,
+    mirror_urls: list[str] | None = None,
+    retries: int = 3,
+) -> DownloadResult:
+    """直链下载（照抄抖小云 TryDownloadOnceAsync + DownloadAsync 的镜像轮换重试）。
 
     抖小云抓取时就把 `video.play_addr` 的直链存下来，下载阶段只做一次带 Cookie 的
     HTTP GET，不依赖 yt-dlp（抖音页面下载要求 fresh cookies，很脆）。
-    这里同样处理：流式落盘、按 Content-Type 修正扩展名、失败退回重试交给上层。
+
+    抖音直链带 ``sign=`` 签名，会过期、也可能被 CDN 限流。抖小云的做法是失败后
+    轮换同一视频的其它镜像 URL 并把重试延迟翻倍；这里照做：
+    ``mirror_urls`` 给出全部候选地址，逐条尝试，全部失败才判失败。
     """
     import httpx
 
+    out_dir = _as_dir(out_dir)
+    if out_dir is None:
+        return DownloadResult(ok=False, message="未指定下载目录（存储根未配置）")
     out_dir.mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": _UA_FOR_DOWNLOAD, "Referer": "https://www.douyin.com/"}
     if cookie:
         headers["Cookie"] = cookie
     # 直链里可能带 a=1 之类参数，文件名用 aweme id 兜底
     name = _guess_name(url)
+
+    candidates: list[str] = []
+    for u in [url, *(mirror_urls or [])]:
+        if isinstance(u, str) and u.strip() and u not in candidates:
+            candidates.append(u)
+    if not candidates:
+        return DownloadResult(ok=False, message="直链下载失败：没有可用的下载地址")
+
+    last_message = ""
+    attempts = max(1, min(retries, len(candidates)))
+    for idx in range(attempts):
+        candidate = candidates[idx]
+        try:
+            result = await _download_one(candidate, out_dir, name, headers)
+        except Exception as exc:  # noqa: BLE001 网络异常种类多，统一兜成可读错误
+            result = DownloadResult(ok=False, message=f"直链下载失败: {exc}")
+        if result.ok:
+            return result
+        last_message = result.message
+        # 重试前退避（1s、2s…），避免连打 CDN 触发限流
+        if idx < attempts - 1:
+            await asyncio.sleep(min(1.0 * (2 ** idx), 8.0))
+    return DownloadResult(ok=False, message=last_message or "直链下载失败")
+
+
+async def _download_one(url: str, out_dir: Path, name: str, headers: dict) -> DownloadResult:
+    """单次直链下载尝试：流式落盘、按 Content-Type 修正扩展名。"""
+    import httpx
+
     target = out_dir / f"{name}.mp4"
-    try:
-        async with httpx.AsyncClient(headers=headers, timeout=300, follow_redirects=True) as c:
-            async with c.stream("GET", url) as r:
-                if r.status_code != 200:
-                    return DownloadResult(ok=False, message=f"直链下载失败：HTTP {r.status_code}")
-                ctype = (r.headers.get("content-type") or "").lower()
-                if "video/mp4" in ctype or "octet-stream" in ctype or not ctype:
-                    target = out_dir / f"{name}.mp4"
-                elif "audio" in ctype:
-                    target = out_dir / f"{name}.m4a"
-                written = 0
-                with open(target, "wb") as fh:
-                    async for chunk in r.aiter_bytes(64 * 1024):
-                        fh.write(chunk)
-                        written += len(chunk)
-    except Exception as exc:  # noqa: BLE001 网络异常种类多，统一兜成可读错误
-        return DownloadResult(ok=False, message=f"直链下载失败: {exc}")
+    async with httpx.AsyncClient(headers=headers, timeout=300, follow_redirects=True) as c:
+        async with c.stream("GET", url) as r:
+            if r.status_code != 200:
+                return DownloadResult(ok=False, message=f"直链下载失败：HTTP {r.status_code}")
+            ctype = (r.headers.get("content-type") or "").lower()
+            if "video/mp4" in ctype or "octet-stream" in ctype or not ctype:
+                target = out_dir / f"{name}.mp4"
+            elif "audio" in ctype:
+                target = out_dir / f"{name}.m4a"
+            written = 0
+            with open(target, "wb") as fh:
+                async for chunk in r.aiter_bytes(64 * 1024):
+                    fh.write(chunk)
+                    written += len(chunk)
     if written <= 0:
         return DownloadResult(ok=False, message="直链下载失败：未写入任何数据")
-    produced = target.name
-    return DownloadResult(ok=True, video_file=produced, message="下载完成")
+    return DownloadResult(ok=True, video_file=target.name, message="下载完成")
 
 
 def _guess_name(url: str) -> str:

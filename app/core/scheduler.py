@@ -52,7 +52,12 @@ async def cleanup_browser_sessions() -> None:
 async def enqueue_due_subscriptions() -> None:
     """把到期的订阅同步入队（worker 消费），实现"开启即按 interval_minutes 周期同步"。
 
-    到期判定：``enabled`` 且未删除，且从未同步 / 距上次同步超过 ``interval_minutes``。
+    到期判定：``enabled`` 且未删除，且距**上次尝试**超过 ``interval_minutes``。
+
+    用 ``last_attempt_at`` 而不是 ``last_sync_at``：后者只在成功时更新，持续失败的订阅
+    （账号掉线 / 平台风控）会被每次扫描重新入队，等于在风控期持续打平台。
+    改用尝试时间后，失败也要等满一个 interval 才会再试（天然退避）。
+
     creator 订阅还要 ``sync_videos`` 打开（博主视频需手动开启）；收藏/点赞等自动同步类
     走各自的 ``enabled``。入队用 dedup，避免重复堆积。
     """
@@ -78,7 +83,9 @@ async def enqueue_due_subscriptions() -> None:
             if sub.source_type == "creator" and not sub.sync_videos:
                 continue
             interval = max(10, int(sub.interval_minutes or 0))
-            if sub.last_sync_at is not None and (now - sub.last_sync_at).total_seconds() < interval * 60:
+            # 用「上次尝试」判到期：失败也退避满一个 interval，不在风控期反复打平台。
+            last = sub.last_attempt_at or sub.last_sync_at
+            if last is not None and (now - last).total_seconds() < interval * 60:
                 continue
             enqueue(db, "sync", {"subscription_id": sub.id}, dedup=True, commit=False)
             queued += 1

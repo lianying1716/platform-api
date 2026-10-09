@@ -206,27 +206,35 @@ async def _pace() -> None:
     await asyncio.sleep(random.uniform(lo, hi))
 
 
-def _pick_play_url(aw: dict) -> str:
-    """从 aweme 结构里取可直连下载的播放地址。
+def _play_url_list(aw: dict) -> list[str]:
+    """从 aweme 结构里取**全部**可直连下载的播放地址（去重、保序）。
 
-    照抄抖小云 DouyinBasicSyncJob：优先取 video.play_addr.url_list 里
-    ``https://www.douyin.com/aweme/v1/play`` 开头的直链（配 Cookie 可直接下载），
-    否则回退 url_list 第一项。
+    照抄抖小云 DouyinBasicSyncJob：优先 ``https://www.douyin.com/aweme/v1/play`` 开头的直链，
+    其次是 play_addr 的其它镜像，最后回退 download_addr。
 
-    有了这个就不必依赖 yt-dlp（抖音页面下载要 fresh cookies，很脆），
-    也不需要任何签名 —— 抖小云就是这么长期稳定下载的。
+    为什么要留全部而不是只留第一条：抖音直链带 ``sign=`` 签名会过期，**也**可能被限流，
+    抖小云每次重试会轮换 ``otherUrls`` 里的镜像。我们同样在重试时轮换，单条 URL 的
+    偶发失败就不会让整条素材永远失败。
     """
     video = aw.get("video") or {}
     addr = video.get("play_addr") or {}
-    urls = addr.get("url_list") or []
-    for u in urls:
-        if isinstance(u, str) and u.startswith("https://www.douyin.com/aweme/v1/play"):
-            return u
-    if urls:
-        return str(urls[0])
-    # 兜底：下载地址字段（部分内容只有这个）
-    dl = (video.get("download_addr") or {}).get("url_list") or []
-    return str(dl[0]) if dl else ""
+    raw = [u for u in (addr.get("url_list") or []) if isinstance(u, str) and u.strip()]
+    dl = [u for u in (((video.get("download_addr") or {}).get("url_list")) or []) if isinstance(u, str) and u.strip()]
+    preferred = [u for u in raw if u.startswith("https://www.douyin.com/aweme/v1/play")]
+    ordered = preferred + [u for u in raw if u not in preferred] + [u for u in dl if u not in raw]
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in ordered:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _pick_play_url(aw: dict) -> str:
+    """取首选的直连下载地址（保持向后兼容；完整列表见 ``_play_url_list``）。"""
+    urls = _play_url_list(aw)
+    return urls[0] if urls else ""
 
 
 def _client(cookie: str, referer: str) -> httpx.AsyncClient:
@@ -430,8 +438,9 @@ def _aweme_to_item(aw: dict, fallback_author_id: str = "") -> dict:
         "author_id": author.get("sec_uid", "") or fallback_author_id,
         "url": f"https://www.douyin.com/video/{aweme_id}",
         "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
-        # 直连播放地址：下载走它 + Cookie，不依赖 yt-dlp
-        "extra": {"download_url": _pick_play_url(aw)},
+        # 直连播放地址：下载走它 + Cookie，不依赖 yt-dlp。
+        # download_url 是首选；download_urls 留全部镜像，供失败重试时轮换。
+        "extra": {"download_url": _pick_play_url(aw), "download_urls": _play_url_list(aw)},
         # create_time 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
         "published_at": _ts_to_iso(aw.get("create_time")),
         "metrics": {

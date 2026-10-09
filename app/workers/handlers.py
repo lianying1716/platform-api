@@ -10,7 +10,9 @@
 真实下载/转录需要有效凭证与本地依赖（ffmpeg/whisper 模型），缺失时抛出可读错误。
 """
 
+import asyncio
 import logging
+import random
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -32,6 +34,29 @@ logger = logging.getLogger("platform.worker.handlers")
 
 # 未指定子目录模板时的兜底（内容 ID 段保证同目录不重名）。
 _DEFAULT_SUBDIR = "{platform}/{account}/{creator}/{date}/{content_id}"
+
+# 下载串行化 + 间隔：批量同步一次会入队几十条下载，密集打 CDN 很容易触发限流。
+# 用一个进程级锁把下载排成队列，并在相邻两次之间留出随机间隔（照抄抖小云下载循环里的
+# Task.Delay，且抖小云整条下载 job 是 [DisallowConcurrentExecution] 串行跑的）。
+_download_gate = asyncio.Lock()
+_last_download_at: float = 0.0
+
+
+async def _await_download_slot() -> None:
+    """获取下载槽位：与上一次下载至少相隔 gap + 抖动秒。"""
+    from app.config import settings
+
+    global _last_download_at
+    async with _download_gate:
+        gap = max(0.0, float(getattr(settings, "download_min_gap_seconds", 2.0)))
+        jitter = max(0.0, float(getattr(settings, "download_jitter_seconds", 3.0)))
+        wait = 0.0
+        if _last_download_at:
+            elapsed = asyncio.get_running_loop().time() - _last_download_at
+            wait = (gap + random.uniform(0, jitter)) - elapsed
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_download_at = asyncio.get_running_loop().time()
 
 
 def _account_segment(account) -> str:
@@ -99,10 +124,18 @@ async def handle_download(db: Session, payload: dict) -> None:
     # 没有直链（其它平台 / 老数据）才回退 yt-dlp。
     cookie = _content_cookie(db, content)
     direct = ""
+    mirrors: list[str] = []
     if content.platform == "douyin":
-        direct = str((content.extra or {}).get("download_url") or "")
+        extra = content.extra or {}
+        direct = str(extra.get("download_url") or "")
+        # 抖音直链带签名会过期/被限流：失败时轮换同一视频的其它镜像（照抄抖小云）。
+        mirrors = [str(u) for u in (extra.get("download_urls") or []) if isinstance(u, str)]
+    # 节流：所有下载共用一条串行通道 + 最小间隔，避免批量同步打爆 CDN 触发限流。
+    await _await_download_slot()
     if direct:
-        result = await media_download.download_direct(direct, target_dir, cookie=cookie)
+        result = await media_download.download_direct(
+            direct, target_dir, cookie=cookie, mirror_urls=mirrors
+        )
     else:
         result = await media_download.download(content.url, target_dir, cookie=cookie)
     # download() 返回 DownloadResult(dataclass)，不是 dict —— 这里必须属性访问。
