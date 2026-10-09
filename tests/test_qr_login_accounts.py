@@ -50,17 +50,18 @@ def test_second_login_with_same_external_id_updates_not_creates(client, session,
     assert acc.display_name == "我的抖音"
 
 
-def test_missing_external_id_reuses_single_account_of_platform(client, session, monkeypatch):
-    """平台没回身份标识时，也不能每扫一次就多一个号（单账号平台复用）。"""
+def test_missing_external_id_with_single_existing_account_refuses(client, session, monkeypatch):
+    """已有账号且平台不回身份：拒绝，绝不靠“只有一个账号”覆盖。"""
     from app.modules.base import QrPoll
 
     poll = QrPoll(status="success", message="登录成功",
                   credential={"cookie": "sessionid=abc"}, external_id="", display_name="")
     _fake_qr(monkeypatch, "douyin", poll)
 
-    a1 = _login(client).json()
-    a2 = _login(client).json()
-    assert a1["account_id"] == a2["account_id"]
+    first = _login(client)
+    assert first.status_code == 200
+    second = _login(client)
+    assert second.status_code == 409
     assert session.query(PlatformAccount).filter_by(platform="douyin").count() == 1
 
 
@@ -85,8 +86,8 @@ def test_missing_external_id_with_multiple_accounts_refuses(client, session, mon
     assert session.query(PlatformAccount).count() == 2   # 没有新建
 
 
-def test_poll_fills_external_id_later(client, session, monkeypatch):
-    """先无身份建号，后续拿到身份时补上，而不是再建一个。"""
+def test_poll_with_new_identity_creates_separate_account(client, session, monkeypatch):
+    """先有账号，后续登录拿到新身份：按身份新建，绝不覆盖旧账号。"""
     from app.modules.base import QrPoll
 
     poll = QrPoll(status="success", message="ok", credential={"cookie": "c=1"},
@@ -99,7 +100,6 @@ def test_poll_fills_external_id_later(client, session, monkeypatch):
     _fake_qr(monkeypatch, "douyin", poll2)
     second = _login(client).json()["account_id"]
 
-    assert first == second
-    acc = session.query(PlatformAccount).one()
-    assert acc.external_id == "SEC_X"
-    assert acc.display_name == "补上的名字"
+    assert first != second
+    rows = session.query(PlatformAccount).order_by(PlatformAccount.id).all()
+    assert [r.external_id for r in rows] == ["", "SEC_X"]

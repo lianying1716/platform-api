@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import schemas
@@ -58,7 +59,24 @@ async def _run_check(db: Session, account: PlatformAccount, actor: str = "admin"
         else:
             account.status = "active" if result.ok else "expired"
             account.status_message = result.message
-            if result.external_id and not account.external_id:
+            if result.external_id:
+                conflict = db.scalar(
+                    select(PlatformAccount).where(
+                        PlatformAccount.platform == account.platform,
+                        PlatformAccount.external_id == result.external_id,
+                        PlatformAccount.id != account.id,
+                        PlatformAccount.is_system.is_(False),
+                    )
+                )
+                if conflict is not None:
+                    # 身份冲突不是“体检失败”，但也绝不能静默覆盖成别人的 ID。
+                    account.status, account.status_message = "error", (
+                        f"体检身份 {result.external_id} 已被账号 #{conflict.id} 占用，未自动覆盖"
+                    )
+                    account.last_checked_at = datetime.utcnow()
+                    _audit(db, account.id, "check", account.status_message, actor)
+                    db.commit()
+                    raise HTTPException(status_code=409, detail=account.status_message)
                 account.external_id = result.external_id
             if result.display_name and not account.display_name:
                 account.display_name = result.display_name
@@ -126,11 +144,10 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
             qr_sessions.remove(session_id)
         return schemas.QrLoginStatus(status=poll.status, message=poll.message)
 
-    # 登录成功 → 决定"更新哪个账号 / 要不要新建"，顺序如下：
-    #   1. 有身份标识：按 (platform, external_id) 精确匹配
-    #   2. 没匹配到，但该平台只有一个账号：复用它（并回填这次拿到的身份）
-    #      —— 覆盖"上次没拿到身份、这次拿到了"的升级场景，以及平台不回身份的情况
-    #   3. 该平台有多个账号却无法确定身份：报错，绝不猜着建重复号
+    # 登录成功 → 决定"更新哪个账号 / 要不要新建"：
+    #   1. 有身份标识：按 (platform, external_id) 精确匹配并更新；匹配不到则新建
+    #   2. 无身份标识：仅当该平台没有任何真实账号时允许创建首个无身份账号；
+    #      已有任何真实账号则 409，绝不靠“只有一个”覆盖或猜身份
     qr_sessions.remove(session_id)
     account = None
     if poll.external_id:
@@ -141,7 +158,7 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
                 PlatformAccount.is_system.is_(False),
             )
         )
-    if account is None:
+    if account is None and not poll.external_id:
         existing = db.scalars(
             select(PlatformAccount)
             .where(
@@ -150,14 +167,12 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
             )
             .order_by(PlatformAccount.id)
         ).all()
-        if len(existing) == 1:
-            account = existing[0]
-        elif len(existing) > 1:
+        if existing:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"{adapter.label} 已有多个账号，且平台未返回可唯一识别的身份，"
-                    "无法判断该更新哪一个。请手动在账号中心处理，或先删除多余账号后重试。"
+                    f"{adapter.label} 已有账号，且本次登录未返回可唯一识别的身份，"
+                    "无法安全判断归属。请手动录入或在账号中心处理。"
                 ),
             )
     if account is None:
@@ -172,7 +187,7 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
         _audit(db, account.id, "create", "扫码登录创建")
     else:
         # 补上后拿到的身份/昵称，让账号卡片显示得更完整
-        if poll.external_id and not account.external_id:
+        if poll.external_id:
             account.external_id = poll.external_id
         if poll.display_name and not sess.display_name:
             account.display_name = poll.display_name
@@ -202,16 +217,52 @@ async def create_account(body: schemas.AccountCreate, db: Session = Depends(get_
         plain = adapter.parse_manual_input(body.credential)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    account = PlatformAccount(
-        platform=body.platform,
-        display_name=body.display_name,
-        external_id=str(body.credential.get("sec_user_id") or body.credential.get("dedeuserid") or ""),
-        credential_kind=adapter.credential_kind,
+    external_id = str(
+        body.credential.get("sec_user_id")
+        or body.credential.get("dedeuserid")
+        or body.credential.get("user_id")
+        or ""
     )
-    db.add(account)
-    db.flush()
+    account = None
+    if external_id:
+        account = db.scalar(
+            select(PlatformAccount).where(
+                PlatformAccount.platform == body.platform,
+                PlatformAccount.external_id == external_id,
+                PlatformAccount.is_system.is_(False),
+            )
+        )
+    if account is None:
+        account = PlatformAccount(
+            platform=body.platform,
+            display_name=body.display_name,
+            external_id=external_id,
+            credential_kind=adapter.credential_kind,
+        )
+        db.add(account)
+        try:
+            db.flush()
+        except IntegrityError:
+            # 并发下另一个请求已抢先创建同一身份：回退为更新该账号。
+            db.rollback()
+            account = db.scalar(
+                select(PlatformAccount).where(
+                    PlatformAccount.platform == body.platform,
+                    PlatformAccount.external_id == external_id,
+                    PlatformAccount.is_system.is_(False),
+                )
+            )
+            if account is None:
+                raise HTTPException(status_code=409, detail="账号身份冲突，请重试")
+        audit_action = "create"
+        audit_detail = "手动录入"
+    else:
+        if body.display_name:
+            account.display_name = body.display_name
+        audit_action = "update"
+        audit_detail = "手动录入去重更新"
     _save_credential(db, account, plain)
-    _audit(db, account.id, "create", "手动录入")
+    _audit(db, account.id, audit_action, audit_detail)
     db.commit()
     if not body.skip_check:
         await _run_check(db, account)

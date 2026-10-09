@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +27,16 @@ class PlatformAccount(Base):
     """一个平台账号一行。status: active/expired/unchecked/error"""
 
     __tablename__ = "platform_account"
+    __table_args__ = (
+        Index(
+            "uq_platform_account_platform_external_id",
+            "platform",
+            "external_id",
+            unique=True,
+            postgresql_where=text("is_system = false AND external_id <> ''"),
+            sqlite_where=text("is_system = 0 AND external_id <> ''"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     platform: Mapped[str] = mapped_column(String(32), index=True)  # bilibili/douyin/wechat_mp/xhs
