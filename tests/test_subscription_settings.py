@@ -24,7 +24,7 @@ EXPECTED_DEFAULTS = {
 
 
 def _make_account(session) -> PlatformAccount:
-    acc = PlatformAccount(platform="douyin", display_name="demo")
+    acc = PlatformAccount(platform="douyin", display_name="demo", status="active")
     session.add(acc)
     session.commit()
     return acc

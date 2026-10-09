@@ -52,7 +52,7 @@
       <div class="ui-modal-box narrow">
         <div class="ui-panel-head"><h2>删除账号</h2></div>
         <div class="ui-modal-body">
-          <p>确定删除「{{ removeTarget.display_name || removeTarget.platform_label }}」？该账号的凭证会一并删除，且不可恢复。</p>
+          <p>确定删除「{{ removeTarget.display_name || removeTarget.platform_label }}」？账号将停用，已采集的素材会保留。</p>
         </div>
         <div class="ui-modal-foot">
           <button class="ui-btn" @click="removeTarget = null">取消</button>

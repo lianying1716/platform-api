@@ -7,7 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
 from app.config import settings
-from app.core.crypto import decrypt_credential
+from app.services.account_health import check_account
 from app.db import SessionLocal
 from app.models import CredentialAuditLog, PlatformAccount
 
@@ -16,24 +16,22 @@ scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
 
 async def check_all_accounts() -> None:
-    from app.modules import get_adapter
-
     db = SessionLocal()
     try:
         accounts = db.scalars(
-            select(PlatformAccount).where(PlatformAccount.is_system.is_(False))
+            select(PlatformAccount).where(
+                PlatformAccount.is_system.is_(False),
+                PlatformAccount.status != "deleted",
+            )
         ).all()
         for account in accounts:
             if account.credential is None:
                 continue
-            adapter = get_adapter(account.platform)
             try:
-                result = await adapter.check(decrypt_credential(account.credential.ciphertext))
-                account.status = "active" if result.ok else "expired"
-                account.status_message = result.message
-            except Exception as exc:
+                await check_account(account)
+            except Exception as exc:  # noqa: BLE001 单个账号异常不中断整批巡检
                 account.status, account.status_message = "error", f"体检失败: {exc}"
-            account.last_checked_at = datetime.utcnow()
+                account.last_checked_at = datetime.utcnow()
             db.add(
                 CredentialAuditLog(
                     account_id=account.id, action="check", actor="scheduler", detail=account.status_message[:500]

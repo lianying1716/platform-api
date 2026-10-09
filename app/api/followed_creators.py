@@ -162,6 +162,8 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="账号不存在")
     if account.platform not in _PLATFORMS:
         raise HTTPException(status_code=400, detail=f"暂不支持拉取 {account.platform} 的关注列表")
+    if account.is_system or account.status == "deleted":
+        raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用")
     if account.credential is None:
         raise HTTPException(status_code=400, detail="账号未录入凭证，请先在账号中心登录")
 
@@ -271,7 +273,7 @@ class ToggleIn(BaseModel):
 
 def _get_creator_sub(fc_id: int, db: Session) -> Subscription:
     sub = db.get(Subscription, fc_id)
-    if sub is None or sub.source_type != "creator":
+    if sub is None or sub.source_type != "creator" or sub.deleted_at is not None:
         raise HTTPException(status_code=404, detail="关注博主不存在")
     return sub
 

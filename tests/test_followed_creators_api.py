@@ -10,7 +10,9 @@ from app.models import AccountCredential, CreatorProfile, PlatformAccount, Subsc
 
 
 def _account(session, platform="bilibili", name="主号"):
-    acc = PlatformAccount(platform=platform, display_name=name, credential_kind="cookie")
+    acc = PlatformAccount(
+        platform=platform, display_name=name, credential_kind="cookie", status="active"
+    )
     session.add(acc)
     session.commit()
     session.refresh(acc)

@@ -230,7 +230,7 @@ def skill_trigger_sync(
     from app.core.queue import enqueue
 
     sub = db.get(Subscription, subscription_id)
-    if sub is None:
+    if sub is None or sub.deleted_at is not None:
         _log(db, key.id, "trigger_sync", f"sub={subscription_id}", "error", int((time.time() - t0) * 1000))
         raise HTTPException(status_code=404, detail="订阅不存在")
     job = enqueue(db, "sync", {"subscription_id": subscription_id})
@@ -330,7 +330,11 @@ def skill_update_cookie(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     account = db.scalar(
         select(PlatformAccount)
-        .where(PlatformAccount.platform == platform, PlatformAccount.is_system.is_(False))
+        .where(
+            PlatformAccount.platform == platform,
+            PlatformAccount.is_system.is_(False),
+            PlatformAccount.status != "deleted",
+        )
         .order_by(PlatformAccount.id)
     )
     if account is None:
@@ -360,7 +364,7 @@ async def skill_check_account(
 
     t0 = time.time()
     account = db.get(PlatformAccount, account_id)
-    if account is None:
+    if account is None or account.is_system or account.status == "deleted":
         _log(db, key.id, "check_account", f"id={account_id}", "error", int((time.time() - t0) * 1000))
         raise HTTPException(status_code=404, detail="账号不存在")
     result = await _run_check(db, account, actor=f"apikey:{key.id}")

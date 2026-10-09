@@ -79,6 +79,8 @@ async def remote_sources(account_id: int, source_type: str = "favorite", db: Ses
     account = db.get(PlatformAccount, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
+    if account.is_system or account.status == "deleted":
+        raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用")
     if account.credential is None:
         raise HTTPException(status_code=400, detail="账号未录入凭证")
     adapter = get_adapter(account.platform)
@@ -94,7 +96,9 @@ async def remote_sources(account_id: int, source_type: str = "favorite", db: Ses
 
 @router.get("/subscriptions", response_model=list[SubscriptionOut])
 def list_subscriptions(db: Session = Depends(get_db)):
-    subs = db.scalars(select(Subscription).order_by(Subscription.id)).all()
+    subs = db.scalars(
+        select(Subscription).where(Subscription.deleted_at.is_(None)).order_by(Subscription.id)
+    ).all()
     # creator 订阅补博主头像（资料在 creator_profile；关系状态就在 subscription 本身）
     creator_subs = [s for s in subs if s.source_type == "creator"]
     if creator_subs:
@@ -116,6 +120,8 @@ def create_subscription(body: SubscriptionIn, db: Session = Depends(get_db)):
     account = db.get(PlatformAccount, body.account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
+    if account.is_system or account.status != "active":
+        raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用，无法创建订阅")
     sub = Subscription(platform=account.platform, **body.model_dump())
     db.add(sub)
     db.commit()
@@ -126,8 +132,13 @@ def create_subscription(body: SubscriptionIn, db: Session = Depends(get_db)):
 @router.put("/subscriptions/{sub_id}", response_model=SubscriptionOut)
 def update_subscription(sub_id: int, body: SubscriptionIn, db: Session = Depends(get_db)):
     sub = db.get(Subscription, sub_id)
-    if sub is None:
+    if sub is None or sub.deleted_at is not None:
         raise HTTPException(status_code=404, detail="订阅不存在")
+    account = db.get(PlatformAccount, body.account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    if account.is_system or account.status != "active":
+        raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用，无法绑定订阅")
     for k, v in body.model_dump().items():
         setattr(sub, k, v)
     db.commit()
@@ -138,7 +149,7 @@ def update_subscription(sub_id: int, body: SubscriptionIn, db: Session = Depends
 @router.delete("/subscriptions/{sub_id}")
 def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
     sub = db.get(Subscription, sub_id)
-    if sub is None:
+    if sub is None or sub.deleted_at is not None:
         raise HTTPException(status_code=404, detail="订阅不存在")
     # 保留素材：只停用该订阅产生的来源关系，订阅行保留为历史。
     sources = db.scalars(select(ContentSource).where(ContentSource.subscription_id == sub.id)).all()
@@ -153,7 +164,7 @@ def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
 @router.post("/subscriptions/{sub_id}/sync")
 async def trigger_sync(sub_id: int, db: Session = Depends(get_db)):
     sub = db.get(Subscription, sub_id)
-    if sub is None:
+    if sub is None or sub.deleted_at is not None:
         raise HTTPException(status_code=404, detail="订阅不存在")
     run = await run_subscription_sync(db, sub)
     return {"run_id": run.id, "status": run.status, "fetched": run.fetched, "added": run.added, "error": run.error}

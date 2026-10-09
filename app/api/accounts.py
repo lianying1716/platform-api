@@ -47,49 +47,34 @@ def _account_out(account: PlatformAccount) -> schemas.AccountOut:
 
 
 async def _run_check(db: Session, account: PlatformAccount, actor: str = "admin") -> schemas.CheckResponse:
-    adapter = _adapter_or_400(account.platform)
-    if account.credential is None:
-        account.status, account.status_message = "error", "未录入凭证"
-    else:
-        plain = decrypt_credential(account.credential.ciphertext)
-        try:
-            result = await adapter.check(plain)
-        except Exception as exc:  # 网络异常等不应把账号判死
-            account.status, account.status_message = "error", f"体检失败: {exc}"
-        else:
-            account.status = "active" if result.ok else "expired"
-            account.status_message = result.message
-            if result.ok and getattr(result, "need_refresh", False) and account.platform == "bilibili":
-                refresh = getattr(adapter, "refresh", None)
-                if refresh is not None:
-                    try:
-                        refreshed = await refresh(plain)
-                        _save_credential(db, account, refreshed)
-                        account.status_message = "在线（已自动刷新 Cookie）"
-                    except Exception as exc:  # noqa: BLE001 刷新失败不判死，留待人工重登
-                        account.status_message = f"在线，但 Cookie 自动刷新失败: {exc}"
-            if result.external_id:
-                conflict = db.scalar(
-                    select(PlatformAccount).where(
-                        PlatformAccount.platform == account.platform,
-                        PlatformAccount.external_id == result.external_id,
-                        PlatformAccount.id != account.id,
-                        PlatformAccount.is_system.is_(False),
-                    )
-                )
-                if conflict is not None:
-                    # 身份冲突不是“体检失败”，但也绝不能静默覆盖成别人的 ID。
-                    account.status, account.status_message = "error", (
-                        f"体检身份 {result.external_id} 已被账号 #{conflict.id} 占用，未自动覆盖"
-                    )
-                    account.last_checked_at = datetime.utcnow()
-                    _audit(db, account.id, "check", account.status_message, actor)
-                    db.commit()
-                    raise HTTPException(status_code=409, detail=account.status_message)
-                account.external_id = result.external_id
-            if result.display_name and not account.display_name:
-                account.display_name = result.display_name
-    account.last_checked_at = datetime.utcnow()
+    if account.status == "deleted":
+        raise HTTPException(status_code=409, detail="账号已停用，不能体检；请重新登录或恢复账号")
+    _adapter_or_400(account.platform)
+    before = account.external_id
+    from app.services.account_health import check_account
+
+    plain_before = decrypt_credential(account.credential.ciphertext) if account.credential else {}
+    await check_account(account)
+    if account.external_id and account.external_id != before:
+        conflict = db.scalar(
+            select(PlatformAccount).where(
+                PlatformAccount.platform == account.platform,
+                PlatformAccount.external_id == account.external_id,
+                PlatformAccount.id != account.id,
+                PlatformAccount.is_system.is_(False),
+            )
+        )
+        if conflict is not None:
+            account.external_id = before
+            if account.credential is not None and plain_before:
+                account.credential.ciphertext = encrypt_credential(plain_before)
+            account.status, account.status_message = "error", (
+                f"体检身份已被账号 #{conflict.id} 占用，未自动覆盖"
+            )
+            account.last_checked_at = datetime.utcnow()
+            _audit(db, account.id, "check", account.status_message, actor)
+            db.commit()
+            raise HTTPException(status_code=409, detail=account.status_message)
     _audit(db, account.id, "check", account.status_message, actor)
     db.commit()
     return schemas.CheckResponse(ok=account.status == "active", status=account.status, message=account.status_message)

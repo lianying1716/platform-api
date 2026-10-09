@@ -184,7 +184,7 @@ def _content_cookie(db: Session, content: ContentItem) -> str:
     from app.services.crawl_service import _account_cookie
 
     account = db.get(PlatformAccount, content.account_id)
-    if account is None or account.is_system:
+    if account is None or account.is_system or account.status != "active":
         return ""
     return _account_cookie(account)
 

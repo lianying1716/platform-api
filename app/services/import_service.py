@@ -44,6 +44,8 @@ async def import_wechat_article(
     """导入单篇公众号文章，返回 (MediaAsset, 是否新建)。幂等：同 external_id 复用。"""
     item = await article_import.fetch_article(url)
     owner = db.get(PlatformAccount, account_id) if account_id is not None else None
+    if owner is not None and (owner.is_system or owner.status == "deleted"):
+        raise ValueError("指定账号已停用、系统账号或不可用")
     if owner is None:
         owner = _system_owner(db, "wechat_mp")
     owner_id = owner.id

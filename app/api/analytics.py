@@ -40,7 +40,10 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
 
     accounts_total = (
         db.scalar(
-            select(func.count(PlatformAccount.id)).where(PlatformAccount.is_system.is_(False))
+            select(func.count(PlatformAccount.id)).where(
+                PlatformAccount.is_system.is_(False),
+                *([PlatformAccount.id == account_id] if account_id is not None else []),
+            )
         )
         or 0
     )
@@ -49,6 +52,7 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
             select(func.count(PlatformAccount.id)).where(
                 PlatformAccount.is_system.is_(False),
                 PlatformAccount.status.in_(("expired", "error")),
+                *([PlatformAccount.id == account_id] if account_id is not None else []),
             )
         )
         or 0

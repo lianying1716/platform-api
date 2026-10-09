@@ -41,9 +41,13 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     db.commit()
     db.refresh(run)
 
+    if subscription.deleted_at is not None:
+        return _finish(db, run, "error", error="订阅已删除，拒绝同步")
     account = db.get(PlatformAccount, subscription.account_id)
     if account is None or account.credential is None:
         return _finish(db, run, "error", error="账号不存在或未录入凭证")
+    if account.status != "active":
+        return _finish(db, run, "error", error=f"账号已停用或不可用（status={account.status}）")
 
     adapter = get_adapter(subscription.platform)
     fetch = getattr(adapter, "fetch_source", None)

@@ -21,7 +21,7 @@ def _setup(session, platform="douyin"):
     session.add(root)
     session.commit()
     c = ContentItem(
-        account_id=1,
+        account_id=acc.id,
         platform=platform, external_id="123", title="t",
         url=f"https://www.douyin.com/video/123", author_name="a", content_type="video",
     )

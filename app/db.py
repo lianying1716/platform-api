@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
@@ -11,6 +11,23 @@ class Base(DeclarativeBase):
 
 
 engine = create_engine(settings.resolved_database_url)
+
+
+def enable_sqlite_foreign_keys(target_engine) -> None:
+    """SQLite 默认不启用外键；挂 connect 钩子，让本地/测试与 PG 行为一致。"""
+    if target_engine.dialect.name != "sqlite":
+        return
+
+    @event.listens_for(target_engine, "connect")
+    def _enable(dbapi_connection, _record):  # pragma: no cover - 连接钩子
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
+enable_sqlite_foreign_keys(engine)
+
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
