@@ -13,10 +13,12 @@ case "${1:-serve}" in
     uv run playwright install chromium
     ;;
   serve)
-    uv run uvicorn app.main:app --host "${PLATFORM_HOST:-127.0.0.1}" --port "${PLATFORM_PORT:-9100}"
+    # 带上 browser extra：抖音/小红书扫码需要 playwright；`uv run` 默认只同步基础依赖，
+    # 不带 extra 会漏装 playwright，表现为扫码时报「需要安装 Playwright」。
+    uv run --extra browser uvicorn app.main:app --host "${PLATFORM_HOST:-127.0.0.1}" --port "${PLATFORM_PORT:-9100}"
     ;;
   worker)
-    uv run python -m app.workers.runner
+    uv run --extra browser python -m app.workers.runner
     ;;
   web)
     # 前端在本机磁盘构建，产物拷回 app/static
