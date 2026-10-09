@@ -1,10 +1,12 @@
 # 账号长期稳定性 与 多账号 设计
 
-> 日期：2026-10-09 · 状态：**待实施；已过对抗性审查**（本文是后续开发的唯一设计依据）
+> 日期：2026-10-09 · 状态：**待实施；已过对抗性审查；多账号产品决策已拍板**（本文是后续开发的唯一设计依据）
 > 来源：对 `bili-sync`（B站）与 `dysync.net`/抖小云（抖音）的源码对照调研 + 本项目代码实测。
 > 前置阅读：`docs/license-and-usage-compliance.md`（上游许可）。
 > 审查：2026-10-09 经事实核查、数据模型攻击、改造路线攻击三轮子智能体审查；结论已并入本文。
 > **阶段 0 未完成前，不得进入阶段 2；已发布的 Alembic revision 不得回改。**
+> **已拍板：同内容跨账号 = 独立素材；未指定账号 = 轮询 + 随机打散，不能总用同一个；
+> 账号/订阅变动不自动删除素材，素材只允许用户手动删除或外部 Agent 二次确认删除。**
 
 ---
 
@@ -159,11 +161,13 @@ account = db.scalar(select(PlatformAccount).where(
 
 > 注：采集是**平台级**操作（关键词搜索与账号关系不大），所以这不是数据错误；但"隐式挑一个账号"应改成**显式**（可选指定，未指定时按"最近可用"而非"id 最小"）。
 
-**已确认的产品意图（当前模型）**：内容去重键是 `(platform, external_id)`，**不含账号**——同一视频被两个账号采到视为同一条内容，账号差异由归属关系表达，素材下载/转写/加工按内容幂等，不做账号级副本。
+**已拍板的产品模型**：账号是素材所有权边界。同一视频被两个账号采集时，产生**两条独立素材**，
+各自下载、转写、分析、加工；同一账号内由不同订阅看到同一视频，仍合并为该账号的一条内容，
+但保留多条来源记录。去重键因此是 `(platform, external_id, account_id)`，不是全局唯一。
 
-> **注意：这不是现状保证**。数据库当前没有 `(platform, external_id)` 唯一约束（只有非唯一索引），
-> 去重完全依赖应用层 `SELECT` 后 `INSERT`。并发同步/采集会插入重复内容（详见阶段 0 R1）。
-> 在阶段 0 补齐唯一约束前，不得声称“内容全局唯一”。
+> **注意：当前数据库没有 `account_id` 维度**。`content_item` 只有一个全局 `source_id`，
+> 去重又只靠应用层 `SELECT`；同一视频被 A/B 采集时会塌成一条。阶段 0 必须先加账号维度，
+> 再谈素材隔离。
 
 ### 3.3 修正方案
 
@@ -172,7 +176,7 @@ account = db.scalar(select(PlatformAccount).where(
 | A：静默覆盖 | `qr_login_poll` **只允许**在 `poll.external_id` 非空、且与现有账号 `external_id` 精确一致时更新该账号；身份为空或匹配不到时一律新建或明确拒绝。**删除“现有 external_id 为空就复用”分支**——它会把“新账号”误判成“旧账号回填”，重新制造覆盖缺陷。 |
 | B：加不进账号 | 先对每个平台做“稳定身份可获取性实测”；能拿到的必须在登录/体检后回填（抖音已有 `sec_uid`/`uid` 与 `sid_tt` 兜底，小红书当前 `check()` 已返回 `user_id`，但扫码路径尚未调用 `check()`）。拿不到的**拒绝建号并提示改用可识别凭证**，不承诺“所有平台都必然拿得到”。 |
 | C：手动不去重 | `create_account` 按 `(platform, external_id)` 查重：命中**更新**该账号凭证，未命中才新建。 |
-| D：采集不绑账号 | `crawl_task` 加可选 `account_id`；未指定时取“最近体检在线”的账号，并在 `crawl_run` 记录实际用了哪个账号；`crawl_run`/采集内容写入时同步建立账号归属。 |
+| D：采集不绑账号 | `crawl_task` 加可选 `account_id`；未指定时在“该平台所有可用户”中按 `last_used_at NULLS FIRST + 随机` 选取，保证轮询不总用同一个；一次 run 固定一个账号并写入 `crawl_run.account_id`。 |
 
 **核心原则**：**账号身份必须由平台返回的稳定 ID 决定，绝不靠"该平台只有一个账号"或"旧账号没有 ID"来猜。**
 
@@ -202,11 +206,10 @@ account = db.scalar(select(PlatformAccount).where(
 
 ### 4.2 实测复现的三个隔离缺陷
 
-**缺陷 E：同一视频被多账号收藏时，只有第一条归属被记录**
+**缺陷 E：同一视频被多账号收藏时，后采集的账号素材被吞掉**
 
-产品意图是去重键 `(platform, external_id)` 不含账号——同一视频应是同一条内容；
-但当前数据库只有普通索引，唯一性靠应用层 `SELECT` 保证（并发会破），且 `content_item`
-只有一个 `source_id`，于是：
+已拍板“账号级独立素材”，但当前 `content_item` 没有 `account_id`，去重键只有
+`(platform, external_id)`，且唯一性靠应用层 `SELECT` 保证（并发会破），于是：
 
 ```
 B 同步同一视频 V1 时：
@@ -214,8 +217,8 @@ B 同步同一视频 V1 时：
   → B 的订阅关系【不会】被记录；内容只归属 A 的订阅
 ```
 
-**后果**：B 的"我收藏了它"丢失，前端按 B 过滤时看不到这条。**目标模型需要内容全局唯一 + 归属多对多；
-但唯一约束必须先补齐，归属必须拆成可独立维护的关系。**
+**后果**：B 的素材、下载、转写、分析全部丢失，前端按 B 过滤时看不到这条。这是与已拍板
+产品模型正面冲突的缺陷，不是“归属没记全”这么轻。
 
 **缺陷 F：删账号后内容变孤儿**
 
@@ -239,63 +242,65 @@ B 同步同一视频 V1 时：
 **对的（非缺陷）**：`creator_profile` 按 `(platform, author_id)` 全局唯一——博主资料与"谁关注了他"无关，
 两个账号关注同一博主共享一份资料是**正确的**。
 
-### 4.3 目标模型：一张内容实体 + 订阅粒度归属
+### 4.3 目标模型：账号级独立素材 + 账号内来源合并
 
 ```
-platform_account ──1:N──> subscription ─────────────┐
-                                                    │ 同步产生
-                                                    ▼
-content_item(platform, external_id)  ←──── content_account_link ────> subscription
-     UNIQUE(platform, external_id)      subscription 类按订阅粒度唯一
+platform_account ──1:N──> subscription
+      │ 1:N                     │
+      │                         │ 产生来源记录
+      │                         ▼
+      │             content_source(content_id, subscription_id, ...)
+      │
+      ▼
+content_item(platform, external_id, account_id)
+   UNIQUE(platform, external_id, account_id)
+      │ 1:1
+      ▼
+media_asset / transcript / analysis_result / video_understanding
 ```
 
-- `content_item`：**目标**是 `(platform, external_id)` 数据库唯一，**不加** `account_id`。
-  这是待实施的目标，不是现状；阶段 0 先补约束并清理历史重复。
-- `content_account_link`：作为内容归属关系表，保留 `account_id` 冗余列用于快速过滤；
-  `account_id` 允许 NULL，表示“系统/平台共享、暂未归属到具体账号”。账号筛选
-  `account_id=X` 只返回该账号的 link；“全部/无账号”视图才包含 NULL 归属。
-  订阅来源按**订阅粒度**唯一：部分唯一索引 `(content_id, subscription_id)
-  WHERE subscription_id IS NOT NULL`；用 `(content_id, account_id)` 做唯一键会丢掉
-  “同一账号经两条不同订阅收到同一内容”的事实。
-- `subscription`：不变（已是账号级）。`source_type` 提供 favorite / creator / collection / like 语义。
-- **采集与导入内容也必须进入归属模型**：不能用“没有 subscription 就没有归属”让它们从账号视图消失。
-  `content_account_link.subscription_id` 允许 NULL；这类内容增加非空 `source_ref`
-  （订阅类为空，crawl 用 `crawl_task.id`，import 用导入批次/来源键），用
-  `account_id + link_kind + source_ref` 表达归属。非订阅唯一索引为
-  `(content_id, link_kind, COALESCE(account_id, 0), source_ref) WHERE subscription_id IS NULL`；
-  PG 与 SQLite 都按“部分唯一索引”实现，不能依赖 `UNIQUE` 对 NULL 的宽松语义。
-  `source_ref` 为非空字符串（订阅类写空串）；`link_kind` 至少区分
-  `subscription` / `crawl` / `import`。这样同一篇内容既可由 A、B 各建一条归属，
-  又不会因 `account_id` 为 NULL 而重复。
-- `link` 默认是 **last-seen 模型**：必须有 `first_seen_at` / `last_seen_at` / `active`，
-  同步完成后对账，否则用户取消收藏后永远仍被算作归属。
+- `content_item`：新增 **`account_id NOT NULL`** FK；唯一约束为
+  `UNIQUE(platform, external_id, account_id)`。内容本身带账号所有权，账号筛选不再依赖 join。
+  历史迁移若出现无法可靠归属的旧行，不放开 schema 约束，而是为每个平台创建一个
+  `is_system=true` 的隐藏“历史占位账号”承接；新写入仍必须使用真实账号。
+- 同一账号内：不同订阅（收藏夹 / 关注博主 / 合集 / like）收到同一视频时，`content_item` 仍只一条；
+  新建 `content_source(content_id, subscription_id NULL, source_kind, source_ref,
+  first_seen_at, last_seen_at, active)` 记录全部来源，订阅粒度唯一。
+- 跨账号：A、B 各有一条 `content_item`，各自 `media_asset`、转录、分析、加工和下载，
+  真正“独立素材”。下载/加工幂等键必须包含 `account_id`，不能只按 `content_id`。
+- `creator_profile` 保持全局唯一：博主资料属于平台公开信息，与账号所有权无关，
+  两份独立素材可共享同一份博主资料。
+- `crawl` / `import` 来源：同样落到 `content_item.account_id`；
+  关键词采集使用本次 run 选定的账号，文章导入必须有明确账号或显式“系统归属”。
 
-**删除语义矩阵（必须在实现中落成 FK 行为）**：
+**删除与保留语义（按产品决定，不使用 CASCADE 自动删素材）**：
 
-| 操作 | `content_account_link` | `content_item` |
+| 操作 | `content_item` / 素材 | `content_source` |
 |---|---|---|
-| 删订阅 | 删除该订阅的 link；若同账号还有其它订阅 link，账号归属保留 | 保留 |
-| 删账号 | 删除该账号全部 link；不清除 `account_id IS NULL` 的系统/共享 link | 保留；无任何 link 时进入“无归属”清理策略 |
-| 删内容 | CASCADE 删除 link 及内容从属数据 | 删除 |
+| 取消收藏 | **保留素材**，前端不删除 | 对应来源标记 `active=false`，保留历史 |
+| 删订阅 | **保留素材**，前端不删除 | 保留来源历史，标记失效 |
+| 删账号 | **保留素材**；账号软删除，不物理 CASCADE 素材 | 保留，归属仍指向已停用账号 |
+| 手动删除素材 | 仅在用户明确操作时删除 | 随内容删除 |
+| 外部 Agent 删除 | 必须二次确认，记录审计日志后才删除 | 随内容删除 |
 
-**计数口径**：账号视图按 link 计数（同一内容被同账号两订阅收到可计两次需单独定义）；
-全局视图按 `content_item` 去重计数。看板 API 必须显式区分，不能用一次 join 同时充当两种口径。
+**计数口径**：账号视图按 `content_item.account_id` 直接计数；全局视图按
+`(platform, external_id)` 去重计数。同一视频被 A/B 收藏时，全局算 1 条内容、账号视图算 2 份素材。
 
 ---
 
 ## 5. 完整改造清单
 
-目标：**多账号"加得进、分得开、删得净、长期稳"**。分 7 个阶段（阶段 0 为前置门禁），
+目标：**多账号“加得进、分得开、删得可控、长期稳”**。分 7 个阶段（阶段 0 为前置门禁），
 每个阶段只有在“依赖已完成 + 迁移验收在真实 PG 上执行过”后才算独立验收。
 缺陷编号沿用上文（A/B/C/D 见 §3.3，E/F/G 见 §4）；对抗性审查整改项标为 R1–R3。
 
-### 阶段 0：唯一性与迁移地基（P0 门禁，先于一切）
+### 阶段 0：账号级唯一性与迁移地基（P0 门禁，先于一切）
 
-> 不做这一步，阶段 2 的 link 模型建立在假前提上，必须停止。
+> 不做这一步，账号级素材模型没有数据库唯一性托底，必须停止。
 
 | # | 改动 | 涉及文件 | 验收 |
 |---|---|---|---|
-| R1 | 清理 `content_item` 历史重复 `(platform, external_id)`，新增数据库唯一约束；入库改 DB upsert（`ON CONFLICT DO NOTHING` + 回查或行锁），不再依赖裸 SELECT | `app/models.py`、新迁移 `0012`、`sync_service.py`、`crawl_service.py`、`import_service.py` | 迁移在真实 PG 上先清重再建约束；并发插入同内容只留一条 |
+| R1 | 给 `content_item` 加 `account_id`（历史行按 `source_kind='subscription'` 回填；无法可靠归属的按平台挂到隐藏 `is_system=true` 历史占位账号，不硬猜、不留空）；新增唯一约束 `(platform, external_id, account_id)`；入库改 DB upsert，不再依赖裸 SELECT | `app/models.py`、新迁移 `0012`、三条写入路径 | 迁移在真实 PG 上先分类回填再建约束；A/B 采集同视频得到两条内容；历史占位账号不出现在普通账号列表 |
 | R2 | Alembic 迁移集成测试：真实 PG 上跑 `upgrade head` → 灌旧数据 → 断言回填 → `downgrade`；测试不能只靠 `create_all` | `tests/`、CI | 测试与生产同路径执行迁移 |
 | R3 | 迁移安全策略：全表回填/加约束说明锁影响，分批 + `lock_timeout`（或明确维护窗口） | `alembic/versions/` | 有真实数据规模的执行记录 |
 
@@ -308,44 +313,46 @@ content_item(platform, external_id)  ←──── content_account_link ──
 | 1.1 | 修**缺陷 A**：`qr_login_poll` 只允许 `poll.external_id` 非空且与现有账号精确一致时更新；**删除“现有 external_id 为空就复用”**。身份为空时绝不匹配现有账号；是否允许首个无身份账号由产品决定，第二个起必须拒绝并提示 | `app/api/accounts.py` | 加 B 后 A 完好、B 独立成行；空身份不会命中旧账号 |
 | 1.2 | 修**缺陷 B**：先做各平台“稳定身份可获取性实测”，能拿到的登录后回填；拿不到的明确拒绝建号并提示 | `app/modules/{douyin,xhs,crawl_platforms,wechat_mp}.py`、`app/api/accounts.py` | 同平台可连续加 3 个可识别账号；不可识别平台有明确错误 |
 | 1.3 | 修**缺陷 C**：`create_account` 按 `(platform, external_id)` 查重，命中**更新**该账号凭证 | `app/api/accounts.py` | 重复录入同一号 = 更新而非新增 |
-| 1.4 | 账号删除前检查：有订阅/内容时**明确提示**而非静默连删；定义“仅该账号收过该内容”的删除结果 | `app/api/accounts.py` | 删账号有明确提示；仅 A 收过的内容行为有断言 |
+| 1.4 | 账号删除前检查：有订阅/内容时**明确提示**；按产品决定默认软删除账号，不物理删素材 | `app/api/accounts.py` | 删账号有提示，素材仍保留 |
 | 1.5 | 体检/扫码拿到的稳定身份与库中不一致时显式处理：更新或标记冲突，不能只回填空值 | `app/api/accounts.py` | 脏 `external_id` 有修正路径 |
 | 1.6 | 补测试：`tests/test_multi_account.py`（A 不覆盖、B 可累加、C 去重、脏 ID 修正） | `tests/` | 四个场景全绿 |
 
-### 阶段 2：内容归属多对多（P0，隔离核心）
+### 阶段 2：账号级独立素材（P0，隔离核心）
 
-> 不解此阶段，加了账号也"分不开"。
-
-| # | 改动 | 涉及文件 | 验收 |
-|---|---|---|---|
-| 2.1 | 新增表 `content_account_link(id, content_id, account_id NULL, subscription_id NULL, link_kind, source_ref, first_seen_at, last_seen_at, active)`；订阅类部分唯一索引 `(content_id, subscription_id) WHERE subscription_id IS NOT NULL`，非订阅类部分唯一索引 `(content_id, link_kind, COALESCE(account_id, 0), source_ref) WHERE subscription_id IS NULL`；`account_id` 索引；FK/级联按 §4.3 矩阵 | `app/models.py`、新迁移 `0013_*` | 迁移可 upgrade/downgrade；NULL 不会绕过去重 |
-| 2.2 | 订阅、**关键词采集、文章导入**三条内容写入路径都写 link；内容已存在也补写归属（修缺陷 E、D4） | `sync_service.py`、`crawl_service.py`、`import_service.py` | 三种来源在账号视图均可见 |
-| 2.3 | 回填历史数据：**仅** `source_kind='subscription' AND source_id IS NOT NULL` 走 `source_id → subscription.account_id`；历史 crawl/import 先回填为 `account_id IS NULL` 的共享 link，禁止在拿不到可靠归属时硬猜账号，禁止无条件 join | 迁移 `0013` | 回填前按 `source_kind` 分类断言；无跨 ID 空间错配；历史采集/导入不消失 |
-| 2.4 | 内容查询加账号维度：过滤用 `EXISTS`，聚合用 `count(DISTINCT content_id)`，避免 join 放大；账号视图与全局视图计数口径分离；`account_id IS NULL` 只进“全部/共享”视图 | `app/api/assets.py`、`analytics.py` | 不重复计数、分页正确；共享内容有明确入口 |
-| 2.5 | `list_assets` 增加 `account_id` 参数；看板增加账号维度；保持旧参数向后兼容，并同步前端 TS 类型与 MCP/外部调用说明 | `app/api/assets.py`、`app/api/analytics.py`、`web/src/pages/` | API 契约与前端同批更新 |
-| 2.6 | 补测试：跨账号同视频 → 多条归属；同账号多订阅不塌行；crawl/import 可见；按 account 过滤互不串 | `tests/test_content_multi_account.py` | 全绿 |
-
-> **交付边界**：阶段 2 建表（0013）与回填必须一次交付；阶段 3 的 `source_id` 收敛另起
-> 0014，不能回改已发布的 0013。生产启动是 `alembic upgrade head`，已应用过的 revision 不会再跑。
-
-### 阶段 3：孤儿与级联（P1）
-
-> 保证"删得净"。
+> 不解此阶段，加了账号也“分不开”，B 的素材会被 A 吞掉。
 
 | # | 改动 | 涉及文件 | 验收 |
 |---|---|---|---|
-| 3.1 | 修**缺陷 F**：`content_item.source_id` 语义收敛（改真 FK 到 `subscription`，或明确标记为"仅溯源"）；删账号时由 link 决定归属，**仅 A 收过的内容也要有明确结果** | `app/models.py`、迁移 `0014_*` | 删 A 后：B 也收过则归 B；仅 A 收过则按策略保留/标记/清理并有断言 |
-| 3.2 | 统一 SQLite `PRAGMA foreign_keys=ON`（消除本地/生产行为差异） | `app/db.py` | 测试能验出 CASCADE |
-| 3.3 | 删账号/删订阅的收尾策略：无 link 的内容 → 标记或转交，**不留裸整数孤儿**；执行 §4.3 删除矩阵 | `app/api/accounts.py`、`app/services/` | 无孤儿；订阅级删除不误伤其它归属 |
+| 2.1 | 新增 `content_source(content_id, subscription_id NULL, source_kind, source_ref, first_seen_at, last_seen_at, active)`；订阅粒度唯一 `(content_id, subscription_id) WHERE subscription_id IS NOT NULL`；`content_item.account_id` 成为素材所有权主键的一部分 | `app/models.py`、新迁移 `0013_*` | 迁移可 upgrade/downgrade |
+| 2.2 | 订阅、**关键词采集、文章导入**三条写入路径都按 `(platform, external_id, account_id)` upsert；内容已存在时补写/更新 `content_source`，不吞掉别账号素材 | `sync_service.py`、`crawl_service.py`、`import_service.py` | A/B 同视频 → 两条 content、各自素材；同账号两订阅 → 一条 content + 两条 source |
+| 2.3 | 回填历史：仅 `source_kind='subscription' AND source_id IS NOT NULL` 能可靠映射账号；无法可靠映射的历史 crawl/import 挂到该平台隐藏历史占位账号，禁止硬猜；回填前后按 `source_kind` 分类断言 | 迁移 `0013` | 无跨 ID 空间错配；历史内容不消失且不污染真实账号视图 |
+| 2.4 | 下载、转录、分析、加工的幂等键改为 `(account_id, content_id)`；防止 A/B 独立素材共用同一媒体文件或被错误去重 | `workers/handlers.py`、`services/` | A/B 各自下载、加工互不覆盖 |
+| 2.5 | 内容查询与看板直接按 `content_item.account_id` 过滤；账号视图按 content 计数，全局视图按 `(platform, external_id)` 去重计数；保持旧参数向后兼容并同步前端 TS/MCP/外部调用说明 | `app/api/assets.py`、`app/api/analytics.py`、`web/src/pages/` | 不重复计数、分页正确、API 契约同批更新 |
+| 2.6 | 补测试：A/B 同视频 → 两份独立素材和媒体；同账号多订阅不塌行；crawl/import 可见；按 account 过滤互不串 | `tests/test_content_multi_account.py` | 全绿 |
+
+> **交付边界**：阶段 2 的 `account_id` 唯一约束、`content_source` 和回填必须一次交付；
+> 阶段 3 的保留/删除策略另起 0014，不能回改已发布的 0013。
+
+### 阶段 3：保留策略与删除审计（P1）
+
+> 保证“订阅/账号变动不丢素材；删除必须显式且有审计”。
+
+| # | 改动 | 涉及文件 | 验收 |
+|---|---|---|---|
+| 3.1 | 修**缺陷 F**：`content_item.source_id` / `content_source` 只作溯源；账号删除改为**软删除**（`status=deleted`、保留凭证密文或按策略清除），素材与 `content_item` 不物理级联 | `app/models.py`、迁移 `0014_*`、`app/api/accounts.py` | 删账号后素材仍在，前端不消失 |
+| 3.2 | 统一 SQLite `PRAGMA foreign_keys=ON`，并补测试确认删除语义是“保留”而非 CASCADE | `app/db.py` | 测试能验出保留行为 |
+| 3.3 | 取消收藏/删订阅：`content_source.active=false`，素材与内容保留；前端默认仍展示，可标记“来源已失效”但不删除 | `app/services/sync_service.py`、前端 | 取消收藏后素材仍可查 |
+| 3.4 | 素材删除唯一入口：用户手动删除；外部 Agent 删除必须 `confirm=true` + 记录 `deletion_audit`（谁、何时、原因、content_id/account_id） | `app/api/assets.py`、`app/api/skills.py`、迁移 `0014_*` | 无审计不删除；确认后才删 |
+| 3.5 | 账号列表/筛选默认排除 `status=deleted` 与 `is_system=true`；提供“已删除账号/历史占位素材”归档视图 | `app/api/accounts.py`、前端 | 软删账号与历史占位不污染日常视图，但素材可追溯 |
 
 ### 阶段 4：采集与任务带账号（P1，修缺陷 D）
 
 | # | 改动 | 涉及文件 | 验收 |
 |---|---|---|---|
 | 4.1 | `crawl_task` 加可选 `account_id`（FK，SET NULL） | `app/models.py`、迁移 `0015_*` | 迁移 OK |
-| 4.2 | `_platform_cookie()` 改为：优先任务指定账号 → 否则"最近体检在线"（非 id 最小），并在 `crawl_run` 记录实际账号；与阶段 2 的 crawl link 写入一致 | `app/services/crawl_service.py` | 指定账号生效，采集内容归属一致 |
+| 4.2 | `_platform_cookie()` 改为：优先任务指定账号 → 否则对本平台可用账号按 `last_crawl_used_at NULLS FIRST + random()` 轮询，**不得固定 id 最小账号**；一次 run 固定账号并写 `crawl_run.account_id` + 更新该账号 `last_crawl_used_at` | `app/models.py`、`app/services/crawl_service.py` | 连续 N 次未指定任务覆盖所有健康账号；不会只用同一个 |
 | 4.3 | 采集页支持选账号 | `web/src/pages/Crawl.vue` | UI 可选 |
-| 4.4 | 补测试：任务指定账号 / 未指定时的选择策略 | `tests/test_crawl_multi_account.py` | 全绿 |
+| 4.4 | 补测试：任务指定账号；未指定时多轮轮询覆盖所有健康账号；单账号平台退化行为 | `tests/test_crawl_multi_account.py` | 全绿 |
 
 ### 阶段 5：前端账号维度（P1）
 
@@ -368,7 +375,7 @@ content_item(platform, external_id)  ←──── content_account_link ──
 ### 依赖与顺序
 
 ```
-阶段0(唯一性/迁移地基) ──> 阶段1(能加) ──> 阶段2(分得开) ──> 阶段3(删得净)
+阶段0(唯一性/迁移地基) ──> 阶段1(能加) ──> 阶段2(分得开) ──> 阶段3(保留与删除审计)
                                                    │
                                                    ├──> 阶段4(采集显式账号)
                                                    └──> 阶段5(前端维度)
@@ -377,6 +384,7 @@ content_item(platform, external_id)  ←──── content_account_link ──
 
 **最小可靠闭环 = 阶段 0 + 阶段 1 + 阶段 2**：先有数据库唯一性，才能可靠地做到
 “能加第二个账号，且两个账号的内容分得开、筛得出”。阶段 2 与阶段 3 不得共用同一个迁移号。
+阶段 3 的目标不是“删得净”，而是“该留的绝不误删、该删的必须显式且有审计”。
 
 ---
 
@@ -387,11 +395,11 @@ content_item(platform, external_id)  ←──── content_account_link ──
 
 | 版本 | 内容 | 达成状态 | 依赖 |
 |---|---|---|---|
-| **v0.1 · 地基稳** | 阶段 0（唯一约束 + 真实 PG 迁移测试 + 锁策略） | 并发不再产生重复内容；迁移可验证 | — |
+| **v0.1 · 地基稳** | 阶段 0（账号级唯一约束 + 真实 PG 迁移测试 + 锁策略） | 并发下每账号一条内容；A/B 不互相吞素材 | — |
 | **v0.2 · 能加号** | 阶段 1（身份与去重 A/B/C + 脏 ID 修正 + 测试） | 同平台可加多个可识别账号，互不覆盖 | v0.1 |
-| **v0.3 · 分得开** | 阶段 2（link + 三来源写入 + 分来源回填 + API/看板账号维度） | 每个账号的内容/收藏夹可独立查看与筛选；采集/导入不消失 | v0.2 |
-| **v0.4 · 删得净** | 阶段 3（孤儿治理 + 删除矩阵 + SQLite FK 一致） | 删账号/删订阅语义明确，不留孤儿 | v0.3 |
-| **v0.5 · 采得准** | 阶段 4（采集任务显式账号 + 运行记录一致） | 可指定账号采集，未指定时策略可预期 | v0.3 |
+| **v0.3 · 分得开** | 阶段 2（账号级 content + `content_source` + 三来源写入 + 独立媒体/加工） | 每个账号拥有独立素材；同账号多订阅不塌行 | v0.2 |
+| **v0.4 · 删得稳** | 阶段 3（账号软删除 + 素材保留 + 删除审计） | 订阅/账号变动不误删素材；删除需显式确认 | v0.3 |
+| **v0.5 · 采得准** | 阶段 4（采集任务显式账号 + 轮询打散 + 运行记录一致） | 可指定账号采集；未指定时公平轮换，不只用同一个 | v0.3 |
 | **v0.6 · 看得到** | 阶段 5（前端账号筛选、账号卡片区分、API 兼容） | 全部前端页面支持账号维度 | v0.3 |
 | **v0.7 · 长期稳** | 阶段 6（B站自动刷新 + 抖音守恒锁死） | B站可无人值守续期；抖音行为被测试锁死 | 独立 |
 
@@ -411,17 +419,19 @@ content_item(platform, external_id)  ←──── content_account_link ──
 3. **不做持久化浏览器 profile**（多账号会争用/串号，且两个上游都证明不需要）。
 4. **抖音保持守恒**——任何"主动变更设备身份"的改动都必须先回到本文档论证。
 5. 上游代码/算法照抄须保留来源署名（B站刷新算法源自 bili-sync，MIT）。
-6. **目标模型是内容全局唯一、归属多对多**：阶段 0 补齐数据库唯一约束后，`content_item`
-   不再新增 `account_id` 列；账号归属一律经 `content_account_link` 表达。任何“给内容直接挂
-   一个 account_id”的改动都是错的（同一条视频可被多个号收）。
+6. **素材所有权按账号隔离**：`content_item.account_id NOT NULL`，唯一键
+   `(platform, external_id, account_id)`。同一视频被 A/B 采集 = 两条独立内容、两套媒体与加工；
+   同一账号内同一视频只一条内容，来源差异记录在 `content_source`。
 7. **账号身份只认平台返回的稳定 ID**：禁止用"该平台只有一个账号"之类启发式来猜归属。
 8. **每账号数据必须可独立查询**：新增任何内容/任务类 API 都要考虑 `account_id` 过滤维度。
-9. **数据库唯一性必须由数据库保证**：`content_item(platform, external_id)` 在阶段 0 补唯一约束前，
-   任何 link/回填/验收都不得假定内容全局唯一。
+9. **数据库唯一性必须由数据库保证**：`(platform, external_id, account_id)` 在阶段 0 补唯一约束前，
+   任何回填/验收都不得假定账号级内容唯一。
 10. **已发布的 Alembic revision 永不回改**：阶段 2/3/4 各用独立 revision，生产只按
     `alembic upgrade head` 前进；回滚路径必须随迁移一起交付。
-11. **归属必须覆盖三种来源**：订阅、关键词采集、文章导入都必须在写入时建立归属；
-    任何让内容在账号视图静默消失的 JOIN 都是缺陷。
+11. **素材删除只允许显式触发**：取消收藏、删订阅、删账号都只停用来源/软删除账号，不删素材；
+    手动删除或外部 Agent 二次确认删除除外，且必须留审计。
+12. **未指定账号的采集必须公平轮换**：按最近使用时间 + 随机打散，连续运行不得固定使用同一个账号；
+    单账号平台才允许退化为唯一选择。
 
 ---
 
@@ -433,11 +443,13 @@ content_item(platform, external_id)  ←──── content_account_link ──
 | 数据模型攻击 | 发现 D1–D6：唯一约束缺失、link 唯一键丢订阅、回填跨 ID 空间、采集/导入不写 link、脏 `external_id` 不修正、删除语义未定义；T1–T3：取消收藏不可表达、收藏/关注语义拉平、join 计数放大 |
 | 改造路线攻击 | 发现阶段 2/3 共用 0012 无法二次执行、迁移测试被 `create_all` 绕过、锁表未评估、计数口径与对外 API 兼容缺失、1.1 仍会覆盖空 ID 账号 |
 
-**仍需用户拍板的产品问题（不阻塞阶段 0/1，但阻塞阶段 2 的最终 schema）**：
+**产品决策（2026-10-09 已拍板，覆盖审查时的待确认项）**：
 
-1. 同一条视频被两个账号收藏：是“一条内容 + 两条归属”（当前文档选择，下载/加工只做一次），
-   还是“每个账号各一份独立素材”（需要把下载/加工也纳入账号维度）？
-2. 关键词采集内容是否属于某个账号？若是，未指定账号时按“系统共享”还是按任务实际使用的账号归属？
-3. 用户取消收藏后，link 是立即失效还是保留为“曾经见过”的历史？对应前端是否展示历史归属？
+1. **独立素材**：同一视频被 A/B 采集时各生成一条 `content_item` 和一套媒体/加工产物；
+   同一账号内跨订阅收到同一视频才合并内容、保留多条 `content_source`。
+2. **未指定账号的采集**：在该平台所有可用账号中按“最久未使用优先 + 随机打散”轮询，
+   不能固定使用同一个；每次 run 固定账号并记录 `crawl_run.account_id`。
+3. **保留素材**：取消收藏、删订阅、删账号都不删除素材，前端不删除；
+   仅用户手动删除或外部 Agent 二次确认删除，且删除动作写审计日志。
 
-**审查结论**：在阶段 0 未完成、上述 3 个产品问题未确认前，禁止实施阶段 2 的 schema 定稿。
+**审查结论**：产品模型已定稿；阶段 0 完成并通过真实 PG 迁移验收后，才能进入阶段 2。
