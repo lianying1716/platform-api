@@ -313,6 +313,7 @@ interface TrackRow {
   auto_download: boolean
   interval_minutes: number
   subdir_template: string
+  storage_root_id: number | null
   min_play: number
   publish_after_days: number
   max_items: number
@@ -585,9 +586,15 @@ async function toggleFull(row: TrackRow) {
   const nextFull = row.only_new      // 当前是"只新"→ 打开全量
   row.only_new = !nextFull
   try {
-    await api.put(`/api/followed-creators/${row.id}`, {
-      sync_enabled: row.enabled, full_sync: nextFull,
-    })
+    // 按来源类型走各自的写入口：creator 用关注博主接口，收藏夹/合集用订阅接口。
+    // 之前这里硬编码 followed-creators，收藏夹/合集会 404「关注博主不存在」。
+    if (row.source_type === 'creator') {
+      await api.put(`/api/followed-creators/${row.id}`, {
+        sync_enabled: row.enabled, full_sync: nextFull,
+      })
+    } else {
+      await api.put(`/api/subscriptions/${row.id}`, subPayload(row, { only_new: !nextFull }))
+    }
   } catch (e: any) {
     row.only_new = nextFull
     ElMessage.error(e?.response?.data?.detail || '操作失败')
@@ -640,12 +647,16 @@ function openEdit(row: TrackRow) {
     account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
     title: row.title, enabled: row.enabled, auto_download: row.auto_download,
     interval_minutes: row.interval_minutes, subdir_template: row.subdir_template,
+    // PUT 是全字段覆盖：这里必须回带 storage_root_id，否则开关/全量等局部更新会
+    // 把订阅级自定义存储根静默清空（回落到账号目录）。
+    storage_root_id: row.storage_root_id ?? null,
     min_play: row.min_play, publish_after_days: row.publish_after_days,
     max_items: row.max_items, only_new: row.only_new,
     download_quality: row.download_quality, with_comments: row.with_comments,
     auto_transcribe: row.auto_transcribe, auto_analyze: row.auto_analyze,
-    // 存储以账号为准：编辑时默认继承账号目录（账号绑定在账号中心管理）
-    storage_mode: 'account', storage_root_id: null,
+    // 回显该来源已指定的存储根；未指定则继承账号目录（账号绑定在账号中心管理）。
+    storage_mode: row.storage_root_id ? 'custom' : 'account',
+    storage_root_id: row.storage_root_id ?? null,
   })
   dialog.value = true
 }

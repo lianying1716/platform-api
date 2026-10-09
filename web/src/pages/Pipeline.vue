@@ -109,7 +109,7 @@ async function retry(row: any) {
 }
 
 async function retryAll() {
-  await api.post('/api/pipeline/jobs/retry-all')
+  await api.post('/api/pipeline/jobs/retry-failed')
   ElMessage.success('已重试全部失败任务')
   await load()
 }

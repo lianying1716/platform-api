@@ -9,8 +9,14 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    host: true,
+    // 局域网 / Tailscale / 域名访问开发服时，Vite 默认会以 Host 头做白名单校验，
+    // 非 IP 的 Host 一律 403（表现为“页面能开但接口全部失败”）。开发环境全放开。
+    allowedHosts: true,
     proxy: {
       '/api': 'http://127.0.0.1:9100',
+      // 后端静态资源（如 <video src=/api/...> 之外的直链）也一并代理，避免跨端口
+      '/media': 'http://127.0.0.1:9100',
     },
   },
 })

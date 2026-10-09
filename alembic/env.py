@@ -13,7 +13,11 @@ from app.db import Base  # noqa: E402
 
 config = context.config
 # 显式传入的 sqlalchemy.url（如迁移集成测试的临时库）优先；否则用项目配置。
-if not config.get_main_option("sqlalchemy.url"):
+# 注意：alembic.ini 里默认是占位符 `driver://user:pass@localhost/dbname`，
+# 它非空但不可用。若直接采用，`alembic upgrade head` 会报 `Can't load plugin:
+# sqlalchemy.dialects:driver`——即命令行迁移永远跑不起来。这里把占位符视为“未设置”。
+_ini_url = (config.get_main_option("sqlalchemy.url") or "").strip()
+if not _ini_url or _ini_url.startswith("driver://"):
     config.set_main_option("sqlalchemy.url", settings.database_url)
 target_metadata = Base.metadata
 

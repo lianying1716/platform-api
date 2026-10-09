@@ -212,7 +212,9 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
         fetch_cache.set_cache(db, cache_key, {"items": items}, ttl_seconds=fetch_cache.TTL_FOLLOWINGS)
         db.commit()
 
-    # 已入库的 creator 订阅：按 remote_id 索引，用于判断"新增还是更新"
+    # 已入库的 creator 订阅：按 remote_id 索引，用于判断"新增还是更新"。
+    # 必须包含**软删**的行：唯一约束 (account_id, source_type, remote_id) 不看 deleted_at，
+    # 若把它排除在外，重复关注同一个博主时既建不了新行、又不会复活旧行，会永久消失。
     existing = {
         s.remote_id: s
         for s in db.scalars(
@@ -240,8 +242,12 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
                 enabled=False,
             )
             db.add(sub)
-        elif not sub.title:
-            sub.title = str(item.get("author_name") or author_id)
+        else:
+            # 之前取消关注过（软删）：平台侧仍在关注 → 复活该行（保持原同步开关为关）。
+            if sub.deleted_at is not None:
+                sub.deleted_at = None
+            if not sub.title:
+                sub.title = str(item.get("author_name") or author_id)
         # 顺带补一次标题（昵称可能改过）
         if item.get("author_name"):
             sub.title = str(item["author_name"])
@@ -311,8 +317,20 @@ async def sync_now(fc_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/{fc_id}")
 def unfollow(fc_id: int, db: Session = Depends(get_db)):
-    """取消关注：删除该 creator 订阅（其已入库内容不受影响）。"""
+    """取消关注：软删该 creator 订阅，并停用其来源关系（已入库素材一律保留）。
+
+    与 `DELETE /api/subscriptions/{id}` 保持同一保留策略（设计 v0.4「删得稳」）：
+    取消关注/删订阅/删账号都只停用来源，绝不物理删除素材或内容。
+    """
+    from app.models import ContentSource
+
     sub = _get_creator_sub(fc_id, db)
-    db.delete(sub)
+    sources = db.scalars(
+        select(ContentSource).where(ContentSource.subscription_id == sub.id)
+    ).all()
+    for source in sources:
+        source.active = False
+    sub.enabled = False
+    sub.deleted_at = datetime.utcnow()
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "deactivated_sources": len(sources), "kept_contents": len(sources)}

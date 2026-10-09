@@ -205,15 +205,23 @@ def test_refresh_partial_page_keeps_existing_sync(client, session, monkeypatch):
     assert enabled == {"1001": True, "1002": True, "1003": True}
 
 
-def test_unfollow_deletes_creator_subscription(client, session, monkeypatch):
+def test_unfollow_soft_deletes_creator_subscription(client, session, monkeypatch):
+    """取消关注 = 软删（保留订阅行 + 停用来源），不物理删除；与删订阅同一保留策略。"""
     from app.modules.bilibili import BilibiliAdapter
 
     acc = _account(session)
     monkeypatch.setattr(BilibiliAdapter, "list_followings", _fake_followings([_author()]))
     client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
-    sub = session.query(Subscription).filter_by(source_type="creator").one()
-    assert client.delete(f"/api/followed-creators/{sub.id}").status_code == 200
-    assert session.query(Subscription).filter_by(source_type="creator").count() == 0
+    sub_id = session.query(Subscription).filter_by(source_type="creator").one().id
+    r = client.delete(f"/api/followed-creators/{sub_id}")
+    assert r.status_code == 200
+    session.expire_all()
+    row = session.get(Subscription, sub_id)
+    # 行仍在（保留溯源历史），但已软删且同步关闭
+    assert row is not None and row.deleted_at is not None and row.enabled is False
+    # 已不再出现在关注列表里
+    listed = client.get("/api/followed-creators").json()
+    assert all(x["id"] != sub_id for x in listed)
 
 
 # ------------------------------------------------------------------ 通用错误路径
@@ -314,3 +322,25 @@ def test_sync_marks_from_creator_avatar_in_subscriptions(client, session, monkey
 
     mine = next(s for s in client.get("/api/subscriptions").json() if s["id"] == sub.id)
     assert mine["creator_avatar"] == "http://a/1.jpg"
+
+
+def test_reimport_revives_soft_deleted_creator(client, session, monkeypatch):
+    """取消关注（软删）后平台侧仍在关注：刷新要复活该行，而不是因唯一约束永久消失。"""
+    from app.modules.bilibili import BilibiliAdapter
+
+    acc = _account(session)
+    monkeypatch.setattr(BilibiliAdapter, "list_followings", _fake_followings([_author("1001")]))
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    sub_id = session.query(Subscription).filter_by(source_type="creator").one().id
+    assert client.delete(f"/api/followed-creators/{sub_id}").status_code == 200
+    session.expire_all()
+    assert session.get(Subscription, sub_id).deleted_at is not None
+
+    # 再次刷新：平台仍返回该博主 → 应复活同一行，而不是新建/消失
+    client.post("/api/followed-creators/refresh", json={"account_id": acc.id, "force": True})
+    session.expire_all()
+    rows = session.query(Subscription).filter_by(source_type="creator").all()
+    assert len(rows) == 1
+    assert rows[0].id == sub_id and rows[0].deleted_at is None
+    listed = client.get("/api/followed-creators").json()
+    assert any(x["id"] == sub_id for x in listed)
