@@ -41,6 +41,13 @@ _FOLLOWINGS = "https://api.bilibili.com/x/relation/followings"
 _CORRESPOND = "https://www.bilibili.com/correspond/1/"
 _REFRESH = "https://passport.bilibili.com/x/passport-login/web/cookie/refresh"
 _CONFIRM_REFRESH = "https://passport.bilibili.com/x/passport-login/web/confirm/refresh"
+_VIEW = "https://api.bilibili.com/x/web-interface/view"
+_PLAYURL = "https://api.bilibili.com/x/player/playurl"
+
+# fnval 位掩码（照抄 bili-sync / B站文档）：
+#   16=DASH 64=HDR 128=4K 256=DolbyAudio 512=DolbyVision 1024=8K 2048=AV1
+# 全开才能拿到最高档 + AV1/HEVC 的 DASH 流。
+_FNVAL_DASH = 4048
 
 # bili-sync 内置公钥（MIT）：用于生成 cookie refresh 的 correspond path。
 _REFRESH_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
@@ -495,6 +502,99 @@ class BilibiliAdapter:
                     break
                 page += 1
         return items[:limit]
+
+
+def _pick_best_video_stream(streams: list[dict]) -> dict | None:
+    """按「清晰度优先、其次码率」选最高档视频流（照抄 bili-sync best_stream）。
+
+    bili-sync 先比 quality（id），相同再按 codecs 偏好；我们用 id→bandwidth 近似，
+    效果等价于"取最高画质"。
+    """
+    if not streams:
+        return None
+    return max(streams, key=lambda v: (int(v.get("id") or 0), int(v.get("bandwidth") or 0)))
+
+
+def _pick_best_audio_stream(streams: list[dict]) -> dict | None:
+    if not streams:
+        return None
+    return max(streams, key=lambda a: (int(a.get("id") or 0), int(a.get("bandwidth") or 0)))
+
+
+def _stream_urls(stream: dict | None) -> list[str]:
+    """取一条 DASH 流的全部候选地址（baseUrl + backupUrl），照抄 bili-sync Stream::urls。
+
+    B站为每个流给多个 CDN 备份地址；主地址失败要能轮换备份，否则一条素材直接失败。
+    """
+    if not stream:
+        return []
+    out: list[str] = []
+    for u in [stream.get("baseUrl"), *(stream.get("backupUrl") or [])]:
+        if isinstance(u, str) and u and u not in out:
+            out.append(u)
+    return out
+
+
+async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
+    """用 view + playurl 把 BV 号解析成可下载的 DASH 地址。
+
+    这是 B站下载的正确入口（照抄 bili-sync：先 /x/web-interface/view 拿 cid，
+    再 /x/player/playurl 拿 dash 流）。**不要**用 yt-dlp：B站对 yt-dlp 的元数据请求
+    直接回 412 风控，实测连不带 Cookie 的公开视频都下不动。
+
+    返回 ``{"video": [url...], "audio": [url...]}``；拿不到返回 None。
+    """
+    bvid = str(bvid or "").strip()
+    if not bvid:
+        return None
+    cookies = _cookies(credential)
+    async with _client() as client:
+        try:
+            view = await client.get(_VIEW, params={"bvid": bvid}, cookies=cookies)
+            if view.status_code in (412, 403):
+                raise RuntimeError(f"B站风控校验失败（HTTP {view.status_code}），请稍后再试")
+            vdata = view.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if vdata.get("code") != 0:
+            return None
+        info = vdata.get("data") or {}
+        cid = info.get("cid")
+        if not cid:
+            return None
+        try:
+            play = await client.get(
+                _PLAYURL,
+                params={
+                    "bvid": bvid, "cid": cid, "qn": 127,
+                    "fnval": _FNVAL_DASH, "fourk": 1,
+                },
+                cookies=cookies,
+            )
+            if play.status_code in (412, 403):
+                raise RuntimeError(f"B站风控校验失败（HTTP {play.status_code}），请稍后再试")
+            pdata = play.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if pdata.get("code") != 0:
+            return None
+        p = pdata.get("data") or {}
+        dash = p.get("dash") or {}
+        video_urls = _stream_urls(_pick_best_video_stream(dash.get("video") or []))
+        if not video_urls:
+            # 无 DASH：部分老视频只有 durl（FLV/MP4 混合流）
+            durl = p.get("durl") or []
+            if durl:
+                mixed: list[str] = []
+                for seg in durl:
+                    for u in [seg.get("url"), *(seg.get("backup_url") or [])]:
+                        if isinstance(u, str) and u and u not in mixed:
+                            mixed.append(u)
+                if mixed:
+                    return {"video": mixed, "audio": []}
+            return None
+        audio_urls = _stream_urls(_pick_best_audio_stream(dash.get("audio") or []))
+        return {"video": video_urls, "audio": audio_urls}
 
 
 register(BilibiliAdapter())

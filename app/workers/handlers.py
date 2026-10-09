@@ -83,6 +83,97 @@ def _account_subdir_template(db: Session, content: ContentItem) -> str:
     return _DEFAULT_SUBDIR
 
 
+# Linux 单个文件名上限 255 字节；留足余量（外加 .mp4、.video.m4s 等后缀）。
+_MAX_NAME_BYTES = 150
+
+
+def _truncate_bytes(text: str, limit: int) -> str:
+    """按 UTF-8 字节截断且不截断多字节字符中间（照抄抖小云 UTF-8 字节截断做法）。"""
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    return raw[:limit].decode("utf-8", errors="ignore")
+
+
+def _download_output_name(content: ContentItem, fallback_url: str) -> str:
+    """下载文件名：``标题_内容ID``（照抄抖小云 SanitizeLinuxFileName(desc, awemeId)）。
+
+    带内容 ID 才能保证：同名不同视频不互相覆盖；标题变了也还能对上同一条素材。
+    标题按**字节**截断给 ID 让位 —— 否则长标题会把 ID 截掉，既丢了唯一性又超出
+    Linux 255 字节限制（中文标题按字符截 100 个可达 300 字节）。
+    """
+    from app.modules.media_download import _safe_name
+
+    title = _safe_name(content.title or "")
+    cid = _safe_name(content.external_id or "")
+    if not cid:
+        return _truncate_bytes(title, _MAX_NAME_BYTES) or _safe_name(fallback_url)
+    if not title or cid in title:
+        return _truncate_bytes(title or cid, _MAX_NAME_BYTES)
+    # 先给 "_{cid}" 留位置，再截标题；后缀统一由 _safe_name 保证不含非法字符。
+    budget = _MAX_NAME_BYTES - len(f"_{cid}".encode("utf-8"))
+    if budget <= 0:
+        return _truncate_bytes(cid, _MAX_NAME_BYTES)
+    return f"{_truncate_bytes(title, budget)}_{cid}"
+
+
+async def _download_content(content: ContentItem, target_dir, cookie: str):
+    """按平台选择下载方式。
+
+    - 抖音：抓取时已存 play_addr 直链 → 带 Cookie 直连下载（照抄抖小云，
+      不依赖 yt-dlp；页面下载要 fresh cookies，很脆）。
+    - B站：view + playurl 取 DASH 视频/音频流 → 多 CDN 轮换 + Range 分片并行
+      + ffmpeg 合并（照抄 bili-sync）。**不用 yt-dlp**：B站对 yt-dlp 直接 412 风控。
+    - 其它平台 / 老数据：回退 yt-dlp。
+    """
+    if content.platform == "douyin":
+        extra = content.extra or {}
+        direct = str(extra.get("download_url") or "")
+        if direct:
+            # 抖音直链带签名会过期/被限流：失败时轮换同一视频的其它镜像（照抄抖小云）。
+            mirrors = [str(u) for u in (extra.get("download_urls") or []) if isinstance(u, str)]
+            return await media_download.download_direct(
+                direct, target_dir, cookie=cookie, mirror_urls=mirrors,
+                name=_download_output_name(content, content.url),
+            )
+        # 老数据没有直链：按 BV/aweme 号现取一次
+        return await media_download.download(content.url, target_dir, cookie=cookie)
+
+    if content.platform == "bilibili":
+        # 用 Cookie 解析 DASH；B站 CDN 只需 UA+Referer，Cookie 用于身份/高清晰度。
+        bvid = str(content.external_id or "")
+        if not bvid and "/video/" in (content.url or ""):
+            bvid = content.url.rsplit("/video/", 1)[-1].split("/")[0]
+        try:
+            resolved = await _resolve_bili_urls(cookie=cookie, bvid=bvid)
+        except Exception as exc:  # noqa: BLE001 解析失败回退 yt-dlp，别让整条链路断
+            logger.warning("B站 playurl 解析失败（%s），回退 yt-dlp：%s", bvid, exc)
+            resolved = None
+        if resolved:
+            name = _download_output_name(content, content.url)
+            return await media_download.download_dash(
+                resolved["video"], resolved["audio"], target_dir, name, cookie=cookie
+            )
+        return await media_download.download(content.url, target_dir, cookie=cookie)
+
+    return await media_download.download(content.url, target_dir, cookie=cookie)
+
+
+async def _resolve_bili_urls(*, cookie: str, bvid: str):
+    """把 cookie 串还原成适配器需要的 credential dict，再解析 DASH 地址。"""
+    from app.modules import bilibili as bili_module
+
+    cred: dict = {}
+    for part in (cookie or "").split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k = k.strip()
+        if k in ("SESSDATA", "bili_jct", "buvid3", "DedeUserID", "ac_time_value"):
+            cred[k.lower() if k != "DedeUserID" else "dedeuserid"] = v.strip()
+    return await bili_module.resolve_play_urls(cred, bvid)
+
+
 async def handle_download(db: Session, payload: dict) -> None:
     asset_id = payload["asset_id"]
     asset = db.get(MediaAsset, asset_id)
@@ -118,26 +209,12 @@ async def handle_download(db: Session, payload: dict) -> None:
     asset.relative_path = rel
     target_dir = resolve_asset_dir(db, asset)
 
-    # 下载策略（照抄抖小云的稳定做法）：
-    # 抖音内容在抓取时已经存了 play_addr 直链（content.extra["download_url"]），
-    # 拿这个直链 + Cookie 直接 GET 即可，不需要 yt-dlp（抖音页面下载要 fresh cookies，很脆）。
-    # 没有直链（其它平台 / 老数据）才回退 yt-dlp。
+    # 下载策略按平台分派（见 _download_content）：
+    # 抖音走 play_addr 直链 + Cookie（照抄抖小云），B站走 playurl DASH + ffmpeg（照抄 bili-sync）。
     cookie = _content_cookie(db, content)
-    direct = ""
-    mirrors: list[str] = []
-    if content.platform == "douyin":
-        extra = content.extra or {}
-        direct = str(extra.get("download_url") or "")
-        # 抖音直链带签名会过期/被限流：失败时轮换同一视频的其它镜像（照抄抖小云）。
-        mirrors = [str(u) for u in (extra.get("download_urls") or []) if isinstance(u, str)]
     # 节流：所有下载共用一条串行通道 + 最小间隔，避免批量同步打爆 CDN 触发限流。
     await _await_download_slot()
-    if direct:
-        result = await media_download.download_direct(
-            direct, target_dir, cookie=cookie, mirror_urls=mirrors
-        )
-    else:
-        result = await media_download.download(content.url, target_dir, cookie=cookie)
+    result = await _download_content(content, target_dir, cookie)
     # download() 返回 DownloadResult(dataclass)，不是 dict —— 这里必须属性访问。
     asset.video_file = result.video_file
     asset.audio_file = result.audio_file

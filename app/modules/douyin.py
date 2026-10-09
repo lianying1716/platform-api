@@ -206,27 +206,69 @@ async def _pace() -> None:
     await asyncio.sleep(random.uniform(lo, hi))
 
 
+def _ordered_urls(url_list: list) -> list[str]:
+    """把一组 url_list 规整成"抖音官方 play 直链优先"的有序去重列表。"""
+    raw = [u for u in (url_list or []) if isinstance(u, str) and u.strip()]
+    preferred = [u for u in raw if u.startswith("https://www.douyin.com/aweme/v1/play")]
+    out: list[str] = []
+    for u in preferred + [u for u in raw if u not in preferred]:
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def _best_bitrate(aw: dict) -> dict | None:
+    """选最佳码率档（照抄抖小云 GetBestMatchedVideoUrl）。
+
+    抖小云按配置优先 H.265，否则 H.264，同编码内取 ``bit_rate`` 最大的档。
+    这里默认偏好 H.264（兼容性最好：H.265 在部分播放器/浏览器上不可播），
+    同编码取最高码率；有 H.265 且没有 H.264 时才用它。
+    """
+    video = aw.get("video") or {}
+    rates = [r for r in (video.get("bit_rate") or []) if isinstance(r, dict)]
+    usable = [r for r in rates if _ordered_urls((r.get("play_addr") or {}).get("url_list"))]
+
+    def bw(r: dict) -> int:
+        try:
+            return int(r.get("bit_rate") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    h264 = [r for r in usable if int(r.get("is_h265") or 0) == 0]
+    if h264:
+        return max(h264, key=bw)
+    return max(usable, key=bw) if usable else None
+
+
 def _play_url_list(aw: dict) -> list[str]:
     """从 aweme 结构里取**全部**可直连下载的播放地址（去重、保序）。
 
-    照抄抖小云 DouyinBasicSyncJob：优先 ``https://www.douyin.com/aweme/v1/play`` 开头的直链，
-    其次是 play_addr 的其它镜像，最后回退 download_addr。
+    照抄抖小云：
+    1. 先按 ``GetBestMatchedVideoUrl`` 选最佳码率档（H.264 优先、码率最高）；
+    2. 该档的 play_addr 镜像排最前；
+    3. 再依次附上**其它所有码率档**的全部镜像与 download_addr ——
+       抖小云 ``SwitchOtherUrlAddressDown`` 就是在首选失败后遍历所有档的所有地址重试。
 
-    为什么要留全部而不是只留第一条：抖音直链带 ``sign=`` 签名会过期，**也**可能被限流，
-    抖小云每次重试会轮换 ``otherUrls`` 里的镜像。我们同样在重试时轮换，单条 URL 的
-    偶发失败就不会让整条素材永远失败。
+    只留第一条是不够的：抖音直链带 ``sign=`` 会过期、也可能被 CDN 限流，
+    多档多镜像轮换才能把单条素材的失败率压下来。
     """
     video = aw.get("video") or {}
-    addr = video.get("play_addr") or {}
-    raw = [u for u in (addr.get("url_list") or []) if isinstance(u, str) and u.strip()]
-    dl = [u for u in (((video.get("download_addr") or {}).get("url_list")) or []) if isinstance(u, str) and u.strip()]
-    preferred = [u for u in raw if u.startswith("https://www.douyin.com/aweme/v1/play")]
-    ordered = preferred + [u for u in raw if u not in preferred] + [u for u in dl if u not in raw]
-    seen: set[str] = set()
+    best = _best_bitrate(aw)
+    ordered: list[str] = []
+    if best:
+        ordered += _ordered_urls((best.get("play_addr") or {}).get("url_list"))
+    # 首选档的顶层 play_addr（部分响应没有 bit_rate，只有顶层 play_addr）
+    ordered += _ordered_urls((video.get("play_addr") or {}).get("url_list"))
+    # 其它码率档的全部镜像
+    for r in (video.get("bit_rate") or []):
+        if not isinstance(r, dict) or r is best:
+            continue
+        ordered += _ordered_urls((r.get("play_addr") or {}).get("url_list"))
+    # 最后兜底 download_addr
+    ordered += _ordered_urls((video.get("download_addr") or {}).get("url_list"))
     out: list[str] = []
     for u in ordered:
-        if u not in seen:
-            seen.add(u)
+        if u and u not in out:
             out.append(u)
     return out
 
