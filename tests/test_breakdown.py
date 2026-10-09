@@ -45,7 +45,7 @@ def test_viral_breakdown_unique_asset(_engine):
 
     S = sessionmaker(bind=_engine)
     db = S()
-    c = ContentItem(platform="douyin", external_id="t1vb", content_type="video")
+    c = ContentItem(account_id=1, platform="douyin", external_id="t1vb", content_type="video")
     db.add(c)
     db.flush()
     asset = MediaAsset(content_id=c.id, video_file="v.mp4")

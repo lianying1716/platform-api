@@ -34,6 +34,8 @@ class PlatformAccount(Base):
     credential_kind: Mapped[str] = mapped_column(String(16), default="cookie")  # cookie / browser
     status: Mapped[str] = mapped_column(String(16), default="unchecked")
     status_message: Mapped[str] = mapped_column(String(512), default="")
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)  # 历史迁移/系统导入的隐藏归属
+    last_crawl_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 采集公平轮换
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -155,9 +157,17 @@ class ContentItem(Base):
     """统一内容表：抓取或订阅得到的一条内容（视频/文章）。"""
 
     __tablename__ = "content_item"
-    __table_args__ = ()
+    __table_args__ = (
+        UniqueConstraint(
+            "platform", "external_id", "account_id",
+            name="uq_content_item_platform_external_account",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("platform_account.id", ondelete="RESTRICT"), index=True
+    )
     platform: Mapped[str] = mapped_column(String(32), index=True)
     external_id: Mapped[str] = mapped_column(String(128), index=True)  # 平台侧内容ID
     content_type: Mapped[str] = mapped_column(String(16), default="video")  # video / article / image
@@ -262,6 +272,9 @@ class CrawlTask(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     platform: Mapped[str] = mapped_column(String(32), index=True)
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("platform_account.id", ondelete="SET NULL"), nullable=True, index=True
+    )  # 空 = 自动轮换；指定则固定账号
     keyword: Mapped[str] = mapped_column(String(256))
     sort: Mapped[str] = mapped_column(String(16), default="popular")  # popular / latest
     limit_per_run: Mapped[int] = mapped_column(Integer, default=50)
@@ -281,6 +294,9 @@ class CrawlRun(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("crawl_task.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("platform_account.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="running")

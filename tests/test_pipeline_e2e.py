@@ -59,6 +59,23 @@ def _seed_account_and_subscription(db):
     return acc, sub
 
 
+def _seed_crawl_account(db, platform="douyin"):
+    from app.core.crypto import encrypt_credential
+    from app.models import AccountCredential, PlatformAccount
+
+    account = PlatformAccount(
+        platform=platform,
+        display_name="采集号",
+        credential_kind="cookie",
+        status="active",
+    )
+    db.add(account)
+    db.flush()
+    account.credential = AccountCredential(ciphertext=encrypt_credential({"cookie": "c=1"}))
+    db.commit()
+    return account
+
+
 def test_subscription_sync_ingests_and_enqueues(session, monkeypatch):
     """订阅同步：mock 适配器返回 2 条内容 → 入库 content/metric/asset + download 入队。"""
     from app.models import ContentItem, ContentMetricSnapshot, JobQueue, MediaAsset
@@ -105,7 +122,7 @@ def test_full_pipeline_download_transcribe_analyze(session, monkeypatch):
     from app.workers import handlers
 
     # 准备一条内容 + 素材
-    content = ContentItem(platform="bilibili", external_id="BV9", title="测试视频", author_name="UP", url="https://b/BV9")
+    content = ContentItem(account_id=1, platform="bilibili", external_id="BV9", title="测试视频", author_name="UP", url="https://b/BV9")
     session.add(content)
     session.flush()
     asset = MediaAsset(content_id=content.id, download_status="pending", understand_status="")
@@ -157,7 +174,7 @@ def test_transcribe_blocked_before_download(session, monkeypatch):
     from app.models import ContentItem, MediaAsset
     from app.workers import handlers
 
-    content = ContentItem(platform="bilibili", external_id="BV8", url="https://b/BV8")
+    content = ContentItem(account_id=1, platform="bilibili", external_id="BV8", url="https://b/BV8")
     session.add(content)
     session.flush()
     asset = MediaAsset(content_id=content.id, download_status="pending")
@@ -180,7 +197,7 @@ def test_transcribe_keeps_advanced_tier(session, monkeypatch):
 
     monkeypatch.setattr("app.modules.transcription.transcribe", fake_transcribe)
 
-    content = ContentItem(platform="douyin", external_id="adv1", url="https://d/adv1")
+    content = ContentItem(account_id=1, platform="douyin", external_id="adv1", url="https://d/adv1")
     session.add(content)
     session.flush()
     asset = MediaAsset(
@@ -247,7 +264,7 @@ def test_dashboard_summary_aggregates(session, monkeypatch):
 
     session.add(PlatformAccount(platform="bilibili", status="active"))
     session.add(PlatformAccount(platform="douyin", status="expired"))  # 异常
-    c1 = ContentItem(platform="bilibili", external_id="h1", title="热门", author_name="A")
+    c1 = ContentItem(account_id=1, platform="bilibili", external_id="h1", title="热门", author_name="A")
     session.add(c1)
     session.flush()
     session.add(MediaAsset(content_id=c1.id))
@@ -290,6 +307,7 @@ def test_crawl_gate_failure_does_not_flip_run(session, monkeypatch):
 
     task = CrawlTask(platform="douyin", keyword="k", limit_per_run=10)
     session.add(task)
+    _seed_crawl_account(session, "douyin")
     session.commit()
 
     async def fake_search(**kw):
@@ -317,6 +335,7 @@ def test_download_completion_triggers_auto_process_gate(session, monkeypatch):
     from app.workers import handlers
 
     content = ContentItem(
+        account_id=1,
         platform="douyin", external_id="hot1", title="爆款", url="https://d/hot1"
     )
     session.add(content)
@@ -351,7 +370,7 @@ def test_download_gate_failure_does_not_flip_download(session, monkeypatch):
     from app.services import process_gate
     from app.workers import handlers
 
-    content = ContentItem(platform="douyin", external_id="hot2", url="https://d/hot2")
+    content = ContentItem(account_id=1, platform="douyin", external_id="hot2", url="https://d/hot2")
     session.add(content)
     session.flush()
     session.add(ContentMetricSnapshot(content_id=content.id, like=5000))
@@ -405,6 +424,7 @@ def test_download_path_respects_inflight_budget(session, monkeypatch):
 
     for i in range(8):
         content = ContentItem(
+            account_id=1,
             platform="douyin", external_id=f"hot{i}", title="爆款", url=f"https://d/hot{i}"
         )
         session.add(content)
@@ -427,6 +447,7 @@ def test_crawl_process_gate_failure_does_not_flip_run(session, monkeypatch):
 
     task = CrawlTask(platform="douyin", keyword="k", limit_per_run=10)
     session.add(task)
+    _seed_crawl_account(session, "douyin")
     session.commit()
 
     async def fake_search(**kw):
@@ -475,7 +496,7 @@ def test_crawl_enqueues_process_for_already_downloaded_hot_video(session, monkey
     from app.services import crawl_service
 
     # 已存在内容 + 已下载素材（首次采集/下载已发生过）
-    content = ContentItem(platform="douyin", external_id="awX", content_type="video",
+    content = ContentItem(account_id=1, platform="douyin", external_id="awX", content_type="video",
                           title="爆款", url="https://d/awX", source_kind="crawl")
     session.add(content)
     session.flush()
@@ -486,6 +507,7 @@ def test_crawl_enqueues_process_for_already_downloaded_hot_video(session, monkey
 
     task = CrawlTask(platform="douyin", keyword="k", limit_per_run=10)
     session.add(task)
+    _seed_crawl_account(session, "douyin")
     session.commit()
 
     async def fake_search(**kw):

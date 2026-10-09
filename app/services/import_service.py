@@ -10,20 +10,49 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.storage import render_subdir
-from app.models import ContentItem, MediaAsset, Transcript
+from app.models import ContentItem, MediaAsset, PlatformAccount, Transcript
 from app.modules import article_import
 
 logger = logging.getLogger("platform.import_service")
 
 
-async def import_wechat_article(db: Session, url: str) -> tuple[MediaAsset, bool]:
+def _system_owner(db: Session, platform: str) -> PlatformAccount:
+    """无明确账号归属的导入使用每平台一个隐藏系统账号，保证 content.account_id 非空。"""
+    owner = db.scalar(
+        select(PlatformAccount).where(
+            PlatformAccount.platform == platform,
+            PlatformAccount.is_system.is_(True),
+        )
+    )
+    if owner is None:
+        owner = PlatformAccount(
+            platform=platform,
+            display_name="系统导入",
+            external_id="__system_import__",
+            credential_kind="system",
+            status="active",
+            is_system=True,
+        )
+        db.add(owner)
+        db.flush()
+    return owner
+
+
+async def import_wechat_article(
+    db: Session, url: str, account_id: int | None = None
+) -> tuple[MediaAsset, bool]:
     """导入单篇公众号文章，返回 (MediaAsset, 是否新建)。幂等：同 external_id 复用。"""
     item = await article_import.fetch_article(url)
+    owner = db.get(PlatformAccount, account_id) if account_id is not None else None
+    if owner is None:
+        owner = _system_owner(db, "wechat_mp")
+    owner_id = owner.id
 
     content = db.scalar(
         select(ContentItem).where(
             ContentItem.platform == "wechat_mp",
             ContentItem.external_id == item["external_id"],
+            ContentItem.account_id == owner_id,
         )
     )
     if content is not None:
@@ -33,6 +62,7 @@ async def import_wechat_article(db: Session, url: str) -> tuple[MediaAsset, bool
 
     if content is None:
         content = ContentItem(
+            account_id=owner_id,
             platform="wechat_mp",
             external_id=item["external_id"],
             content_type="article",

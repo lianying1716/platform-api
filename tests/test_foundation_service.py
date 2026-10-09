@@ -100,7 +100,7 @@ def test_upsert_creator_never_raises(session, monkeypatch):
 def test_record_raw_inserts(session):
     from app.models import ContentItem, RawPayload
 
-    content = ContentItem(platform="douyin", external_id="aw1")
+    content = ContentItem(account_id=1, platform="douyin", external_id="aw1")
     session.add(content)
     session.flush()
 
@@ -223,12 +223,30 @@ def _seed_subscription(db):
     return sub
 
 
+def _seed_crawl_account(db, platform="douyin"):
+    from app.core.crypto import encrypt_credential
+    from app.models import AccountCredential, PlatformAccount
+
+    account = PlatformAccount(
+        platform=platform,
+        display_name="采集号",
+        credential_kind="cookie",
+        status="active",
+    )
+    db.add(account)
+    db.flush()
+    account.credential = AccountCredential(ciphertext=encrypt_credential({"cookie": "c=1"}))
+    db.commit()
+    return account
+
+
 def test_crawl_persists_creator_and_raw(session, monkeypatch):
     from app.models import CrawlTask, CreatorProfile, RawPayload
     from app.services import crawl_service
 
     task = CrawlTask(platform="douyin", keyword="k", limit_per_run=10)
     session.add(task)
+    _seed_crawl_account(session, "douyin")
     session.commit()
 
     async def fake_search(**kw):
@@ -298,6 +316,7 @@ def test_crawl_survives_foundation_failure(session, monkeypatch):
 
     task = CrawlTask(platform="douyin", keyword="k", limit_per_run=10)
     session.add(task)
+    _seed_crawl_account(session, "douyin")
     session.commit()
 
     async def fake_search(**kw):
@@ -461,7 +480,7 @@ def test_in_savepoint_isolates_real_flush_error(session):
     from app.models import ContentItem, TaskLog
     from app.services import foundation
 
-    session.add(ContentItem(platform="douyin", external_id="outer1", url="u1"))
+    session.add(ContentItem(account_id=1, platform="douyin", external_id="outer1", url="u1"))
     session.flush()  # 外层已写入，等价于采集循环中已入库的 item
 
     def bad_op():
@@ -497,8 +516,8 @@ def test_analytics_creators_prefers_creator_profile(client, _engine):
 
     Session = sessionmaker(bind=_engine)
     db = Session()
-    db.add(ContentItem(platform="douyin", external_id="c1", author_id="au1", author_name="原名", url="u1"))
-    db.add(ContentItem(platform="douyin", external_id="c2", author_id="au2", author_name="无档案", url="u2"))
+    db.add(ContentItem(account_id=1, platform="douyin", external_id="c1", author_id="au1", author_name="原名", url="u1"))
+    db.add(ContentItem(account_id=1, platform="douyin", external_id="c2", author_id="au2", author_name="无档案", url="u2"))
     db.add(CreatorProfile(platform="douyin", author_id="au1", author_name="官方名", follower_count=12345, verified=True))
     db.commit()
     db.close()

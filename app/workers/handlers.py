@@ -54,7 +54,7 @@ async def handle_download(db: Session, payload: dict) -> None:
     # 抖音内容在抓取时已经存了 play_addr 直链（content.extra["download_url"]），
     # 拿这个直链 + Cookie 直接 GET 即可，不需要 yt-dlp（抖音页面下载要 fresh cookies，很脆）。
     # 没有直链（其它平台 / 老数据）才回退 yt-dlp。
-    cookie = _comment_cookie(db, content.platform)
+    cookie = _content_cookie(db, content)
     direct = ""
     if content.platform == "douyin":
         direct = str((content.extra or {}).get("download_url") or "")
@@ -177,11 +177,16 @@ async def handle_crawl(db: Session, payload: dict) -> None:
     await run_crawl_task(db, payload["task_id"])
 
 
-def _comment_cookie(db: Session, platform: str) -> str:
-    """取该平台一个在线账号的 cookie（复用 crawl_service 的逻辑）。"""
-    from app.services.crawl_service import _platform_cookie
+def _content_cookie(db: Session, content: ContentItem) -> str:
+    """取内容所属账号的 cookie；系统账号/无凭证返回空。"""
+    from app.core.crypto import decrypt_credential
+    from app.models import PlatformAccount
+    from app.services.crawl_service import _account_cookie
 
-    return _platform_cookie(db, platform)
+    account = db.get(PlatformAccount, content.account_id)
+    if account is None or account.is_system:
+        return ""
+    return _account_cookie(account)
 
 
 def _ts_to_dt(ts) -> datetime | None:
@@ -208,7 +213,7 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
         logger.info("跳过非评论平台的内容 %s（platform=%s）", content_id, content.platform)
         return
 
-    cookie = _comment_cookie(db, content.platform)
+    cookie = _content_cookie(db, content)
     if not cookie:
         raise ValueError(f"{content.platform} 无在线账号，无法抓评论")
 

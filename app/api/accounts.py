@@ -138,12 +138,16 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
             select(PlatformAccount).where(
                 PlatformAccount.platform == sess.platform,
                 PlatformAccount.external_id == poll.external_id,
+                PlatformAccount.is_system.is_(False),
             )
         )
     if account is None:
         existing = db.scalars(
             select(PlatformAccount)
-            .where(PlatformAccount.platform == sess.platform)
+            .where(
+                PlatformAccount.platform == sess.platform,
+                PlatformAccount.is_system.is_(False),
+            )
             .order_by(PlatformAccount.id)
         ).all()
         if len(existing) == 1:
@@ -183,7 +187,11 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
 # ---------- 账号 CRUD ----------
 @router.get("/accounts", response_model=list[schemas.AccountOut])
 def list_accounts(db: Session = Depends(get_db)):
-    accounts = db.scalars(select(PlatformAccount).order_by(PlatformAccount.id)).all()
+    accounts = db.scalars(
+        select(PlatformAccount)
+        .where(PlatformAccount.is_system.is_(False))
+        .order_by(PlatformAccount.id)
+    ).all()
     return [_account_out(a) for a in accounts]
 
 

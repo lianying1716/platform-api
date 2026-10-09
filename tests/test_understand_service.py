@@ -40,6 +40,7 @@ def _seed(
     db.add(SystemSetting(key="llm_base_url", value="http://x/v1"))
     db.add(SystemSetting(key="llm_api_key", value="k"))
     c = ContentItem(
+        account_id=1,
         platform="douyin",
         external_id="aw1",
         content_type="video",

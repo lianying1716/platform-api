@@ -7,6 +7,7 @@
 """
 
 import logging
+import random
 from datetime import datetime
 
 from sqlalchemy import select
@@ -27,13 +28,32 @@ from app.modules import crawler
 from app.services import foundation
 
 
-def _platform_cookie(db: Session, platform: str) -> str:
-    """取该平台一个在线账号的 cookie 字符串（纯 Python 抓取需要）。"""
-    account = db.scalar(
-        select(PlatformAccount)
-        .where(PlatformAccount.platform == platform, PlatformAccount.status == "active")
-        .order_by(PlatformAccount.id)
-    )
+def _pick_crawl_account(db: Session, platform: str, requested_id: int | None = None) -> PlatformAccount | None:
+    """选本次采集账号：指定优先；否则最久未用优先、随机打散，避免固定用一个。"""
+    if requested_id is not None:
+        return db.scalar(
+            select(PlatformAccount).where(
+                PlatformAccount.id == requested_id,
+                PlatformAccount.platform == platform,
+                PlatformAccount.status == "active",
+                PlatformAccount.is_system.is_(False),
+            )
+        )
+    candidates = db.scalars(
+        select(PlatformAccount).where(
+            PlatformAccount.platform == platform,
+            PlatformAccount.status == "active",
+            PlatformAccount.is_system.is_(False),
+        )
+    ).all()
+    if not candidates:
+        return None
+    random.shuffle(candidates)
+    candidates.sort(key=lambda a: (a.last_crawl_used_at is not None, a.last_crawl_used_at or datetime.min))
+    return candidates[0]
+
+
+def _account_cookie(account: PlatformAccount | None) -> str:
     if account is None or account.credential is None:
         return ""
     cred = decrypt_credential(account.credential.ciphertext)
@@ -55,8 +75,12 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
     db.commit()
     db.refresh(run)
 
+    account = _pick_crawl_account(db, task.platform, task.account_id)
+    run.account_id = account.id if account else None
+    db.commit()
+
     try:
-        cookie = _platform_cookie(db, task.platform)
+        cookie = _account_cookie(account)
         items = await crawler.search(
             platform=task.platform,
             keyword=task.keyword,
@@ -73,7 +97,7 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
     for item in items:
         if task.min_play and item.get("metrics", {}).get("play", 0) < task.min_play:
             continue
-        content, is_new = _upsert(db, task, item)
+        content, is_new = _upsert(db, task, item, account.id if account else None)
         _persist_foundation(db, task.platform, "crawl", content, item)
         _record_metric(db, content, item)
         touched.append(content)
@@ -82,6 +106,8 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
             if task.to_candidate and content.content_type == "video":
                 _ensure_download(db, content)
     task.last_run_at = datetime.utcnow()
+    if account is not None:
+        account.last_crawl_used_at = datetime.utcnow()
     db.commit()
     events.publish("crawl_done", {"task_id": task.id, "added": added})
     # 评论富集：动态门控后入队（不阻塞，worker 抓）。指标快照已在上方 commit，门控才读得到。
@@ -106,15 +132,22 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
     return _finish(db, run, "success", fetched=len(items), added=added)
 
 
-def _upsert(db: Session, task: CrawlTask, item: dict) -> tuple[ContentItem, bool]:
+def _upsert(
+    db: Session, task: CrawlTask, item: dict, account_id: int | None
+) -> tuple[ContentItem, bool]:
+    if account_id is None:
+        raise RuntimeError("没有可用于采集的账号（跨账号独立素材要求内容必须有账号归属）")
     existing = db.scalar(
         select(ContentItem).where(
-            ContentItem.platform == task.platform, ContentItem.external_id == item["external_id"]
+            ContentItem.platform == task.platform,
+            ContentItem.external_id == item["external_id"],
+            ContentItem.account_id == account_id,
         )
     )
     if existing:
         return existing, False
     content = ContentItem(
+        account_id=account_id,
         platform=task.platform,
         external_id=item["external_id"],
         content_type=item.get("content_type", "video"),

@@ -15,6 +15,7 @@ def _seed_asset(db, *, author_id="A", platform="douyin", external_id="aw1", titl
     from app.models import ContentItem, MediaAsset
 
     c = ContentItem(
+        account_id=1,
         platform=platform,
         external_id=external_id,
         content_type="video",
@@ -378,13 +379,13 @@ def test_data_context_excludes_no_snapshot_from_median(session):
 
     from app.models import ContentItem, MediaAsset
 
-    c1 = ContentItem(platform="douyin", external_id="m1", content_type="video", author_id="M")
+    c1 = ContentItem(account_id=1, platform="douyin", external_id="m1", content_type="video", author_id="M")
     session.add(c1)
     session.flush()
     a1 = MediaAsset(content_id=c1.id)
     session.add(a1)
     _seed_metric(session, c1.id, play=1000)
-    c2 = ContentItem(platform="douyin", external_id="m2", content_type="video", author_id="M")
+    c2 = ContentItem(account_id=1, platform="douyin", external_id="m2", content_type="video", author_id="M")
     session.add(c2)
     session.flush()  # 无快照
     session.commit()

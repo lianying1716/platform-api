@@ -8,6 +8,7 @@ from app.models import ContentItem, ContentMetricSnapshot, MediaAsset, StorageRo
 
 def _seed(session, *, content_type="video", video_file="", relative_path="", size=0):
     content = ContentItem(
+        account_id=1,
         platform="douyin",
         external_id=f"e-{content_type}-{video_file or 'x'}",
         content_type=content_type,
@@ -91,6 +92,7 @@ def test_media_range_returns_206(client, session, tmp_path):
     os.makedirs(tmp_path / rel, exist_ok=True)
     (tmp_path / rel / "v.mp4").write_bytes(payload)
     content = ContentItem(
+        account_id=1,
         platform="douyin", external_id="m1", content_type="video", title="t", author_id="a1"
     )
     session.add(content)

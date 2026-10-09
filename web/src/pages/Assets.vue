@@ -27,6 +27,14 @@
         <el-option label="小红书" value="xhs" />
         <el-option label="微信公众号" value="wechat_mp" />
       </el-select>
+      <el-select v-model="filters.account_id" placeholder="账号" clearable size="small" style="width: 170px" @change="load">
+        <el-option
+          v-for="a in filteredAccounts"
+          :key="a.id"
+          :label="a.display_name || `${a.platform} #${a.id}`"
+          :value="a.id"
+        />
+      </el-select>
       <el-select v-model="filters.category" placeholder="分类" clearable size="small" style="width: 150px" @change="load">
         <el-option v-for="(label, key) in taxonomy" :key="key" :label="label" :value="key" />
       </el-select>
@@ -370,7 +378,22 @@ const selected = ref<any[]>([])
 const loading = ref(false)
 const drawer = ref(false)
 const detail = ref<any>(null)
-const filters = reactive({ platform: '', transcribe_status: '', content_type: '', category: '' })
+const filters = reactive({
+  platform: '',
+  account_id: null as number | null,
+  transcribe_status: '',
+  content_type: '',
+  category: '',
+})
+const accounts = ref<Array<{ id: number; platform: string; display_name: string }>>([])
+const filteredAccounts = computed(() =>
+  accounts.value.filter((a) => !filters.platform || a.platform === filters.platform),
+)
+
+async function loadAccounts() {
+  const { data } = await api.get('/api/accounts')
+  accounts.value = data
+}
 
 /** 封面加载失败的素材 id：失败后退回类型占位符，不再显示破图。 */
 const failedCovers = reactive(new Set<string>())
@@ -746,6 +769,7 @@ async function exportSel(format: string) {
 }
 
 onMounted(() => {
+  loadAccounts()
   loadTaxonomy()
   load()
 })

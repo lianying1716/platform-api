@@ -12,7 +12,9 @@ import app.models  # noqa: F401,E402  注册全部模型
 from app.db import Base  # noqa: E402
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# 显式传入的 sqlalchemy.url（如迁移集成测试的临时库）优先；否则用项目配置。
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 target_metadata = Base.metadata
 
 if config.config_file_name is not None:

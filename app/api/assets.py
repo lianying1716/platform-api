@@ -144,6 +144,7 @@ def _latest_metric(db: Session, content_id: int) -> ContentMetricSnapshot | None
 def list_assets(
     db: Session = Depends(get_db),
     platform: str | None = None,
+    account_id: int | None = None,
     author_id: str | None = None,
     content_type: str | None = None,
     category: str | None = None,
@@ -156,6 +157,8 @@ def list_assets(
     stmt = select(MediaAsset, ContentItem).join(ContentItem, MediaAsset.content_id == ContentItem.id)
     if platform:
         stmt = stmt.where(ContentItem.platform == platform)
+    if account_id is not None:
+        stmt = stmt.where(ContentItem.account_id == account_id)
     if author_id:
         stmt = stmt.where(ContentItem.author_id == author_id)
     if content_type:
@@ -199,6 +202,7 @@ def list_assets(
                 "asset_id": asset.id,
                 "content_id": content.id,
                 "platform": content.platform,
+                "account_id": content.account_id,
                 "content_type": content.content_type or "video",
                 "title": content.title,
                 "author_name": content.author_name,

@@ -5,7 +5,7 @@ import asyncio
 def _seed(db):
     from app.models import ContentItem
 
-    c = ContentItem(platform="douyin", external_id="aw1", content_type="video")
+    c = ContentItem(account_id=1, platform="douyin", external_id="aw1", content_type="video")
     db.add(c)
     db.flush()
     return c
@@ -27,7 +27,7 @@ def test_handler_writes_comments_and_state(_engine, monkeypatch):
         ]
 
     monkeypatch.setattr("app.modules.crawler.fetch_comments", fake_fetch)
-    monkeypatch.setattr("app.workers.handlers._comment_cookie", lambda db, platform: "cookie")
+    monkeypatch.setattr("app.workers.handlers._content_cookie", lambda db, content: "cookie")
     asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))
 
     assert db.query(Comment).filter_by(content_id=c.id).count() == 1
@@ -50,7 +50,7 @@ def test_handler_is_idempotent(_engine, monkeypatch):
                  "avatar": "", "content": "你好", "like_count": 5, "ip_location": "", "created_at": None}]
 
     monkeypatch.setattr("app.modules.crawler.fetch_comments", fake_fetch)
-    monkeypatch.setattr("app.workers.handlers._comment_cookie", lambda db, platform: "cookie")
+    monkeypatch.setattr("app.workers.handlers._content_cookie", lambda db, content: "cookie")
     asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))
     asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))
     assert db.query(Comment).filter_by(content_id=c.id).count() == 1  # 不重复
@@ -76,7 +76,7 @@ def test_handler_skips_state_when_no_comments(_engine, monkeypatch):
         return []
 
     monkeypatch.setattr("app.modules.crawler.fetch_comments", fake_fetch)
-    monkeypatch.setattr("app.workers.handlers._comment_cookie", lambda db, platform: "cookie")
+    monkeypatch.setattr("app.workers.handlers._content_cookie", lambda db, content: "cookie")
     asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))
 
     assert db.query(Comment).filter_by(content_id=c.id).count() == 0
@@ -99,7 +99,7 @@ def test_handler_keeps_existing_state_when_all_duplicate(_engine, monkeypatch):
                  "avatar": "", "content": "你好", "like_count": 5, "ip_location": "", "created_at": None}]
 
     monkeypatch.setattr("app.modules.crawler.fetch_comments", fake_fetch)
-    monkeypatch.setattr("app.workers.handlers._comment_cookie", lambda db, platform: "cookie")
+    monkeypatch.setattr("app.workers.handlers._content_cookie", lambda db, content: "cookie")
     asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))
     assert db.get(CommentFetchState, c.id).fetched_count == 1
 
@@ -133,7 +133,7 @@ def test_handler_dedups_duplicate_cids_in_one_batch(_engine, monkeypatch):
         ]
 
     monkeypatch.setattr("app.modules.crawler.fetch_comments", fake_fetch)
-    monkeypatch.setattr("app.workers.handlers._comment_cookie", lambda db, platform: "cookie")
+    monkeypatch.setattr("app.workers.handlers._content_cookie", lambda db, content: "cookie")
 
     asyncio.run(handle_fetch_comments(db, {"content_id": c.id}))  # must not raise
     assert db.query(Comment).filter_by(content_id=c.id).count() == 1
@@ -148,7 +148,7 @@ def test_handler_skips_non_douyin_content(_engine, monkeypatch):
     from app.workers.handlers import handle_fetch_comments
 
     db = sessionmaker(bind=_engine)()
-    c = ContentItem(platform="bilibili", external_id="BV1", content_type="video")
+    c = ContentItem(account_id=1, platform="bilibili", external_id="BV1", content_type="video")
     db.add(c)
     db.commit()
 

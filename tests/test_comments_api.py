@@ -8,7 +8,7 @@ def test_comments_api_sorted_and_paged(client, _engine):
 
     Session = sessionmaker(bind=_engine)
     db = Session()
-    c = ContentItem(platform="douyin", external_id="aw1", content_type="video")
+    c = ContentItem(account_id=1, platform="douyin", external_id="aw1", content_type="video")
     db.add(c)
     db.flush()
     a = MediaAsset(content_id=c.id)

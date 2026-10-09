@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core import security
 from app.core.queue import enqueue
 from app.db import get_db
-from app.models import CrawlRun, CrawlTask
+from app.models import CrawlRun, CrawlTask, PlatformAccount
 from app.modules import REGISTRY
 
 router = APIRouter(prefix="/api/crawl-tasks", tags=["crawl"], dependencies=[Depends(security.require_admin)])
@@ -22,6 +22,7 @@ _CRAWL_PLATFORMS = {"xhs", "douyin", "bilibili", "kuaishou", "zhihu"}
 class CrawlTaskIn(BaseModel):
     platform: str
     keyword: str
+    account_id: int | None = None  # 空 = 自动轮换
     sort: str = "popular"
     limit_per_run: int = 50
     with_comments: bool = False
@@ -35,6 +36,7 @@ def _out(t: CrawlTask) -> dict:
     return {
         "id": t.id,
         "platform": t.platform,
+        "account_id": t.account_id,
         "keyword": t.keyword,
         "sort": t.sort,
         "limit_per_run": t.limit_per_run,
@@ -59,6 +61,10 @@ def create_task(body: CrawlTaskIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=422, detail=f"不支持的采集平台: {body.platform}")
     if not body.keyword.strip():
         raise HTTPException(status_code=422, detail="关键词不能为空")
+    if body.account_id is not None:
+        account = db.get(PlatformAccount, body.account_id)
+        if account is None or account.is_system or account.platform != body.platform:
+            raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
     task = CrawlTask(**body.model_dump())
     db.add(task)
     db.commit()
@@ -71,6 +77,10 @@ def update_task(task_id: int, body: CrawlTaskIn, db: Session = Depends(get_db)):
     task = db.get(CrawlTask, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if body.account_id is not None:
+        account = db.get(PlatformAccount, body.account_id)
+        if account is None or account.is_system or account.platform != body.platform:
+            raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
     for k, v in body.model_dump().items():
         setattr(task, k, v)
     db.commit()
@@ -105,6 +115,7 @@ def list_runs(task_id: int, db: Session = Depends(get_db), limit: int = 20):
         {
             "id": r.id,
             "status": r.status,
+            "account_id": r.account_id,
             "fetched": r.fetched,
             "added": r.added,
             "error": r.error,

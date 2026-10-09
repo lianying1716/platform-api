@@ -47,7 +47,9 @@ def skill_list_accounts(
     request: Request, db: Session = Depends(get_db), key: ApiKey = Depends(require_scope("read", "operate", "admin"))
 ):
     t0 = time.time()
-    accounts = db.scalars(select(PlatformAccount)).all()
+    accounts = db.scalars(
+        select(PlatformAccount).where(PlatformAccount.is_system.is_(False))
+    ).all()
     out = [
         {
             "id": a.id,
@@ -67,6 +69,7 @@ def skill_list_accounts(
 def skill_search_assets(
     request: Request,
     platform: str | None = None,
+    account_id: int | None = None,
     keyword: str | None = None,
     transcribe_status: str | None = None,
     limit: int = 20,
@@ -77,6 +80,8 @@ def skill_search_assets(
     stmt = select(MediaAsset, ContentItem).join(ContentItem, MediaAsset.content_id == ContentItem.id)
     if platform:
         stmt = stmt.where(ContentItem.platform == platform)
+    if account_id is not None:
+        stmt = stmt.where(ContentItem.account_id == account_id)
     if keyword:
         stmt = stmt.where(ContentItem.title.contains(keyword))
     if transcribe_status:
@@ -88,6 +93,7 @@ def skill_search_assets(
             "asset_id": a.id,
             "title": c.title,
             "platform": c.platform,
+            "account_id": c.account_id,
             "author_name": c.author_name,
             "transcribe_status": a.transcribe_status,
             "analyze_status": a.analyze_status,
@@ -311,7 +317,9 @@ def skill_update_cookie(
         _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     account = db.scalar(
-        select(PlatformAccount).where(PlatformAccount.platform == platform).order_by(PlatformAccount.id)
+        select(PlatformAccount)
+        .where(PlatformAccount.platform == platform, PlatformAccount.is_system.is_(False))
+        .order_by(PlatformAccount.id)
     )
     if account is None:
         account = PlatformAccount(

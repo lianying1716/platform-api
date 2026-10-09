@@ -16,7 +16,7 @@ def test_comment_unique_constraint(_engine):
 
     S = sessionmaker(bind=_engine)
     db = S()
-    c = ContentItem(platform="douyin", external_id="aw1", content_type="video")
+    c = ContentItem(account_id=1, platform="douyin", external_id="aw1", content_type="video")
     db.add(c)
     db.flush()
     db.add(Comment(content_id=c.id, platform="douyin", comment_id="c1"))
@@ -66,7 +66,7 @@ def test_comment_settings_override(_engine):
 def _mk(db, ext, like, comment, platform="douyin"):
     from app.models import ContentItem, ContentMetricSnapshot
 
-    c = ContentItem(platform=platform, external_id=ext, content_type="video", source_kind="crawl")
+    c = ContentItem(account_id=1, platform=platform, external_id=ext, content_type="video", source_kind="crawl")
     db.add(c)
     db.flush()
     db.add(ContentMetricSnapshot(content_id=c.id, like=like, comment=comment))

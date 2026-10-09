@@ -35,9 +35,19 @@ def dashboard_summary(db: Session = Depends(get_db)):
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     week_ago = today - timedelta(days=7)
 
-    accounts_total = db.scalar(select(func.count(PlatformAccount.id))) or 0
+    accounts_total = (
+        db.scalar(
+            select(func.count(PlatformAccount.id)).where(PlatformAccount.is_system.is_(False))
+        )
+        or 0
+    )
     accounts_bad = (
-        db.scalar(select(func.count(PlatformAccount.id)).where(PlatformAccount.status.in_(("expired", "error"))))
+        db.scalar(
+            select(func.count(PlatformAccount.id)).where(
+                PlatformAccount.is_system.is_(False),
+                PlatformAccount.status.in_(("expired", "error")),
+            )
+        )
         or 0
     )
     today_content = db.scalar(select(func.count(ContentItem.id)).where(ContentItem.created_at >= today)) or 0

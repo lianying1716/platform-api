@@ -23,6 +23,7 @@ def _seed_content(db, *, external_id="aw1", author_id="A", platform="douyin", ti
     from app.models import ContentItem
 
     c = ContentItem(
+        account_id=1,
         platform=platform,
         external_id=external_id,
         content_type="video",

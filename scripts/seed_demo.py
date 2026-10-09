@@ -695,6 +695,13 @@ def _create_contents(session, rng, now, subs, tasks) -> list[ContentItem]:
         task_by_platform.setdefault(task.platform, task)
 
     contents: list[ContentItem] = []
+    # 每个平台的 demo 内容统一归到该平台第一个 demo 账号（阶段 0 起内容必须有账号归属）。
+    owner_by_platform: dict[str, int] = {}
+    for sub in subs:
+        owner_by_platform.setdefault(sub.platform, sub.account_id)
+    for task in tasks:
+        owner_by_platform.setdefault(task.platform, None)
+    fallback_owner = subs[0].account_id if subs else None
     for platform, titles in _CONTENT_TITLES.items():
         authors = _AUTHORS[platform]
         for i, title in enumerate(titles):
@@ -719,6 +726,7 @@ def _create_contents(session, rng, now, subs, tasks) -> list[ContentItem]:
                 source_id = sub_by_platform[platform].id
             external_id = f"{platform}-demo-{i + 1:03d}"
             content = ContentItem(
+                account_id=owner_by_platform.get(platform) or fallback_owner,
                 platform=platform,
                 external_id=external_id,
                 content_type=content_type,

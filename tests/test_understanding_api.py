@@ -12,7 +12,7 @@
 def _seed_asset(db, *, video_file="v.mp4", relative_path="douyin/a/1"):
     from app.models import ContentItem, MediaAsset
 
-    c = ContentItem(platform="douyin", external_id="aw1", content_type="video", title="t")
+    c = ContentItem(account_id=1, platform="douyin", external_id="aw1", content_type="video", title="t")
     db.add(c)
     db.flush()
     a = MediaAsset(content_id=c.id, relative_path=relative_path, video_file=video_file)

@@ -55,7 +55,7 @@ def test_video_understanding_unique_asset(_engine):
 
     S = sessionmaker(bind=_engine)
     db = S()
-    c = ContentItem(platform="douyin", external_id="t1vu", content_type="video")
+    c = ContentItem(account_id=1, platform="douyin", external_id="t1vu", content_type="video")
     db.add(c)
     db.flush()
     asset = MediaAsset(content_id=c.id, video_file="v.mp4")
@@ -176,6 +176,7 @@ def _mk_ready(db, ext, like, comment, *, platform="douyin", content_type="video"
     from app.models import ContentItem, ContentMetricSnapshot, MediaAsset
 
     c = ContentItem(
+        account_id=1,
         platform=platform, external_id=ext, content_type=content_type, source_kind="crawl"
     )
     db.add(c)

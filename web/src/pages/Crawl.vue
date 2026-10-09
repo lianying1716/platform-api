@@ -80,6 +80,16 @@
             <el-option v-for="p in platforms" :key="p.value" :label="p.label" :value="p.value" />
           </el-select>
         </el-form-item>
+        <el-form-item label="采集账号">
+          <el-select v-model="form.account_id" clearable placeholder="自动轮换（推荐）" style="width: 100%">
+            <el-option
+              v-for="a in formAccounts"
+              :key="a.id"
+              :label="a.display_name || `${a.platform} #${a.id}`"
+              :value="a.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="关键词">
           <el-input v-model="form.keyword" placeholder="例如：露营装备" />
         </el-form-item>
@@ -138,7 +148,7 @@
 
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import PlatformMark from '../components/PlatformMark.vue'
 import { api } from '../api'
 
@@ -153,6 +163,7 @@ const platforms = [
 interface CrawlTask {
   id: number
   platform: string
+  account_id: number | null
   keyword: string
   sort: string
   limit_per_run: number
@@ -165,6 +176,10 @@ interface CrawlTask {
 }
 
 const tasks = ref<CrawlTask[]>([])
+const accounts = ref<Array<{ id: number; platform: string; display_name: string }>>([])
+const formAccounts = computed(() =>
+  accounts.value.filter((a) => a.platform === form.platform),
+)
 const loading = ref(false)
 const running = ref<number | null>(null)
 const dialog = ref(false)
@@ -176,6 +191,7 @@ const runsLoading = ref(false)
 
 const form = reactive({
   platform: 'xhs',
+  account_id: null as number | null,
   keyword: '',
   sort: 'popular',
   limit_per_run: 50,
@@ -222,7 +238,7 @@ async function load() {
 function openCreate() {
   editing.value = null
   Object.assign(form, {
-    platform: 'xhs', keyword: '', sort: 'popular', limit_per_run: 50,
+    platform: 'xhs', account_id: null, keyword: '', sort: 'popular', limit_per_run: 50,
     with_comments: false, to_candidate: true, min_play: 0, interval_minutes: 1440, enabled: true,
   })
   dialog.value = true
@@ -283,6 +299,7 @@ function openEdit(row: CrawlTask) {
   editing.value = row
   Object.assign(form, {
     platform: row.platform,
+    account_id: row.account_id,
     keyword: row.keyword,
     sort: row.sort,
     limit_per_run: row.limit_per_run,
@@ -306,7 +323,15 @@ async function openRuns(row: CrawlTask) {
   }
 }
 
-onMounted(load)
+async function loadAccounts() {
+  const { data } = await api.get('/api/accounts')
+  accounts.value = data
+}
+
+onMounted(async () => {
+  await loadAccounts()
+  await load()
+})
 </script>
 
 <style scoped>

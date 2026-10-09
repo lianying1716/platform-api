@@ -14,7 +14,7 @@ from app.workers import handlers
 def _seed(db):
     from app.models import ContentItem, MediaAsset
 
-    c = ContentItem(platform="douyin", external_id="aw1", content_type="video")
+    c = ContentItem(account_id=1, platform="douyin", external_id="aw1", content_type="video")
     db.add(c)
     db.flush()
     a = MediaAsset(content_id=c.id, relative_path="douyin/a/1", video_file="")

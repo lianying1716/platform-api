@@ -20,7 +20,9 @@ async def check_all_accounts() -> None:
 
     db = SessionLocal()
     try:
-        accounts = db.scalars(select(PlatformAccount)).all()
+        accounts = db.scalars(
+            select(PlatformAccount).where(PlatformAccount.is_system.is_(False))
+        ).all()
         for account in accounts:
             if account.credential is None:
                 continue

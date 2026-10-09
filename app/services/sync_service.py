@@ -208,7 +208,9 @@ _REFRESH_FIELDS = ("title", "url", "cover_url", "author_name")
 def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[ContentItem, bool]:
     existing = db.scalar(
         select(ContentItem).where(
-            ContentItem.platform == sub.platform, ContentItem.external_id == item["external_id"]
+            ContentItem.platform == sub.platform,
+            ContentItem.external_id == item["external_id"],
+            ContentItem.account_id == sub.account_id,
         )
     )
     if existing:
@@ -220,6 +222,7 @@ def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[Content
                     setattr(existing, field, value)
         return existing, False
     content = ContentItem(
+        account_id=sub.account_id,
         platform=sub.platform,
         external_id=item["external_id"],
         content_type=item.get("content_type", "video"),
