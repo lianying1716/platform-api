@@ -2,24 +2,50 @@
 
 **产品名**：星采 / Stargather
 **定位**：自媒体创作的自动化素材管理加工
-**视觉调性**：V3 包豪斯 —— 纯几何、硬边、零圆角、零渐变、克制的砖红
+**视觉调性**：星空 / 诗意 / 浪漫 / 精致（界面本身仍走 V3 包豪斯，二者分开）
 
-## 标志
+## 标志（现行）
 
-**「轨道 Orbit」**：四角星 = 被采集进来的内容；斜向椭圆环带 = 轨道。
-环带在星前 / 星后交错穿插，形成「绕着星运行、把内容纳入轨道」的动势。
+**「月碗托星」M3**：一只开口朝上的碗/月牙托住一颗中央大星与散落星光，
+右上角一颗砖红小星 —— 对应「星采 = 采星」，把散落的星光采集收拢进同一个容器。
 
 | 项 | 值 |
 |---|---|
-| 主标 | 墨星 `#1A1512` + 砖红轨 `#CC2823` / 米白底 `#F3F0E7` |
-| 深底版 | 米白星 + 砖红轨 / 墨底 |
-| 完整规范 | `logo/orbit/README.md`（几何参数、配色表、尺寸分级、复现命令） |
-| 在线看 | http://127.0.0.1:9100/brand/orbit-gallery.html |
+| 夜空底 | `#0D1937` |
+| 月白（碗与星） | `#F3ECDD` |
+| 砖红强调 | `#CC2823` |
+| 矢量母版 | `logo/m3/stargather-m3.svg` |
+| 小尺寸简化版 | `logo/m3/small/stargather-m3-small.svg` |
+| 资产总览 | `logo/m3/OVERVIEW.png` |
+| 完整说明 | `logo/m3/README.md`（配色、资产清单、矢量化方法、复现命令） |
+| 在线看 | http://127.0.0.1:9100/brand/m3-OVERVIEW.png |
 
-> 早期那套「取景框 + 星」手绘稿已被否决，仅作历史记录留在 `logo/concepts/`、`logo/drafts/`，
-> **不要再用**；`logo/master/`、`logo/dist/` 是那版旧的派生文件，新接入一律走 `logo/orbit/`。
+## 前端接入（`web/public/`）
 
-## 配色（取自 `web/src/styles/tokens.css` 的 V3 令牌）
+由 `logo-gen/build_frontend_brand.py` 从矢量母版生成，**改标志请重跑脚本，不要手改产物**：
+
+| 文件 | 用途 |
+|---|---|
+| `logo-symbol.svg` | 登录页（夜空底方块，浅底上显示） |
+| `logo-symbol-dark.svg` | 侧栏（**透明底**，深色侧栏上显示） |
+| `logo-symbol-small.svg` | 小尺寸简化版（带底） |
+| `favicon.svg` / `favicon.ico` / `favicon-16/32/48.png` | 浏览器图标（用简化版，16px 才认得出） |
+| `icon-192.png` / `icon-512.png` / `maskable-512.png` | PWA / Android（完整版，大尺寸） |
+| `apple-touch-icon.png` | iOS |
+
+接入点：`web/index.html`（head 图标 + theme-color）、`web/public/site.webmanifest`、
+`web/src/pages/Login.vue`（登录卡片）、`web/src/layout/Layout.vue`（侧栏顶部）。
+
+## 历史（已被取代，仅留档）
+
+- **「轨道 Orbit」**（四角星 + 斜环）—— 曾短暂定为正式方案，后因风格与预期不符被 M3 取代。
+  见 `logo/orbit/README.md`。
+- 更早的「取景框 + 星」手绘稿、以及各轮生图探索，见 `logo/concepts/`、`logo/drafts/`、
+  `logo/generated/`、`logo/GENERATED.md`。**均不要再用于生产**。
+
+## 界面配色（`web/src/styles/tokens.css` 的 V3 令牌）
+
+界面与标志**分开**：标志用上面的夜空蓝/月白/砖红，界面继续用 V3 的墨色/米白/砖红体系。
 
 | 用途 | OKLCH | HEX |
 |---|---|---|
@@ -27,21 +53,3 @@
 | 主色（墨） | `oklch(0.20 0.010 60)` | `#1A1512` |
 | 底色（米白） | `oklch(0.955 0.012 88)` | `#F3F0E7` |
 | 辅助（蓝） | `oklch(0.48 0.17 258)` | `#0B58BB` |
-
-## 前端接入
-
-`web/public/` 下的 `logo-symbol.svg`（浅底）、`logo-symbol-dark.svg`（深底 / 侧栏）、
-`logo-symbol-small.svg`、`favicon.*`、`icon-*.png`、`maskable-512.png`、`apple-touch-icon.png`
-均由 `logo-gen/orbit_final.py` + `orbit_assets.py` 生成，改标志时请重新跑脚本，不要手改产物。
-
-## 平台图标
-
-`web/src/brand/platforms.ts` 是前端平台视觉的唯一来源（图标路径 + 平台名 + 品牌色），
-由 `PlatformMark.vue` 渲染。几何来自 **simple-icons（CC0-1.0）**；
-抖音用 simple-icons 的 `tiktok` 路径（两者共用同一音符商标几何）。
-
-**合规边界**：平台商标归各平台所有，仅作「这是哪个平台」的识别性使用，
-不得作为本项目自身标志、不得暗示官方合作或背书。
-完整合规声明（权威副本）见工作台仓库
-[`docs/license-and-usage-compliance.md`](https://github.com/lianying1716/xsai-workbench/blob/main/docs/license-and-usage-compliance.md) 第 5 节；
-本仓库内的同名文件只是指针。

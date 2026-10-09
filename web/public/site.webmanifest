@@ -18,8 +18,8 @@
       "purpose": "maskable"
     }
   ],
-  "theme_color": "#CC2823",
-  "background_color": "#F3F0E7",
+  "theme_color": "#0D1937",
+  "background_color": "#0D1937",
   "display": "standalone",
   "short_name": "星采",
   "start_url": "/"

@@ -1,7 +1,9 @@
 <template>
   <div class="login-wrap">
     <el-card class="login-card">
-      <img class="brand-mark" src="/logo-symbol.svg" alt="星采 Stargather" width="56" height="56" />
+      <div class="brand-tile">
+        <img class="brand-mark" src="/logo-symbol.svg" alt="星采 Stargather" width="52" height="52" />
+      </div>
       <h2>星采 <span class="en">Stargather</span></h2>
       <p class="tagline">自媒体创作的自动化素材管理加工</p>
       <p class="sub" v-if="initialized === false">首次使用，请设置管理员密码（至少 6 位）</p>
@@ -92,9 +94,20 @@ h2 .en {
   color: var(--muted);
 }
 
+.brand-tile {
+  width: 68px;
+  height: 68px;
+  margin: 2px auto 14px;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  border: 2px solid var(--ink);
+  box-shadow: var(--shadow-1);
+}
 .brand-mark {
   display: block;
-  margin: 0 auto 12px;
+  width: 52px;
+  height: 52px;
 }
 
 .tagline {

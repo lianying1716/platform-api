@@ -2,7 +2,7 @@
   <div class="ui-app">
     <aside class="ui-side">
       <div class="ui-brand">
-        <img class="mark" src="/logo-symbol-dark.svg" alt="" width="26" height="26" />
+        <img class="mark" src="/logo-symbol-dark.svg" alt="星采 Stargather" width="28" height="28" />
         <span class="bt">星采</span>
         <span class="bt-en">Stargather</span>
       </div>
@@ -89,8 +89,8 @@ function logout() {
   align-self: flex-end;
   padding-bottom: 1px;
 }
-/* 标志是位图化的 SVG，去掉 .ui-brand .mark 的色块底 */
-.ui-brand .mark { background: none; width: 26px; height: 26px; flex: none; display: block; }
+/* 品牌标志（M3）：深色侧栏用透明底版本，无白色方底 */
+.ui-brand .mark { background: none; width: 28px; height: 28px; flex: none; display: block; }
 
 /* V3：左侧栏顶部加一条砖红色块，呼应包豪斯原色。
    用绝对定位，不参与 flex 流，避免把侧栏内容顶出视口。 */
