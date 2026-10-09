@@ -63,7 +63,12 @@ def create_task(body: CrawlTaskIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=422, detail="关键词不能为空")
     if body.account_id is not None:
         account = db.get(PlatformAccount, body.account_id)
-        if account is None or account.is_system or account.platform != body.platform:
+        if (
+            account is None
+            or account.is_system
+            or account.platform != body.platform
+            or account.status != "active"
+        ):
             raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
     task = CrawlTask(**body.model_dump())
     db.add(task)
@@ -79,7 +84,12 @@ def update_task(task_id: int, body: CrawlTaskIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="任务不存在")
     if body.account_id is not None:
         account = db.get(PlatformAccount, body.account_id)
-        if account is None or account.is_system or account.platform != body.platform:
+        if (
+            account is None
+            or account.is_system
+            or account.platform != body.platform
+            or account.status != "active"
+        ):
             raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
     for k, v in body.model_dump().items():
         setattr(task, k, v)

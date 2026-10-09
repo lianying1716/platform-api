@@ -98,10 +98,20 @@ def update_cookie(platform: str, cookie: str, display_name: str = "") -> dict:
 
 # ---------- 采集/同步 ----------
 @mcp.tool()
-def create_crawl_task(platform: str, keyword: str, sort: str = "popular", limit_per_run: int = 50) -> dict:
-    """创建关键词采集任务。platform: xhs/douyin/bilibili 等；sort: popular/latest。"""
+def create_crawl_task(
+    platform: str,
+    keyword: str,
+    sort: str = "popular",
+    limit_per_run: int = 50,
+    account_id: int = 0,
+) -> dict:
+    """创建关键词采集任务。account_id=0 表示自动轮换；指定则固定用该账号。"""
     return _post("/api/skills/crawl-tasks", {
-        "platform": platform, "keyword": keyword, "sort": sort, "limit_per_run": limit_per_run,
+        "platform": platform,
+        "keyword": keyword,
+        "sort": sort,
+        "limit_per_run": limit_per_run,
+        "account_id": account_id or None,
     })
 
 

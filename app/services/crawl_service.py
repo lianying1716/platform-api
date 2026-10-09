@@ -79,6 +79,10 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
     run.account_id = account.id if account else None
     db.commit()
 
+    if account is None:
+        want = f"指定的账号 #{task.account_id}" if task.account_id else "该平台没有可用的 active 账号"
+        return _finish(db, run, "error", error=f"没有可用于采集的账号：{want}")
+
     try:
         cookie = _account_cookie(account)
         items = await crawler.search(

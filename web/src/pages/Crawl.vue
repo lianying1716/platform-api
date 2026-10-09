@@ -137,6 +137,9 @@
         </el-table-column>
         <el-table-column prop="fetched" label="抓取" width="80" />
         <el-table-column prop="added" label="新增" width="80" />
+        <el-table-column label="使用账号" width="130">
+          <template #default="{ row }">{{ accountLabel(row.account_id) }}</template>
+        </el-table-column>
         <el-table-column prop="error" label="错误" min-width="160" show-overflow-tooltip />
         <el-table-column label="开始时间" width="160">
           <template #default="{ row }">{{ fmt(row.started_at) }}</template>
@@ -204,6 +207,10 @@ const form = reactive({
 
 function platformLabel(v: string) {
   return platforms.find((p) => p.value === v)?.label ?? v
+}
+function accountLabel(accountId: number | null) {
+  if (!accountId) return '未指定'
+  return accounts.value.find((a) => a.id === accountId)?.display_name || `#${accountId}`
 }
 function intervalText(m: number) {
   const known: Record<number, string> = {

@@ -182,6 +182,7 @@ def skill_get_transcript(
 class CreateCrawlBody(BaseModel):
     platform: str
     keyword: str
+    account_id: int | None = None
     sort: str = "popular"
     limit_per_run: int = 50
     interval_minutes: int = 1440
@@ -194,9 +195,20 @@ def skill_create_crawl_task(
     key: ApiKey = Depends(require_scope("operate", "admin")),
 ):
     t0 = time.time()
+    if body.account_id is not None:
+        account = db.get(PlatformAccount, body.account_id)
+        if (
+            account is None
+            or account.is_system
+            or account.platform != body.platform
+            or account.status != "active"
+        ):
+            _log(db, key.id, "create_crawl_task", "bad_account", "error", int((time.time() - t0) * 1000))
+            raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
     task = CrawlTask(
         platform=body.platform,
         keyword=body.keyword,
+        account_id=body.account_id,
         sort=body.sort,
         limit_per_run=body.limit_per_run,
         interval_minutes=body.interval_minutes,
