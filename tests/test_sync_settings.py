@@ -234,3 +234,36 @@ def test_with_comments_is_idempotent(session, monkeypatch):
     _run(session, sub)
 
     assert len(_comment_jobs(session)) == 1
+
+
+def test_upsert_content_clamps_overlong_title(session):
+    """平台返回超长文案（抖音长简介）不能撑爆 VARCHAR 列 —— 入库前按列宽截断。"""
+    from app.models import PlatformAccount, Subscription
+    from app.services.sync_service import _upsert_content
+
+    acc = PlatformAccount(platform="douyin", display_name="a", status="active")
+    session.add(acc)
+    session.commit()
+    sub = Subscription(
+        id=9001, account_id=acc.id, platform="douyin", source_type="favorite",
+        remote_id="r", title="收藏",
+    )
+    session.add(sub)
+    session.commit()
+
+    long_title = "长" * 2000
+    item = {
+        "external_id": "e1",
+        "title": long_title,
+        "author_name": "作" * 500,
+        "url": "https://x/" + "u" * 3000,
+        "cover_url": "https://c/" + "c" * 3000,
+        "content_type": "video",
+    }
+    content, is_new = _upsert_content(session, sub, item)
+    session.commit()
+    assert is_new
+    assert len(content.title) == 512
+    assert len(content.author_name) == 128
+    assert len(content.url) <= 1024
+    assert len(content.cover_url) <= 1024

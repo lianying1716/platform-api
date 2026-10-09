@@ -203,6 +203,33 @@ def _in_savepoint(db: Session, op):
     return result
 
 
+# content_item 各文本列的宽度（与 models.py 对齐）。平台返回的文案常常超长
+# （抖音长视频简介可上千字），不截断会在 PG 上直接 StringDataRightTruncation。
+_CONTENT_WIDTH = {
+    "title": 512,
+    "author_name": 128,
+    "author_id": 128,
+    "url": 1024,
+    "cover_url": 1024,
+    "external_id": 128,
+}
+
+
+def clamp_str(value, width: int) -> str:
+    """按列宽截断字符串（None -> ""），避免超长写库报错。"""
+    text = "" if value is None else str(value)
+    return text[:width] if width and width > 0 else text
+
+
+def normalize_content_fields(item: dict) -> dict:
+    """把平台返回的内容字典里各文本字段截到列宽内；非文本键原样透传。"""
+    out = dict(item)
+    for key, width in _CONTENT_WIDTH.items():
+        if key in out:
+            out[key] = clamp_str(out[key], width)
+    return out
+
+
 def _as_int(value) -> int:
     try:
         return int(value or 0)

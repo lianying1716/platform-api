@@ -141,6 +141,8 @@ def _upsert(
 ) -> tuple[ContentItem, bool]:
     if account_id is None:
         raise RuntimeError("没有可用于采集的账号（跨账号独立素材要求内容必须有账号归属）")
+    # 同 sync：长文案按列宽截断，避免超长写库报错。
+    item = foundation.normalize_content_fields(item)
     existing = db.scalar(
         select(ContentItem).where(
             ContentItem.platform == task.platform,

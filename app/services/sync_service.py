@@ -211,6 +211,9 @@ _REFRESH_FIELDS = ("title", "url", "cover_url", "author_name")
 
 
 def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[ContentItem, bool]:
+    # 平台返回的文案可能超长（抖音长简介上千字），先按列宽截断再入库，
+    # 否则 PG 直接 StringDataRightTruncation。
+    item = foundation.normalize_content_fields(item)
     existing = db.scalar(
         select(ContentItem).where(
             ContentItem.platform == sub.platform,

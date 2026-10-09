@@ -41,9 +41,23 @@ class _FakeResp:
     def __init__(self, payload):
         self._payload = payload
 
+    @property
+    def text(self):
+        # 生产代码用 resp.text 识别被 WAF 拦时返回的 "blocked" 字面量。
+        if isinstance(self._payload, str):
+            return self._payload
+        try:
+            import json
+
+            return json.dumps(self._payload)
+        except Exception:  # noqa: BLE001
+            return ""
+
     def json(self):
         if isinstance(self._payload, Exception):
             raise self._payload
+        if isinstance(self._payload, str):
+            raise ValueError("not json")
         return self._payload
 
 
@@ -174,3 +188,62 @@ async def test_aweme_to_item_handles_missing_fields():
     assert item["cover_url"] == ""
     assert item["extra"]["download_url"] == ""
     assert item["published_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# WAF 兜底：纯 HTTP 返回 "blocked" 时必须走浏览器同源 fetch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_favorite_falls_back_to_browser_when_blocked(monkeypatch):
+    """收藏接口纯 HTTP 被 WAF 拦（响应体 "blocked"）时，回退浏览器同源 fetch。"""
+    from app.modules import douyin, douyin_browser_fetch
+
+    # 纯 HTTP：POST listcollection 返回 "blocked"
+    _patch(monkeypatch, {"listcollection": "blocked"})
+
+    called = {}
+
+    async def fake_fetch_json(path, params, cookie, *, method="GET", referer="https://www.douyin.com/"):
+        called.update({"path": path, "method": method, "cookie": cookie})
+        return {"status_code": 0, "has_more": 0, "cursor": 0, "aweme_list": [_aweme("FB1")]}
+
+    monkeypatch.setattr(douyin_browser_fetch, "fetch_json", fake_fetch_json)
+
+    items = await douyin.DouyinAdapter().fetch_source({"cookie": "c=cookie"}, "favorite", "", 10)
+    assert [i["external_id"] for i in items] == ["FB1"]
+    assert called["path"] == "/aweme/v1/web/aweme/listcollection"
+    assert called["method"] == "POST"      # 收藏接口必须用 POST，GET 会被平台 404
+    assert called["cookie"] == "c=cookie"
+
+
+@pytest.mark.asyncio
+async def test_like_falls_back_to_browser_when_blocked(monkeypatch):
+    from app.modules import douyin, douyin_browser_fetch
+
+    _patch(monkeypatch, {"aweme/favorite": "blocked"})
+
+    async def fake_fetch_json(path, params, cookie, *, method="GET", referer="https://www.douyin.com/"):
+        return {"status_code": 0, "has_more": 0, "cursor": 0, "aweme_list": [_aweme("LK1")]}
+
+    monkeypatch.setattr(douyin_browser_fetch, "fetch_json", fake_fetch_json)
+    items = await douyin.DouyinAdapter().fetch_source(
+        {"cookie": "c=1", "sec_user_id": "SELF"}, "like", "SELF", 10
+    )
+    assert [i["external_id"] for i in items] == ["LK1"]
+
+
+@pytest.mark.asyncio
+async def test_browser_fallback_failure_does_not_crash(monkeypatch):
+    """兜底失败（如浏览器不可用）只返回空，不把整批同步打挂。"""
+    from app.modules import douyin, douyin_browser_fetch
+
+    _patch(monkeypatch, {"listcollection": "blocked"})
+
+    async def boom(*a, **k):
+        raise RuntimeError("浏览器兜底抓取需要 Playwright")
+
+    monkeypatch.setattr(douyin_browser_fetch, "fetch_json", boom)
+    items = await douyin.DouyinAdapter().fetch_source({"cookie": "c=1"}, "favorite", "", 10)
+    assert items == []

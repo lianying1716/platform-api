@@ -237,18 +237,54 @@ def _client(cookie: str, referer: str) -> httpx.AsyncClient:
     )
 
 
-async def list_collection(cookie: str, cursor: str = "0", count: str = "10") -> dict | None:
-    """收藏列表（dysync SyncCollectVideos）。"""
-    params = dict(COLLECT_PARAMS, cursor=cursor, count=count)
-    async with _client(cookie, _HOST) as client:
-        resp = await client.post("/aweme/v1/web/aweme/listcollection", params=params)
-        if resp.status_code != 200:
-            return None
+async def _fetch_source_json(
+    path: str,
+    params: dict,
+    cookie: str,
+    *,
+    method: str = "GET",
+    referer: str = _HOST,
+) -> dict | None:
+    """取抖音接口 JSON；纯 HTTP 被 WAF 拦时回退到受管浏览器同源 fetch。
+
+    背景：我的收藏/点赞/收藏短剧这几个接口在纯 HTTP 下会被 WAF 直接挡掉，
+    响应体是字符串 ``blocked``（HTTP 仍是 200）。纯 Python 补 a_bogus/uifid 也无效
+    ——缺的是页面安全 SDK 运行时生成的签名。改用同源 fetch 后平台 SDK 会自行补齐，
+    实测返回正常 JSON。浏览器不可用时保留原行为（返回 None），不把同步整条打挂。
+    """
+    async with _client(cookie, referer) as client:
+        resp = await (
+            client.get(path, params=params) if method.upper() == "GET"
+            else client.post(path, params=params)
+        )
+    blocked = resp.status_code == 200 and (resp.text or "").strip() == "blocked"
+    if resp.status_code == 200 and not blocked:
         try:
             return resp.json()
         except ValueError:
-            # Cookie 无效时抖音常返回空体或 HTML
-            return None
+            return None  # Cookie 失效时常回空体/HTML，交给上层当"无数据"
+    if not blocked:
+        return None  # 非 200 且不是 blocked：维持既有语义（无数据）
+    # 被 WAF 拦 → 浏览器兜底
+    from app.modules import douyin_browser_fetch
+
+    try:
+        return await douyin_browser_fetch.fetch_json(
+            path, params, cookie, method=method, referer=referer
+        )
+    except Exception as exc:  # noqa: BLE001 兜底是增强项：失败只记日志，不打断整批同步
+        logging.getLogger("platform.douyin").warning(
+            "抖音浏览器兜底抓取失败 %s: %s", path, exc
+        )
+        return None
+
+
+async def list_collection(cookie: str, cursor: str = "0", count: str = "10") -> dict | None:
+    """收藏列表（dysync SyncCollectVideos）——纯 HTTP 被 WAF 拦时浏览器兜底。"""
+    params = dict(COLLECT_PARAMS, cursor=cursor, count=count)
+    return await _fetch_source_json(
+        "/aweme/v1/web/aweme/listcollection", params, cookie, method="POST"
+    )
 
 
 async def following_list(cookie: str, sec_user_id: str, offset: str = "0", count: str = "20") -> dict | None:
@@ -295,14 +331,9 @@ async def recent_collection_videos(
     """
     params = dict(FAVORITE_PARAMS, max_cursor=max_cursor, sec_user_id=sec_user_id, count=count)
     referer = "https://www.douyin.com/user/self?showTab=like"
-    async with _client(cookie, referer) as client:
-        resp = await client.get("/aweme/v1/web/aweme/favorite", params=params)
-        if resp.status_code != 200:
-            return None
-        try:
-            return resp.json()
-        except ValueError:
-            return None
+    return await _fetch_source_json(
+        "/aweme/v1/web/aweme/favorite", params, cookie, method="GET", referer=referer
+    )
 
 
 async def collect_folder_list(cookie: str, cursor: str = "0") -> dict | None:
@@ -377,14 +408,9 @@ async def series_videos(
 ) -> dict | None:
     """短剧剧集（dysync SyncSeriesViedosByMSeriesId -> /aweme/v1/web/series/aweme）。"""
     params = dict(SERIES_VIDEO_PARAMS, series_id=series_id, cursor=cursor, count=count)
-    async with _client(cookie, _HOST) as client:
-        resp = await client.get("/aweme/v1/web/series/aweme", params=params)
-        if resp.status_code != 200:
-            return None
-        try:
-            return resp.json()
-        except ValueError:
-            return None
+    return await _fetch_source_json(
+        "/aweme/v1/web/series/aweme", params, cookie, method="GET"
+    )
 
 
 def _aweme_to_item(aw: dict, fallback_author_id: str = "") -> dict:
