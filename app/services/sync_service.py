@@ -21,6 +21,7 @@ from app.core.queue import enqueue
 from app.models import (
     ContentItem,
     ContentMetricSnapshot,
+    ContentSource,
     MediaAsset,
     PlatformAccount,
     Subscription,
@@ -214,6 +215,7 @@ def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[Content
         )
     )
     if existing:
+        _touch_source(db, existing.id, sub)
         if not sub.only_new:
             # 覆盖更新：用本次拉到的值刷新可变字段（空值不覆盖，避免拉取缺字段时清空）。
             for field in _REFRESH_FIELDS:
@@ -238,7 +240,33 @@ def _upsert_content(db: Session, sub: Subscription, item: dict) -> tuple[Content
     )
     db.add(content)
     db.flush()
+    _touch_source(db, content.id, sub)
     return content, True
+
+
+def _touch_source(db: Session, content_id: int, sub: Subscription) -> None:
+    """同一账号内记录内容的所有订阅来源；取消订阅只停用来源，不删素材。"""
+    source = db.scalar(
+        select(ContentSource).where(
+            ContentSource.content_id == content_id,
+            ContentSource.subscription_id == sub.id,
+        )
+    )
+    if source is None:
+        source = ContentSource(
+            content_id=content_id,
+            account_id=sub.account_id,
+            subscription_id=sub.id,
+            link_kind="subscription",
+            source_ref="",
+            active=True,
+            first_seen_at=datetime.utcnow(),
+            last_seen_at=datetime.utcnow(),
+        )
+        db.add(source)
+    else:
+        source.active = True
+        source.last_seen_at = datetime.utcnow()
 
 
 def _persist_foundation(

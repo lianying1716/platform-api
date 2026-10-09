@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core import security
 from app.core.crypto import decrypt_credential
 from app.db import get_db
-from app.models import CreatorProfile, PlatformAccount, Subscription, SyncRun
+from app.models import ContentSource, CreatorProfile, PlatformAccount, Subscription, SyncRun
 from app.modules import get_adapter
 from app.services.sync_service import run_subscription_sync
 
@@ -66,6 +66,7 @@ class SubscriptionOut(BaseModel):
     download_quality: str = "best"
     with_comments: bool = False
     last_sync_at: datetime | None = None
+    deleted_at: datetime | None = None
     # creator 订阅即"关注的博主"；其头像供列表直接显示
     creator_avatar: str = ""
 
@@ -139,9 +140,14 @@ def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
     sub = db.get(Subscription, sub_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="订阅不存在")
-    db.delete(sub)
+    # 保留素材：只停用该订阅产生的来源关系，订阅行保留为历史。
+    sources = db.scalars(select(ContentSource).where(ContentSource.subscription_id == sub.id)).all()
+    for source in sources:
+        source.active = False
+    sub.enabled = False
+    sub.deleted_at = datetime.utcnow()
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "deactivated_sources": len(sources), "kept_contents": len(sources)}
 
 
 @router.post("/subscriptions/{sub_id}/sync")

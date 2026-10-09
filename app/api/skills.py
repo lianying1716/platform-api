@@ -396,3 +396,35 @@ async def skill_import_article(
     except ArticleImportError as exc:
         _log(db, key.id, "import_article", url[:200], "error", int((time.time() - t0) * 1000))
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/assets/{asset_id}/delete")
+def skill_delete_asset(
+    asset_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    key: ApiKey = Depends(require_scope("operate", "admin")),
+):
+    """外部 Agent 删除素材：必须 confirm=true，先写删除审计再物理删除。"""
+    from app.models import ContentItem, DeletionAudit, MediaAsset
+
+    t0 = time.time()
+    if (body or {}).get("confirm") is not True:
+        raise HTTPException(status_code=422, detail="删除素材必须显式确认：confirm=true")
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    content = db.get(ContentItem, asset.content_id)
+    db.add(
+        DeletionAudit(
+            asset_id=asset.id,
+            content_id=asset.content_id,
+            account_id=content.account_id if content else None,
+            actor=f"apikey:{key.id}",
+            reason=str((body or {}).get("reason") or "")[:500],
+        )
+    )
+    db.delete(asset)
+    db.commit()
+    _log(db, key.id, "delete_asset", f"asset_id={asset_id}", "ok", int((time.time() - t0) * 1000))
+    return {"ok": True, "asset_id": asset_id, "confirmed": True}

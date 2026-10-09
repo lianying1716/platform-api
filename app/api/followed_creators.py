@@ -82,7 +82,9 @@ def _out(sub: Subscription, profile: CreatorProfile | None) -> dict:
 def _creator_subs(db: Session) -> list[Subscription]:
     return list(
         db.scalars(
-            select(Subscription).where(Subscription.source_type == "creator").order_by(Subscription.id)
+            select(Subscription)
+            .where(Subscription.source_type == "creator", Subscription.deleted_at.is_(None))
+            .order_by(Subscription.id)
         ).all()
     )
 

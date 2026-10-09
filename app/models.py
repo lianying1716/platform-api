@@ -146,7 +146,38 @@ class Subscription(Base):
     download_quality: Mapped[str] = mapped_column(String(16), default="best")  # best/1080/720/audio
     with_comments: Mapped[bool] = mapped_column(Boolean, default=False)  # 本批是否走评论门控
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ContentSource(Base):
+    """内容来源关系：同一账号内同一视频可来自多个订阅；取消订阅只停用来源。"""
+
+    __tablename__ = "content_source"
+    __table_args__ = (
+        Index(
+            "uq_content_source_content_subscription",
+            "content_id",
+            "subscription_id",
+            unique=True,
+            postgresql_where=text("subscription_id IS NOT NULL"),
+            sqlite_where=text("subscription_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    content_id: Mapped[int] = mapped_column(ForeignKey("content_item.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("platform_account.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    subscription_id: Mapped[int | None] = mapped_column(
+        ForeignKey("subscription.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    link_kind: Mapped[str] = mapped_column(String(16), default="subscription")
+    source_ref: Mapped[str] = mapped_column(String(256), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class SyncRun(Base):
@@ -533,6 +564,20 @@ class TaskLog(Base):
     message: Mapped[str] = mapped_column(String(512), default="")
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     actor: Mapped[str] = mapped_column(String(64), default="worker")  # worker/scheduler/api
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DeletionAudit(Base):
+    """素材删除审计：谁、何时、为何删除哪条素材；Agent 删除必须有此记录。"""
+
+    __tablename__ = "deletion_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_id: Mapped[int] = mapped_column(Integer, index=True)
+    content_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    account_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    actor: Mapped[str] = mapped_column(String(64), default="admin")
+    reason: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

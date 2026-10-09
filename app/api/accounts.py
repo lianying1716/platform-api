@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -10,7 +10,7 @@ from app.config import settings
 from app.core import security
 from app.core.crypto import decrypt_credential, encrypt_credential, mask
 from app.db import get_db
-from app.models import AccountCredential, CredentialAuditLog, PlatformAccount
+from app.models import AccountCredential, ContentItem, CredentialAuditLog, PlatformAccount
 from app.modules import REGISTRY, get_adapter
 from app.modules.base import PlatformAdapter
 from app.modules.browser_qr import BrowserQrUnavailable
@@ -204,7 +204,10 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
 def list_accounts(db: Session = Depends(get_db)):
     accounts = db.scalars(
         select(PlatformAccount)
-        .where(PlatformAccount.is_system.is_(False))
+        .where(
+            PlatformAccount.is_system.is_(False),
+            PlatformAccount.status != "deleted",
+        )
         .order_by(PlatformAccount.id)
     ).all()
     return [_account_out(a) for a in accounts]
@@ -311,7 +314,18 @@ def delete_account(account_id: int, db: Session = Depends(get_db)):
     account = db.get(PlatformAccount, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
-    _audit(db, account.id, "delete", f"删除账号 {account.platform}/{account.display_name}")
-    db.delete(account)
+    if account.is_system:
+        raise HTTPException(status_code=400, detail="系统账号不能删除")
+    content_count = db.scalar(
+        select(func.count(ContentItem.id)).where(ContentItem.account_id == account.id)
+    ) or 0
+    _audit(
+        db,
+        account.id,
+        "delete",
+        f"软删除账号 {account.platform}/{account.display_name}；保留素材 {content_count} 条",
+    )
+    account.status = "deleted"
+    account.status_message = "账号已停用，素材保留"
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "soft_deleted": True, "kept_contents": content_count}
