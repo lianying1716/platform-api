@@ -41,3 +41,12 @@ def test_browser_fetch_paths_are_rate_limited():
     generic = (root / "app" / "modules" / "browser_fetch.py").read_text(encoding="utf-8")
     assert 'rate_limit.acquire("douyin")' in douyin
     assert "rate_limit.acquire(platform)" in generic
+
+
+def test_browser_paths_reuse_a_pool_instead_of_cold_starting():
+    """抖音/知乎都要靠页面签名，必须复用浏览器上下文，不能每次冷启动 Chromium。"""
+    root = Path(__file__).resolve().parents[2]
+    for rel in ("app/modules/douyin_browser_fetch.py", "app/modules/browser_fetch.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "browser_pool.acquire" in text, f"{rel} 未复用浏览器池"
+        assert "chromium.launch" not in text, f"{rel} 仍有冷启动"

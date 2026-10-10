@@ -99,43 +99,26 @@ async def fetch_json(
     http_method = (method or "GET").upper()
     url = f"{path}?{qs}"
 
-    pw = await async_playwright().start()
-    browser = None
-    try:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
-        )
-        context = await browser.new_context(
-            user_agent=_UA, viewport={"width": 1400, "height": 900}, locale="zh-CN"
-        )
-        cookies = _parse_cookie(cookie)
-        if cookies:
-            await context.add_cookies(cookies)
-        page = await context.new_page()
-        # 必须先打开抖音站点，让页面安全 SDK 初始化（否则同源 fetch 也会被拦）
+    from app.modules import browser_pool
+
+    _context, page = await browser_pool.acquire("douyin", cookie=cookie, domain=".douyin.com")
+    # 首次使用需要先打开抖音站点，让页面安全 SDK 初始化（否则同源 fetch 也会被拦）。
+    if not page.url or page.url == "about:blank":
         await page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=30_000)
         await asyncio.sleep(1.5)
-        result = await page.evaluate(
-            """async ([url, method, referer]) => {
-                try {
-                    const r = await fetch(url, {
-                        method, credentials: 'include',
-                        headers: {'referer': referer},
-                    });
-                    const t = await r.text();
-                    return {status: r.status, text: t};
-                } catch (e) { return {status: 0, text: String(e)}; }
-            }""",
-            [url, http_method, referer],
-        )
-    finally:
-        if browser is not None:
-            try:
-                await browser.close()
-            except Exception:  # noqa: BLE001 关闭失败不影响结果
-                logger.debug("浏览器关闭失败，已忽略", exc_info=True)
-        await pw.stop()
+    result = await page.evaluate(
+        """async ([url, method, referer]) => {
+            try {
+                const r = await fetch(url, {
+                    method, credentials: 'include',
+                    headers: {'referer': referer},
+                });
+                const t = await r.text();
+                return {status: r.status, text: t};
+            } catch (e) { return {status: 0, text: String(e)}; }
+        }""",
+        [url, http_method, referer],
+    )
 
     status = result.get("status")
     text = result.get("text") or ""

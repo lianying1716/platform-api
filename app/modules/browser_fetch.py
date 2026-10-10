@@ -7,41 +7,10 @@
 """
 
 import asyncio
-import json
 import logging
 from urllib.parse import quote
 
 logger = logging.getLogger("platform.browser_fetch")
-
-_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
-
-
-def _parse_cookie(cookie: str, domain: str) -> list[dict]:
-    out = []
-    for part in (cookie or "").split(";"):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        k, v = k.strip(), v.strip()
-        if not k:
-            continue
-        out.append({"name": k, "value": v, "domain": domain, "path": "/"})
-    return out
-
-
-def _require_playwright():
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError as exc:  # pragma: no cover - 环境相关
-        raise RuntimeError(
-            "需要安装 Playwright：uv sync --extra browser && uv run playwright install chromium"
-        ) from exc
-    return async_playwright
-
 
 async def fetch_search(
     *,
@@ -63,63 +32,42 @@ async def fetch_search(
     platform = "zhihu" if "zhihu.com" in search_url else ""
     if platform:
         await rate_limit.acquire(platform)
-    async_playwright = _require_playwright()
     captured: list[dict] = []
+    from app.modules import browser_pool
 
-    pw = await async_playwright().start()
-    browser = None
-    try:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
-        context = await browser.new_context(
-            user_agent=_UA, viewport={"width": 1400, "height": 900}, locale="zh-CN"
-        )
-        cookies = _parse_cookie(cookie, domain)
-        if cookies:
-            await context.add_cookies(cookies)
-        page = await context.new_page()
+    _context, page = await browser_pool.acquire(platform or "generic", cookie=cookie, domain=domain)
 
-        async def _on_response(resp):
-            if api_token not in resp.url:
-                return
-            try:
-                data = await resp.json()
-            except Exception:  # noqa: BLE001 非 JSON 响应忽略
-                return
-            if isinstance(data, dict):
-                captured.append(data)
+    async def _on_response(resp):
+        if api_token not in resp.url:
+            return
+        try:
+            data = await resp.json()
+        except Exception:  # noqa: BLE001 非 JSON 响应忽略
+            return
+        if isinstance(data, dict) and data not in captured:
+            captured.append(data)
 
-        page.on("response", lambda resp: asyncio.create_task(_on_response(resp)))
-        await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
-        deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
-        while not captured and asyncio.get_running_loop().time() < deadline:
+    page.on("response", lambda resp: asyncio.create_task(_on_response(resp)))
+    await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
+    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+    while not captured and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.25)
+    if not captured:
+        raise RuntimeError("浏览器抓取超时：平台未在限定时间内返回数据接口响应")
+    for _ in range(max(0, pages - 1)):
+        before = len(captured)
+        # 后续分页同样触发平台出站请求：逐页过限速桶，避免用滚动绕过保守档。
+        if platform:
+            await rate_limit.acquire(platform)
+        try:
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        except Exception:  # noqa: BLE001 页面切换中滚动失败可忽略
+            pass
+        page_deadline = asyncio.get_running_loop().time() + 5.0
+        while len(captured) == before and asyncio.get_running_loop().time() < page_deadline:
             await asyncio.sleep(0.25)
-        if not captured:
-            raise RuntimeError("浏览器抓取超时：平台未在限定时间内返回数据接口响应")
-        for _ in range(max(0, pages - 1)):
-            before = len(captured)
-            try:
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            except Exception:  # noqa: BLE001 页面切换中滚动失败可忽略
-                pass
-            page_deadline = asyncio.get_running_loop().time() + 5.0
-            while len(captured) == before and asyncio.get_running_loop().time() < page_deadline:
-                await asyncio.sleep(0.25)
-            if len(captured) == before:
-                break
-    finally:
-        if browser is not None:
-            try:
-                await browser.close()
-            except Exception:  # noqa: BLE001
-                logger.debug("浏览器关闭失败，已忽略", exc_info=True)
-        await pw.stop()
+        if len(captured) == before:
+            break
 
     if not captured:
         raise RuntimeError("浏览器抓取未取得任何数据响应")
