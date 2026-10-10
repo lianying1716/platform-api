@@ -216,14 +216,14 @@ def test_with_comments_false_keeps_gate(session, monkeypatch):
 
 
 def test_with_comments_true_still_skips_unsupported_platform(session):
-    """with_comments 也不能给不在评论白名单的平台入队（知乎暂无评论适配器）。"""
+    """with_comments 也不能给不在评论白名单的平台入队（如公众号）。"""
     from app.services.comment_gate import enqueue_comment_jobs
 
-    c = ContentItem(account_id=1, platform="zhihu", external_id="z1", content_type="video")
+    c = ContentItem(account_id=1, platform="wechat_mp", external_id="w1", content_type="article")
     session.add(c)
     session.commit()
     n = enqueue_comment_jobs(
-        session, [c], platform="zhihu",
+        session, [c], platform="wechat_mp",
         settings={"top_pct": 1.0, "budget": 10, "min_comments": 0, "min_likes": 0, "weight": 1},
         bypass_gate=True,
     )

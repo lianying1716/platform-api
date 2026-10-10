@@ -81,3 +81,49 @@ def build_search_url(base: str, keyword: str, sort: str = "") -> str:
     if sort == "latest":
         url += "&sort=created_time"
     return url
+
+
+async def fetch_until(
+    *,
+    page_url: str,
+    api_token: str,
+    cookie: str,
+    domain: str,
+    platform: str,
+    timeout_ms: int = 20_000,
+    pages: int = 1,
+) -> dict:
+    """导航到 page_url，监听平台自身发出的第一个 api_token 响应并返回其 JSON。
+
+    与 ``fetch_search`` 的区别：只取第一个匹配响应，用于详情/评论这类单页数据。
+    """
+    from app.core import rate_limit
+    from app.modules import browser_pool
+
+    await rate_limit.acquire(platform)
+    _context, page = await browser_pool.acquire(platform, cookie=cookie, domain=domain)
+    captured: list[dict] = []
+
+    async def _on_response(resp):
+        if api_token not in resp.url or captured:
+            return
+        try:
+            data = await resp.json()
+        except Exception:  # noqa: BLE001
+            return
+        if isinstance(data, dict):
+            captured.append(data)
+
+    page.on("response", lambda resp: asyncio.create_task(_on_response(resp)))
+    await page.goto(page_url, wait_until="domcontentloaded", timeout=30_000)
+    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+    while not captured and asyncio.get_running_loop().time() < deadline:
+        # 评论区常需滚动加载，滚动一次促成平台请求。
+        try:
+            await page.evaluate("window.scrollBy(0, 600)")
+        except Exception:  # noqa: BLE001
+            pass
+        await asyncio.sleep(0.4)
+    if not captured:
+        raise RuntimeError("浏览器抓取超时：平台未在限定时间内返回评论接口响应")
+    return captured[0]

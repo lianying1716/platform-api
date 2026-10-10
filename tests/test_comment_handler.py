@@ -141,14 +141,14 @@ def test_handler_dedups_duplicate_cids_in_one_batch(_engine, monkeypatch):
 
 
 def test_handler_skips_non_comment_platform_content(_engine, monkeypatch):
-    """非评论白名单平台（如知乎）直接跳过，不取 cookie 也不抓取（不抛错）。"""
+    """不在评论白名单内的平台（如公众号）直接跳过，不取 cookie 也不抓取（不抛错）。"""
     from sqlalchemy.orm import sessionmaker
 
     from app.models import Comment, ContentItem
     from app.workers.handlers import handle_fetch_comments
 
     db = sessionmaker(bind=_engine)()
-    c = ContentItem(account_id=1, platform="zhihu", external_id="z1", content_type="video")
+    c = ContentItem(account_id=1, platform="wechat_mp", external_id="w1", content_type="article")
     db.add(c)
     db.commit()
 

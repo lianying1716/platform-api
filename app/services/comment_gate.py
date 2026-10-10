@@ -14,10 +14,10 @@ from sqlalchemy.orm import Session
 from app.models import CommentFetchState, ContentItem, ContentMetricSnapshot, JobQueue
 
 # 评论抓取覆盖全部采集平台：抖音（浏览器同源）、B站（aid + reply）、
-# 快手（REST v2）、小红书（GET + xsec_token）。
+# 快手（REST v2）、小红书（GET + xsec_token）、知乎（comment_v5 浏览器监听）。
 # 其余平台不入队——否则 worker 的 handle_fetch_comments 会因无适配器反复失败重试，
 # 把一次成功的采集/同步任务拖成 error。新增平台评论能力时在此登记。
-COMMENT_PLATFORMS = frozenset({"douyin", "bilibili", "kuaishou", "xhs"})
+COMMENT_PLATFORMS = frozenset({"douyin", "bilibili", "kuaishou", "xhs", "zhihu"})
 
 
 def _latest_metric(db: Session, content_id: int) -> ContentMetricSnapshot | None:
