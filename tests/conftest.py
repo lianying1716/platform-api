@@ -45,7 +45,26 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", _deny, raising=False)
     monkeypatch.setattr(socket.socket, "connect_ex", _deny, raising=False)
     monkeypatch.setattr(socket, "create_connection", _deny, raising=False)
+
+    # 平台出站限速在测试里必须关掉：限速是**生产**风控措施（默认 12 次/分钟，
+    # 即每次最多等 5 秒），测试既不该为此变慢，也不该依赖真实 pacing 时序。
+    # 单独验证限速行为本身时用 tests/test_rate_limit.py（它自己临时 enable）。
+    from app.core import rate_limit
+
+    rate_limit.disable()
+    # 翻页间隔同理：生产必须慢（风控），测试必须快。全局清零，避免每个测试文件
+    # 各自 monkeypatch _PAGE_DELAY_RANGE 而漏掉新平台。
+    from app.modules import bilibili as _bili, douyin as _dy
+
+    monkeypatch.setattr(_bili, "_PAGE_DELAY_RANGE", (0.0, 0.0), raising=False)
+    monkeypatch.setattr(_dy, "_PAGE_DELAY_RANGE", (0.0, 0.0), raising=False)
+    # 下载间隔同理（生产保守档 4~10s）：测试里清零，否则每条 download 用例白等。
+    from app.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "download_min_gap_seconds", 0.0, raising=False)
+    monkeypatch.setattr(_settings, "download_jitter_seconds", 0.0, raising=False)
     yield
+    rate_limit.enable()
 
 
 @pytest.fixture()

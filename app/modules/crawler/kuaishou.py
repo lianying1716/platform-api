@@ -14,6 +14,8 @@ from pathlib import Path
 
 import httpx
 
+from app.core import rate_limit
+
 _GRAPHQL_URL = "https://www.kuaishou.com/graphql"
 _GRAPHQL_PATH = Path(__file__).parent / "graphql" / "kuaishou" / "search_query.graphql"
 
@@ -70,7 +72,7 @@ async def search_kuaishou(keyword: str, cookie: str, limit: int, sort: str) -> l
     cursor = "1"
     prev_cursor = ""
     session_id = ""
-    async with httpx.AsyncClient(headers=headers, timeout=20) as c:
+    async with rate_limit.http_client("kuaishou", headers=headers, timeout=20) as c:
         while len(items) < limit:
             body = {
                 "operationName": "visionSearchPhoto",

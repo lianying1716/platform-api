@@ -8,6 +8,7 @@
 import base64
 import re
 import time
+from contextlib import asynccontextmanager
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
@@ -66,6 +67,35 @@ _CODE_EXPIRED = 86038
 
 def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(headers={"User-Agent": _UA, "Referer": "https://www.bilibili.com"}, timeout=15)
+
+
+# 翻页之间的随机等待（秒）。B站 412 风控很敏感，翻页必须拉开间隔；
+# 抖音侧早有 _PACE，B站此前完全没有 —— 这里补齐（保守档）。
+_PAGE_DELAY_RANGE = (2.0, 6.0)
+
+
+async def _pace() -> None:
+    """翻页/连续请求之间的随机等待（测试可把 _PAGE_DELAY_RANGE 调成 0 跳过）。"""
+    import asyncio
+    import random
+
+    lo, hi = _PAGE_DELAY_RANGE
+    if hi <= 0:
+        return
+    await asyncio.sleep(random.uniform(lo, hi))
+
+
+@asynccontextmanager
+async def _http():
+    """限速 + 配好的 httpx 客户端。所有 B站出站请求都应走这里。
+
+    两层保险：逐请求令牌桶（rate_limit，保守档 12 次/分钟）+ 调用处的 _pace 翻页间隔。
+    限速必须逐请求（交 _ThrottledClient），否则会话内翻页会连发。
+    """
+    from app.core import rate_limit
+
+    async with rate_limit._ThrottledClient.wrap("bilibili", _client()) as client:
+        yield client
 
 
 def _cookies(credential: dict) -> dict:
@@ -134,7 +164,7 @@ class BilibiliAdapter:
         }
 
     async def check(self, credential: dict) -> CheckResult:
-        async with _client() as client:
+        async with _http() as client:
             resp = await client.get(_COOKIE_INFO, cookies=_cookies(credential))
             data = resp.json()
             if data.get("code") != 0:
@@ -149,7 +179,7 @@ class BilibiliAdapter:
             return CheckResult(ok=True, message=msg, external_id=mid, display_name=name, need_refresh=need_refresh)
 
     async def qr_start(self) -> QrStart:
-        async with _client() as client:
+        async with _http() as client:
             resp = await client.get(_QR_GENERATE)
             data = resp.json()
             if data.get("code") != 0:
@@ -167,7 +197,7 @@ class BilibiliAdapter:
         refresh_token = (credential.get("ac_time_value") or "").strip()
         if not refresh_token:
             raise ValueError("缺少 ac_time_value，无法自动刷新 B站 Cookie")
-        async with _client() as client:
+        async with _http() as client:
             correspond = await client.get(_CORRESPOND + _correspond_path(), cookies=_cookies(credential))
             match = re.search(r'<div id="1-name">(.+?)</div>', correspond.text)
             if not match:
@@ -210,7 +240,7 @@ class BilibiliAdapter:
             return new_credential
 
     async def qr_poll(self, session_data: dict) -> QrPoll:
-        async with _client() as client:
+        async with _http() as client:
             resp = await client.get(_QR_POLL, params={"qrcode_key": session_data["qrcode_key"]})
             body = resp.json()
             code = body.get("data", {}).get("code")
@@ -268,7 +298,7 @@ class BilibiliAdapter:
         return []
 
     async def _list_favorites(self, credential: dict, mid: str) -> list[dict]:
-        async with _client() as client:
+        async with _http() as client:
             resp = await client.get(_FAV_LIST_ALL, params={"up_mid": mid}, cookies=_cookies(credential))
             data = resp.json().get("data") or {}
         return [
@@ -279,7 +309,7 @@ class BilibiliAdapter:
 
     async def _list_collections(self, credential: dict, mid: str) -> list[dict]:
         """合集/系列列表。返回结构不稳定，解析防御式，拿不到就返回 []。"""
-        async with _client() as client:
+        async with _http() as client:
             resp = await client.get(
                 _SEASONS_SERIES,
                 params={"mid": mid, "page_num": "1", "page_size": "20"},
@@ -298,7 +328,7 @@ class BilibiliAdapter:
         return out
 
     async def _list_followings(self, credential: dict, mid: str) -> list[dict]:
-        async with _client() as client:
+        async with _http() as client:
             resp = await client.get(
                 _FOLLOWINGS, params={"mid": mid, "pn": "1", "ps": "20"}, cookies=_cookies(credential)
             )
@@ -324,7 +354,7 @@ class BilibiliAdapter:
         page_size = 50
         page = 1
         try:
-            async with _client() as client:
+            async with _http() as client:
                 while len(out) < limit:
                     resp = await client.get(
                         _FOLLOWINGS,
@@ -366,6 +396,7 @@ class BilibiliAdapter:
                     # 以 total 为权威停止条件；缺 total 时靠「空页」兜底（下方 if not rows）。
                     if total and len(out) >= total:
                         break
+                    await _pace()      # 翻页间隔（B站 412 风控敏感）
                     page += 1
         except (httpx.HTTPError, ValueError):
             pass
@@ -378,7 +409,7 @@ class BilibiliAdapter:
 
     async def _follower_count(self, vmid: str, credential: dict) -> int:
         try:
-            async with _client() as client:
+            async with _http() as client:
                 resp = await client.get(
                     "https://api.bilibili.com/x/relation/stat",
                     params={"vmid": vmid},
@@ -404,7 +435,7 @@ class BilibiliAdapter:
     async def _fetch_favorite_videos(self, credential: dict, remote_id: str, limit: int) -> list[dict]:
         items: list[dict] = []
         page = 1
-        async with _client() as client:
+        async with _http() as client:
             while len(items) < limit:
                 resp = await client.get(
                     "https://api.bilibili.com/x/v3/fav/resource/list",
@@ -436,6 +467,7 @@ class BilibiliAdapter:
                     )
                 if not data.get("has_more"):
                     break
+                await _pace()          # 翻页间隔
                 page += 1
         return items[:limit]
 
@@ -450,7 +482,7 @@ class BilibiliAdapter:
         img_key, sub_key = await bili_sign.fetch_wbi_keys(cookies)
         items: list[dict] = []
         page = 1
-        async with _client() as client:
+        async with _http() as client:
             while len(items) < limit:
                 params = bili_sign.sign(
                     {
@@ -500,6 +532,7 @@ class BilibiliAdapter:
                 page_count = ((data.get("data") or {}).get("page") or {}).get("count") or 0
                 if page_count and page >= int(page_count):
                     break
+                await _pace()          # 翻页间隔
                 page += 1
         return items[:limit]
 
@@ -548,7 +581,7 @@ async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
     if not bvid:
         return None
     cookies = _cookies(credential)
-    async with _client() as client:
+    async with _http() as client:
         try:
             view = await client.get(_VIEW, params={"bvid": bvid}, cookies=cookies)
             if view.status_code in (412, 403):

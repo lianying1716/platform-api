@@ -10,6 +10,7 @@ utils/DouyinRequestParamManager.cs（MIT，纯 HTTP + Cookie，无签名依赖�
 """
 
 import logging
+from contextlib import asynccontextmanager
 
 import httpx
 
@@ -287,6 +288,19 @@ def _client(cookie: str, referer: str) -> httpx.AsyncClient:
     )
 
 
+@asynccontextmanager
+async def _http(cookie: str, referer: str):
+    """限速 + 配好的 httpx 客户端。所有抖音出站请求都应走这里。
+
+    注意：限速是**逐请求**的（交给 _ThrottledClient），不是"进会话取一次"——
+    否则会话内 for 循环翻页会连发，等于没限速。
+    """
+    from app.core import rate_limit
+
+    async with rate_limit._ThrottledClient.wrap("douyin", _client(cookie, referer)) as client:
+        yield client
+
+
 async def _fetch_source_json(
     path: str,
     params: dict,
@@ -302,7 +316,7 @@ async def _fetch_source_json(
     ——缺的是页面安全 SDK 运行时生成的签名。改用同源 fetch 后平台 SDK 会自行补齐，
     实测返回正常 JSON。浏览器不可用时保留原行为（返回 None），不把同步整条打挂。
     """
-    async with _client(cookie, referer) as client:
+    async with _http(cookie, referer) as client:
         resp = await (
             client.get(path, params=params) if method.upper() == "GET"
             else client.post(path, params=params)
@@ -355,7 +369,7 @@ async def following_list(cookie: str, sec_user_id: str, offset: str = "0", count
         count=count,
     )
     referer = "https://www.douyin.com/user/self?showTab=like"
-    async with _client(cookie, referer) as client:
+    async with _http(cookie, referer) as client:
         resp = await client.get("/aweme/v1/web/user/following/list", params=params)
         if resp.status_code != 200:
             return None
@@ -389,7 +403,7 @@ async def recent_collection_videos(
 async def collect_folder_list(cookie: str, cursor: str = "0") -> dict | None:
     """自定义收藏夹列表（dysync SyncCollectFolderList -> /aweme/v1/web/collects/list）。"""
     params = dict(COLLECT_FOLDER_LIST_PARAMS, cursor=cursor, count="10")
-    async with _client(cookie, _COLLECT_REFERER) as client:
+    async with _http(cookie, _COLLECT_REFERER) as client:
         resp = await client.get("/aweme/v1/web/collects/list", params=params)
         if resp.status_code != 200:
             return None
@@ -404,7 +418,7 @@ async def collect_folder_videos(
 ) -> dict | None:
     """收藏夹内作品（dysync SyncCollectVideosByCollectId -> /aweme/v1/web/collects/video/list）。"""
     params = dict(COLLECT_FOLDER_VIDEO_PARAMS, collects_id=collects_id, cursor=cursor, count=count)
-    async with _client(cookie, _COLLECT_REFERER) as client:
+    async with _http(cookie, _COLLECT_REFERER) as client:
         resp = await client.get("/aweme/v1/web/collects/video/list", params=params)
         if resp.status_code != 200:
             return None
@@ -417,7 +431,7 @@ async def collect_folder_videos(
 async def mix_list(cookie: str, cursor: str = "0") -> dict | None:
     """收藏的合集列表（dysync SyncMixList -> /aweme/v1/web/mix/listcollection）。"""
     params = dict(MIX_LIST_PARAMS, cursor=cursor, count="10")
-    async with _client(cookie, _HOST) as client:
+    async with _http(cookie, _HOST) as client:
         resp = await client.get("/aweme/v1/web/mix/listcollection", params=params)
         if resp.status_code != 200:
             return None
@@ -430,7 +444,7 @@ async def mix_list(cookie: str, cursor: str = "0") -> dict | None:
 async def mix_videos(cookie: str, mix_id: str, cursor: str = "0", count: str = "15") -> dict | None:
     """合集内作品（dysync SyncMixViedosByMixId -> /aweme/v1/web/mix/aweme）。"""
     params = dict(MIX_VIDEO_PARAMS, mix_id=mix_id, cursor=cursor, count=count)
-    async with _client(cookie, _HOST) as client:
+    async with _http(cookie, _HOST) as client:
         resp = await client.get("/aweme/v1/web/mix/aweme", params=params)
         if resp.status_code != 200:
             return None
@@ -443,7 +457,7 @@ async def mix_videos(cookie: str, mix_id: str, cursor: str = "0", count: str = "
 async def series_list(cookie: str, cursor: str = "0") -> dict | None:
     """收藏的短剧列表（dysync SyncSeriesList -> /aweme/v1/web/series/collections）。"""
     params = dict(SERIES_LIST_PARAMS, cursor=cursor, count="15")
-    async with _client(cookie, _HOST) as client:
+    async with _http(cookie, _HOST) as client:
         resp = await client.get("/aweme/v1/web/series/collections", params=params)
         if resp.status_code != 200:
             return None
@@ -813,7 +827,7 @@ class DouyinAdapter:
         referer = f"https://www.douyin.com/user/{sec_user_id}"
         items: list[dict] = []
         max_cursor = "0"
-        async with _client(cookie, referer) as client:
+        async with _http(cookie, referer) as client:
             while len(items) < limit:
                 params = dict(
                     POST_PARAMS,

@@ -11,6 +11,7 @@ item 为归一化 dict（与 services/crawl_service 约定一致）。
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
 import httpx
@@ -20,6 +21,21 @@ from app.modules.crawler.kuaishou import search_kuaishou
 from app.modules.crawler.zhihu import search_zhihu
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+
+@asynccontextmanager
+async def _http(platform: str, headers: dict):
+    """限速 + httpx 客户端。爬取/评论等出站请求统一走这里。
+
+    这里曾是限速的漏网之鱼：评论抓取直接用裸 httpx + 自己的 interval，
+    实测一次同步里 1.4 秒内连发 4 个 comment/list 请求。现在统一过平台桶。
+    """
+    from app.core import rate_limit
+
+    # 逐请求限速：评论抓取在一个会话里 for 循环翻页，只在会话开始限速等于没限。
+    client = httpx.AsyncClient(headers=headers, timeout=20)
+    async with rate_limit._ThrottledClient.wrap(platform, client) as c:
+        yield c
 
 
 def _cookie_dict(cookie_str: str) -> dict:
@@ -39,7 +55,7 @@ async def search_bilibili(keyword: str, cookie: str, limit: int, sort: str) -> l
     items: list[dict] = []
     page = 1
     headers = {"User-Agent": _UA, "Referer": "https://www.bilibili.com"}
-    async with httpx.AsyncClient(headers=headers, timeout=20) as c:
+    async with _http("bilibili", headers) as c:
         while len(items) < limit:
             params = bili_sign.sign(
                 {"search_type": "video", "keyword": keyword, "page": page, "page_size": 20, "order": order},
@@ -76,7 +92,7 @@ async def search_douyin(keyword: str, cookie: str, limit: int, sort: str) -> lis
     headers = {"User-Agent": _UA, "Referer": "https://www.douyin.com/", "Cookie": cookie}
     base = "https://www.douyin.com/aweme/v1/web/general/search/single/"
     sort_type = "0" if sort == "popular" else "1"
-    async with httpx.AsyncClient(headers=headers, timeout=20) as c:
+    async with _http("douyin", headers) as c:
         while len(items) < limit:
             query = {
                 "device_platform": "webapp", "aid": "6383", "channel": "channel_pc_web",
@@ -128,7 +144,7 @@ async def search_xhs(keyword: str, cookie: str, limit: int, sort: str) -> list[d
     page = 1
     headers_base = {"User-Agent": _UA, "Referer": "https://www.xiaohongshu.com/", "Cookie": cookie,
                     "Origin": "https://www.xiaohongshu.com"}
-    async with httpx.AsyncClient(headers=headers_base, timeout=20) as c:
+    async with _http("xhs", headers_base) as c:
         while len(items) < limit:
             payload = {
                 "keyword": keyword, "page": page, "page_size": 20,
@@ -185,7 +201,7 @@ async def fetch_comments(
     headers = {"User-Agent": _UA, "Referer": "https://www.douyin.com/", "Cookie": cookie}
     collected: list[dict] = []
     cursor = "0"
-    async with httpx.AsyncClient(headers=headers, timeout=20) as c:
+    async with _http("douyin", headers) as c:
         for _ in range(max(1, pages)):
             query = dict(BASE_PARAMS, aweme_id=aweme_id, cursor=cursor, count=str(per_page), item_type="0")
             qs = urlencode(query)

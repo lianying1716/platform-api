@@ -23,8 +23,9 @@ TTL_FOLLOWINGS = 6 * 3600  # 关注列表：6 小时
 TTL_STATS = 24 * 3600  # 粉丝/获赞：24 小时
 TTL_CREATOR_VIDEOS = 15 * 60  # 博主投稿/视频：15 分钟
 
-# 命中风控后的冷却（秒）——期间不发起同操作请求
-COOLDOWN_SECONDS = 30 * 60
+# 命中风控后的冷却（秒）——期间不发起同操作请求。
+# 保守档：命中风控说明平台已经警觉，冷 2 小时比 30 分钟更稳妥（宁可慢，不冒封号风险）。
+COOLDOWN_SECONDS = 2 * 3600
 
 # 进程内 single-flight 锁（key -> Lock）
 _locks: dict[str, "asyncio.Lock"] = {}

@@ -38,9 +38,14 @@ class Settings(BaseSettings):
     worker_concurrency: int = 2
     # 连续下载之间的最小间隔（秒）。抖音/CDN 对密集直链请求敏感，批量同步会一次入队
     # 几十条下载，必须拉开间隔（照抄抖小云在下载循环里的 Task.Delay）。
-    download_min_gap_seconds: float = 2.0
+    # 保守档：抖小云是 random(1,4)s，我们取更慢的 4~10s，宁可慢也不触发风控。
+    download_min_gap_seconds: float = 4.0
     # 间隔上浮的随机抖动上限（秒）；实际间隔 = gap + random(0, jitter)。
-    download_jitter_seconds: float = 3.0
+    download_jitter_seconds: float = 6.0
+    # 平台出站 API 请求限速（按平台分桶的令牌桶）：每 60 秒最多放行多少次。
+    # 参考 bili-sync 默认 4 次/250ms(≈16/s)，但那是单人少量场景；我们多账号批量同步，
+    # 取明显更保守的 12 次/分钟（≈5 秒一次），避免 WAF/412/封号。
+    rate_limit_per_minute: int = 12
     # 转录默认模型与设备（faster-whisper）
     whisper_model: str = "base"
     whisper_device: str = "auto"  # auto / cpu / cuda

@@ -163,9 +163,10 @@ async def download_direct(
         if result.ok:
             return result
         last_message = result.message
-        # 重试前退避（1s、2s…），避免连打 CDN 触发限流
+        # 重试前退避（保守档：3s、6s、12s…，上限 30s）。
+        # 抖小云是 1→2→4s；我们把起点和上限都抬高，失败时不要急促重试。
         if idx < attempts - 1:
-            await asyncio.sleep(min(1.0 * (2 ** idx), 8.0))
+            await asyncio.sleep(min(3.0 * (2 ** idx), 30.0))
     return DownloadResult(ok=False, message=last_message or "直链下载失败")
 
 
@@ -242,8 +243,8 @@ async def _fetch_to_file(
     headers: dict,
     *,
     is_stream: bool = True,
-    parallel_above: int = 8 * 1024 * 1024,
-    concurrency: int = 4,
+    parallel_above: int = 20 * 1024 * 1024,  # 保守档：对齐 bili-sync 默认阈值
+    concurrency: int = 2,                    # 保守档：bili-sync 默认 4，我们减半
 ) -> DownloadResult:
     """把一组候选 URL 依次尝试，任一成功即落盘 target（照抄 bili-sync multi_fetch_internal）。
 

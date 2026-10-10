@@ -7,8 +7,10 @@
 """
 
 
+import json
 import mimetypes
 import os
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -328,6 +330,39 @@ def stream_media(asset_id: int, request: Request, db: Session = Depends(get_db))
     return resp
 
 
+def _cover_cache_dir():
+    """封面缓存目录：落在 data_dir 下（不进 git，可随时重建）。"""
+    from app.config import settings
+
+    path = Path(settings.data_dir) / "cover_cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _read_cached_cover(asset_id: int) -> tuple[str, bytes] | None:
+    meta = _cover_cache_dir() / f"{asset_id}.json"
+    if not meta.exists():
+        return None
+    try:
+        data = json.loads(meta.read_text("utf-8"))
+        body = (_cover_cache_dir() / data["file"]).read_bytes()
+        return data.get("type", "image/jpeg"), body
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _write_cached_cover(asset_id: int, ctype: str, body: bytes) -> None:
+    """增强项：写缓存失败不影响本次响应。"""
+    try:
+        name = f"{asset_id}.bin"
+        (_cover_cache_dir() / name).write_bytes(body)
+        (_cover_cache_dir() / f"{asset_id}.json").write_text(
+            json.dumps({"file": name, "type": ctype}), "utf-8"
+        )
+    except OSError:
+        pass
+
+
 @router.get("/assets/{asset_id}/cover")
 async def proxy_cover(asset_id: int, db: Session = Depends(get_db)):
     """封面图代理：服务端带 Referer/UA 拉取后回传，避免前端直连被签名/防盗链卡住。
@@ -354,6 +389,17 @@ async def proxy_cover(asset_id: int, db: Session = Depends(get_db)):
         ),
         "Referer": referer,
     }
+    # 说明：封面 CDN **不带 Cookie**（公开图片地址），不构成"账号被封"的风险，
+    # 因此不走 API 限速桶（否则 5 秒/张会把素材页拖垮）。真正的风险是"每次翻页都
+    # 重打一遍 CDN" —— 用本地缓存解决：每张封面只在首次请求时取一次。
+    cached = _read_cached_cover(asset_id)
+    if cached is not None:
+        ctype, body = cached
+        return StreamingResponse(
+            iter([body]),
+            media_type=ctype,
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             resp = await client.get(url, headers=headers)
@@ -362,6 +408,7 @@ async def proxy_cover(asset_id: int, db: Session = Depends(get_db)):
     if resp.status_code != 200 or not resp.content:
         raise HTTPException(status_code=502, detail=f"封面获取失败：HTTP {resp.status_code}")
     ctype = (resp.headers.get("content-type") or "image/jpeg").split(";")[0]
+    _write_cached_cover(asset_id, ctype, resp.content)
     return StreamingResponse(
         iter([resp.content]),
         media_type=ctype,

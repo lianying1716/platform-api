@@ -9,6 +9,8 @@ success 且 guest=false 视为在线（该接口无需 x-s 签名）。
 
 import httpx
 
+from app.core import rate_limit
+
 from app.modules.base import CheckResult, QrPoll, QrStart, register
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -40,7 +42,7 @@ class XhsAdapter:
             "Origin": "https://www.xiaohongshu.com",
         }
         try:
-            async with httpx.AsyncClient(headers=headers, timeout=15) as client:
+            async with rate_limit.http_client("xhs", headers=headers, timeout=15) as client:
                 resp = await client.get(_ME)
                 data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:

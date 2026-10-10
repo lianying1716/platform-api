@@ -14,6 +14,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from app.core import rate_limit
+
 from app.modules.crawler import zhihu_sign
 
 _SEARCH_PATH = "/api/v4/search_v3"  # 签名只覆盖路径+查询串（不含 host）
@@ -120,7 +122,7 @@ async def search_zhihu(keyword: str, cookie: str, limit: int, sort: str) -> list
     }
     items: list[dict] = []
     page = 1
-    async with httpx.AsyncClient(timeout=20) as c:
+    async with rate_limit.http_client("zhihu", timeout=20) as c:
         while len(items) < limit:
             offset = (page - 1) * _PAGE_SIZE
             params = {

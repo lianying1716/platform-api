@@ -14,6 +14,8 @@ from hashlib import md5
 
 import httpx
 
+from app.core import rate_limit
+
 _MIXIN_MAP = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
     33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
@@ -32,7 +34,11 @@ def _mixin_key(img_key: str, sub_key: str) -> str:
 
 async def fetch_wbi_keys(cookies: dict | None = None) -> tuple[str, str]:
     """纯 HTTP 拉取 wbi img_key/sub_key（无需浏览器 localStorage）。"""
-    async with httpx.AsyncClient(headers={"User-Agent": _UA, "Referer": "https://www.bilibili.com"}, timeout=15) as c:
+    async with rate_limit.http_client(
+        "bilibili",
+        headers={"User-Agent": _UA, "Referer": "https://www.bilibili.com"},
+        timeout=15,
+    ) as c:
         resp = await c.get(_NAV_API, cookies=cookies or {})
         data = resp.json().get("data", {})
         wbi = data.get("wbi_img", {})

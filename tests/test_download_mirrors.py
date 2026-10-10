@@ -176,7 +176,7 @@ def test_cover_proxy_returns_404_without_cover(client, session):
     assert r.status_code == 404
 
 
-def test_cover_proxy_sends_referer_and_streams_image(client, session, monkeypatch):
+def test_cover_proxy_sends_referer_and_streams_image(client, session, monkeypatch, tmp_path):
     """封面走服务端代理并带 Referer（抖音/B站封面防盗链+签名会过期）。"""
     import httpx
     from app.models import ContentItem, MediaAsset, PlatformAccount
@@ -214,9 +214,22 @@ def test_cover_proxy_sends_referer_and_streams_image(client, session, monkeypatc
             seen["headers"] = headers or {}
             return _Resp()
 
+    # 封面缓存目录隔离到 tmp，避免上一次运行留下的缓存把请求短路掉。
+    import app.api.assets as assets_mod
+
+    cache_dir = tmp_path / "cover_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(assets_mod, "_cover_cache_dir", lambda: cache_dir)
+
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     r = client.get(f"/api/assets/{a.id}/cover")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/jpeg")
     assert r.content.startswith(b"\xff\xd8")
     assert "douyin.com" in seen["headers"].get("Referer", ""), "必须补 Referer 绕防盗链"
+
+    # 第二次请求应命中本地缓存（不再打 CDN）——素材页一屏几十张封面不能次次回源。
+    seen.clear()
+    r2 = client.get(f"/api/assets/{a.id}/cover")
+    assert r2.status_code == 200 and r2.content == r.content
+    assert not seen, "第二次应命中缓存，不该再请求 CDN"

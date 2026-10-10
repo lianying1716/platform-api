@@ -18,6 +18,8 @@ from pathlib import Path
 
 import httpx
 
+from app.core import rate_limit
+
 from app.modules.base import CheckResult, QrPoll, QrStart, register
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -92,7 +94,7 @@ class KuaishouAdapter(_CookieAdapter):
             "query": _ks_profile_query(),
         }
         try:
-            async with httpx.AsyncClient(headers=headers, timeout=15) as client:
+            async with rate_limit.http_client("kuaishou", headers=headers, timeout=15) as client:
                 resp = await client.post(_KS_GRAPHQL, json=body)
                 data = resp.json() or {}
         except (httpx.HTTPError, ValueError) as exc:
@@ -129,7 +131,7 @@ class ZhihuAdapter(_CookieAdapter):
             "x-requested-with": "fetch",
         }
         try:
-            async with httpx.AsyncClient(headers=headers, timeout=15) as client:
+            async with rate_limit.http_client("zhihu", headers=headers, timeout=15) as client:
                 resp = await client.get("https://www.zhihu.com/api/v4/me")
                 data = resp.json() if resp.status_code == 200 else {}
         except (httpx.HTTPError, ValueError) as exc:
