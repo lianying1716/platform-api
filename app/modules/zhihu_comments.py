@@ -19,9 +19,33 @@ def _comment_path(content_url: str, content_id: str) -> str:
     return f"/api/v4/comment_v5/answers/{content_id}/root_comment"
 
 
+def _child_path(root_comment_id: str) -> str:
+    return f"/api/v4/comment_v5/comment/{root_comment_id}/child_comment"
+
+
+def _normalize(it: dict, parent_comment_id: str = "0") -> dict:
+    author = it.get("author") or {}
+    avatar = author.get("avatar_url") or ""
+    if avatar.startswith("//"):
+        avatar = "https:" + avatar
+    tags = it.get("comment_tag")
+    ip = tags[0].get("text", "") if isinstance(tags, list) and tags else ""
+    return {
+        "comment_id": str(it.get("id", "")),
+        "parent_comment_id": parent_comment_id,
+        "user_id": str(author.get("id", "")),
+        "nickname": author.get("name", ""),
+        "avatar": avatar,
+        "content": it.get("content", ""),
+        "like_count": int(it.get("like_count") or 0),
+        "ip_location": ip,
+        "created_at": it.get("created_time"),
+    }
+
+
 async def fetch_comments(
     *, content_url: str, content_id: str, cookie: str, pages: int = 2, per_page: int = 20,
-    top_n: int = 20, interval: float = 1.0,
+    top_n: int = 20, interval: float = 1.0, with_sub_comments: bool = False,
 ) -> list[dict]:
     """抓知乎一级评论（回答/文章/视频），按点赞降序取 Top-N。"""
     from app.modules import browser_fetch
@@ -34,22 +58,20 @@ async def fetch_comments(
         platform="zhihu",
         pages=pages,
     )
-    collected: list[dict] = []
-    for it in data.get("data") or []:
-        author = it.get("author") or {}
-        avatar = author.get("avatar_url") or ""
-        if avatar.startswith("//"):
-            avatar = "https:" + avatar
-        collected.append({
-            "comment_id": str(it.get("id", "")),
-            "parent_comment_id": "0",
-            "user_id": str(author.get("id", "")),
-            "nickname": author.get("name", ""),
-            "avatar": avatar,
-            "content": it.get("content", ""),
-            "like_count": int(it.get("like_count") or 0),
-            "ip_location": (it.get("comment_tag") or [{}])[0].get("text", "") if isinstance(it.get("comment_tag"), list) else "",
-            "created_at": it.get("created_time"),
-        })
+    roots = data.get("data") or []
+    collected: list[dict] = [_normalize(it) for it in roots]
+    if with_sub_comments:
+        for it in roots:
+            root_id = it.get("id")
+            if not root_id or not int(it.get("child_comment_count") or 0):
+                continue
+            child = await browser_fetch.fetch_until(
+                page_url=content_url,
+                api_token=_child_path(str(root_id)),
+                cookie=cookie,
+                domain=".zhihu.com",
+                platform="zhihu",
+            )
+            collected.extend(_normalize(c, parent_comment_id=str(root_id)) for c in child.get("data") or [])
     collected.sort(key=lambda x: x["like_count"], reverse=True)
     return collected[:top_n]

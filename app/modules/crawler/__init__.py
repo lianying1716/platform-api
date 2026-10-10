@@ -50,6 +50,7 @@ async def fetch_comments(*, aweme_id: str, cookie: str, pages: int = 2, per_page
         return await xhs_comments.fetch_comments(
             note_id=aweme_id, xsec_token=extra.get("xsec_token", ""), cookie=cookie,
             pages=pages, per_page=per_page, top_n=top_n, interval=interval,
+            with_sub_comments=with_sub_comments,
         )
     if platform == "zhihu":
         from app.modules import zhihu_comments
@@ -58,8 +59,9 @@ async def fetch_comments(*, aweme_id: str, cookie: str, pages: int = 2, per_page
         return await zhihu_comments.fetch_comments(
             content_url=extra.get("url", ""), content_id=aweme_id, cookie=cookie,
             pages=pages, per_page=per_page, top_n=top_n, interval=interval,
+            with_sub_comments=with_sub_comments,
         )
     return await _client.fetch_comments(
         aweme_id=aweme_id, cookie=cookie, pages=pages, per_page=per_page,
-        top_n=top_n, interval=interval,
+        top_n=top_n, interval=interval, with_sub_comments=with_sub_comments,
     )

@@ -190,7 +190,7 @@ _SEARCHERS = {
 # ---------------- 抖音评论 ----------------
 async def fetch_comments(
     *, aweme_id: str, cookie: str, pages: int = 2, per_page: int = 20,
-    top_n: int = 20, interval: float = 1.0,
+    top_n: int = 20, interval: float = 1.0, with_sub_comments: bool = False,
 ) -> list[dict]:
     """抓抖音作品一级评论：默认排序抓 pages 页，本地按点赞降序取 top_n。"""
     from app.modules.douyin import BASE_PARAMS
@@ -205,7 +205,8 @@ async def fetch_comments(
             "/aweme/v1/web/comment/list/", query, cookie,
             method="GET", referer="https://www.douyin.com/",
         )
-        for it in data.get("comments") or []:
+        roots = data.get("comments") or []
+        for it in roots:
             user = it.get("user") or {}
             avatar = (((user.get("avatar_thumb") or {}).get("url_list") or [""])[0])
             collected.append({
@@ -219,6 +220,18 @@ async def fetch_comments(
                 "ip_location": it.get("ip_label", ""),
                 "created_at": it.get("create_time"),
             })
+        if with_sub_comments:
+            for it in roots:
+                reply_total = int(it.get("reply_comment_total") or 0)
+                root_id = it.get("cid")
+                if not root_id or reply_total <= 0:
+                    continue
+                collected.extend(
+                    await _fetch_douyin_sub_comments(
+                        aweme_id=aweme_id, comment_id=str(root_id), cookie=cookie,
+                        per_page=per_page, interval=interval,
+                    )
+                )
         if not data.get("has_more"):
             break
         cursor = str(data.get("cursor", "0"))
@@ -226,6 +239,45 @@ async def fetch_comments(
             await asyncio.sleep(interval)
     collected.sort(key=lambda x: x["like_count"], reverse=True)
     return collected[:top_n]
+
+
+async def _fetch_douyin_sub_comments(
+    *, aweme_id: str, comment_id: str, cookie: str, per_page: int = 20, interval: float = 1.0,
+) -> list[dict]:
+    """抖音某条评论下的二级评论（/aweme/v1/web/comment/list/reply/）。"""
+    from app.modules import douyin_browser_fetch
+
+    out: list[dict] = []
+    cursor = "0"
+    while True:
+        query = {
+            "comment_id": comment_id, "cursor": cursor, "count": str(per_page),
+            "item_type": "0", "item_id": aweme_id,
+        }
+        data = await douyin_browser_fetch.fetch_json(
+            "/aweme/v1/web/comment/list/reply/", query, cookie,
+            method="GET", referer="https://www.douyin.com/",
+        )
+        for it in data.get("comments") or []:
+            user = it.get("user") or {}
+            avatar = (((user.get("avatar_thumb") or {}).get("url_list") or [""])[0])
+            out.append({
+                "comment_id": str(it.get("cid", "")),
+                "parent_comment_id": comment_id,
+                "user_id": str(user.get("uid", "")),
+                "nickname": user.get("nickname", ""),
+                "avatar": avatar,
+                "content": it.get("text", ""),
+                "like_count": int(it.get("digg_count") or 0),
+                "ip_location": it.get("ip_label", ""),
+                "created_at": it.get("create_time"),
+            })
+        if not data.get("has_more"):
+            break
+        cursor = str(data.get("cursor", "0"))
+        if interval:
+            await asyncio.sleep(interval)
+    return out
 
 
 async def search(*, platform: str, keyword: str, cookie: str, limit: int = 50, sort: str = "popular") -> list[dict]:

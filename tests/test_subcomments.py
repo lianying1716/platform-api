@@ -135,3 +135,105 @@ async def test_sub_comments_off_by_default(monkeypatch):
     monkeypatch.setattr(bilibili, "_http", lambda: Ctx())
     await bili_comments.fetch_comments(bvid="BV1", cookie="c", pages=1, top_n=10, interval=0)
     assert not any(u.endswith("/x/v2/reply/reply") for u in seen)
+
+
+@pytest.mark.asyncio
+async def test_xhs_sub_comments(monkeypatch):
+    from app.modules import xhs_comments
+    from app.core import rate_limit
+    from app.modules.crawler import xhs_sign
+
+    monkeypatch.setattr(xhs_sign, "sign", lambda *a, **k: {})
+    calls = []
+    queue = [
+        {"success": True, "data": {"has_more": False, "cursor": "", "comments": [
+            {"id": "11", "user_info": {"user_id": "1", "nickname": "甲"}, "content": "主评论",
+             "like_count": "5", "sub_comment_count": 1},
+        ]}},
+        {"success": True, "data": {"has_more": False, "cursor": "", "comments": [
+            {"id": "21", "user_info": {"user_id": "2", "nickname": "乙"}, "content": "回复一",
+             "like_count": "1"},
+        ]}},
+    ]
+
+    class Resp:
+        def json(self):
+            return queue.pop(0)
+
+    class Client:
+        async def get(self, url, params=None, headers=None, **kw):
+            calls.append(url)
+            return Resp()
+
+    class Ctx:
+        async def __aenter__(self):
+            return Client()
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(rate_limit, "http_client", lambda *a, **k: Ctx())
+    out = await xhs_comments.fetch_comments(
+        note_id="n1", xsec_token="TOK", cookie="a1=x", pages=1, top_n=10,
+        interval=0, with_sub_comments=True,
+    )
+    ids = [c["comment_id"] for c in out]
+    assert "11" in ids and "21" in ids
+    sub = next(c for c in out if c["comment_id"] == "21")
+    assert sub["parent_comment_id"] == "11"
+    assert any(u.endswith("/api/sns/web/v2/comment/sub/page") for u in calls)
+
+
+@pytest.mark.asyncio
+async def test_zhihu_sub_comments(monkeypatch):
+    from app.modules import zhihu_comments, browser_fetch
+
+    calls = []
+
+    async def fake_fetch_until(**kwargs):
+        calls.append(kwargs["api_token"])
+        if "root_comment" in kwargs["api_token"]:
+            return {"data": [{"id": "11", "content": "主评论", "like_count": 5,
+                              "created_time": 100, "child_comment_count": 1,
+                              "author": {"id": "1", "name": "甲"}}],
+                    "paging": {"is_end": True}}
+        return {"data": [{"id": "21", "content": "回复一", "like_count": 1,
+                          "created_time": 101, "author": {"id": "2", "name": "乙"}}],
+                "paging": {"is_end": True}}
+
+    monkeypatch.setattr(browser_fetch, "fetch_until", fake_fetch_until)
+    out = await zhihu_comments.fetch_comments(
+        content_url="https://www.zhihu.com/question/1/answer/2", content_id="2",
+        cookie="d_c0=1", pages=1, top_n=10, with_sub_comments=True,
+    )
+    ids = [c["comment_id"] for c in out]
+    assert "11" in ids and "21" in ids
+    sub = next(c for c in out if c["comment_id"] == "21")
+    assert sub["parent_comment_id"] == "11"
+    assert any("/comment/11/child_comment" in t for t in calls)
+
+
+@pytest.mark.asyncio
+async def test_douyin_sub_comments(monkeypatch):
+    from app.modules.crawler import client
+    from app.modules import douyin_browser_fetch
+
+    paths = []
+
+    async def fake_fetch(path, params, cookie, *, method="GET", referer="https://www.douyin.com/"):
+        paths.append(path)
+        if path.endswith("/comment/list/"):
+            return {"comments": [{"cid": "11", "text": "主评论", "digg_count": 5,
+                                  "reply_comment_total": 1, "user": {"uid": "1", "nickname": "甲"}}],
+                    "has_more": 0}
+        return {"comments": [{"cid": "21", "text": "回复一", "digg_count": 1,
+                              "user": {"uid": "2", "nickname": "乙"}}], "has_more": 0}
+
+    monkeypatch.setattr(douyin_browser_fetch, "fetch_json", fake_fetch)
+    out = await client.fetch_comments(
+        aweme_id="a1", cookie="c", pages=1, top_n=10, interval=0, with_sub_comments=True
+    )
+    ids = [c["comment_id"] for c in out]
+    assert "11" in ids and "21" in ids
+    assert next(c for c in out if c["comment_id"] == "21")["parent_comment_id"] == "11"
+    assert any(p.endswith("/comment/list/reply/") for p in paths)
