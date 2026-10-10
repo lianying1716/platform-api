@@ -35,6 +35,13 @@ async def fetch_comments(*, aweme_id: str, cookie: str, pages: int = 2, per_page
             bvid=aweme_id, cookie=cookie, pages=pages, per_page=per_page,
             top_n=top_n, interval=interval,
         )
+    if platform == "kuaishou":
+        from app.modules import ks_comments
+
+        return await ks_comments.fetch_comments(
+            photo_id=aweme_id, cookie=cookie, pages=pages, per_page=per_page,
+            top_n=top_n, interval=interval,
+        )
     return await _client.fetch_comments(
         aweme_id=aweme_id, cookie=cookie, pages=pages, per_page=per_page,
         top_n=top_n, interval=interval,

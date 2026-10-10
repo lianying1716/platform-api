@@ -6,7 +6,7 @@ import pytest
 def test_comment_platforms_still_whitelisted():
     from app.services.comment_gate import COMMENT_PLATFORMS
 
-    assert COMMENT_PLATFORMS == frozenset({"douyin", "bilibili"})
+    assert COMMENT_PLATFORMS == frozenset({"douyin", "bilibili", "kuaishou"})
 
 
 @pytest.mark.asyncio
