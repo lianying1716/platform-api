@@ -617,7 +617,9 @@ async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
     再 /x/player/playurl 拿 dash 流）。**不要**用 yt-dlp：B站对 yt-dlp 的元数据请求
     直接回 412 风控，实测连不带 Cookie 的公开视频都下不动。
 
-    返回 ``{"video": [url...], "audio": [url...], "cid": int}``；拿不到返回 None。
+    返回 ``{"video": [url...], "audio": [url...], "cid": int, "pages": [...]}``；
+    多P视频的每个分P有独立 cid 与流地址，``pages`` 逐个给出，``video``/``audio``
+    始终等于第一个分P（向后兼容单P调用方）。拿不到返回 None。
     """
     bvid = str(bvid or "").strip()
     if not bvid:
@@ -637,39 +639,67 @@ async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
         cid = info.get("cid")
         if not cid:
             return None
-        try:
-            play = await client.get(
-                _PLAYURL,
-                params={
-                    "bvid": bvid, "cid": cid, "qn": 127,
-                    "fnval": _FNVAL_DASH, "fourk": 1,
-                },
-                cookies=cookies,
-            )
-            if play.status_code in (412, 403):
-                raise RuntimeError(f"B站风控校验失败（HTTP {play.status_code}），请稍后再试")
-            pdata = play.json()
-        except (httpx.HTTPError, ValueError):
-            return None
-        if pdata.get("code") != 0:
-            return None
-        p = pdata.get("data") or {}
-        dash = p.get("dash") or {}
-        video_urls = _stream_urls(_pick_best_video_stream(dash.get("video") or []))
-        if not video_urls:
-            # 无 DASH：部分老视频只有 durl（FLV/MP4 混合流）
-            durl = p.get("durl") or []
-            if durl:
+        page_infos = info.get("pages") or [{"cid": cid, "page": 1, "part": info.get("title", "")}]
+
+        async def _resolve_page(page_cid: int) -> dict | None:
+            try:
+                play = await client.get(
+                    _PLAYURL,
+                    params={
+                        "bvid": bvid, "cid": page_cid, "qn": 127,
+                        "fnval": _FNVAL_DASH, "fourk": 1,
+                    },
+                    cookies=cookies,
+                )
+                if play.status_code in (412, 403):
+                    raise RuntimeError(f"B站风控校验失败（HTTP {play.status_code}），请稍后再试")
+                pdata = play.json()
+            except (httpx.HTTPError, ValueError):
+                return None
+            if pdata.get("code") != 0:
+                return None
+            p = pdata.get("data") or {}
+            dash = p.get("dash") or {}
+            v_urls = _stream_urls(_pick_best_video_stream(dash.get("video") or []))
+            if not v_urls:
+                durl = p.get("durl") or []
                 mixed: list[str] = []
                 for seg in durl:
                     for u in [seg.get("url"), *(seg.get("backup_url") or [])]:
                         if isinstance(u, str) and u and u not in mixed:
                             mixed.append(u)
-                if mixed:
-                    return {"video": mixed, "audio": [], "cid": cid}
+                if not mixed:
+                    return None
+                return {"video": mixed, "audio": []}
+            return {
+                "video": v_urls,
+                "audio": _stream_urls(_pick_best_audio_stream(dash.get("audio") or [])),
+            }
+
+        pages: list[dict] = []
+        for page in page_infos:
+            page_cid = page.get("cid")
+            if not page_cid:
+                continue
+            streams = await _resolve_page(int(page_cid))
+            if streams is None:
+                continue
+            pages.append({
+                "cid": int(page_cid),
+                "page": int(page.get("page") or len(pages) + 1),
+                "part": page.get("part", ""),
+                "duration": int(page.get("duration") or 0),
+                **streams,
+            })
+        if not pages:
             return None
-        audio_urls = _stream_urls(_pick_best_audio_stream(dash.get("audio") or []))
-        return {"video": video_urls, "audio": audio_urls, "cid": cid}
+        first = pages[0]
+        return {
+            "video": first["video"],
+            "audio": first["audio"],
+            "cid": first["cid"],
+            "pages": pages,
+        }
 
 
 register(BilibiliAdapter())

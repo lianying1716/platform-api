@@ -95,7 +95,8 @@ def _http(credential: dict):
     return bili_http()
 
 
-async def fetch_subtitles(credential: dict, bvid: str, cid: int, out_dir: Path) -> list[str]:
+async def fetch_subtitles(credential: dict, bvid: str, cid: int, out_dir: Path,
+                          stem: str | None = None) -> list[str]:
     """抓取非 AI 字幕并写入 ``<bvid>.<lan>.srt``，返回写入的文件名。"""
     from app.modules.bilibili import _cookies
 
@@ -116,14 +117,15 @@ async def fetch_subtitles(credential: dict, bvid: str, cid: int, out_dir: Path) 
             text = build_srt(body)
             if not text.strip():
                 continue
-            target = Path(out_dir) / f"{bvid}.{lan}.srt"
+            target = Path(out_dir) / f"{stem or bvid}.{lan}.srt"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
             written.append(target.name)
     return written
 
 
-async def fetch_danmaku(credential: dict, bvid: str, cid: int, duration: int, out_dir: Path) -> str:
+async def fetch_danmaku(credential: dict, bvid: str, cid: int, duration: int, out_dir: Path,
+                        stem: str | None = None) -> str:
     """抓取弹幕并写入 ``<bvid>.xml``，返回文件名（无弹幕返回空串）。"""
     from app.modules.bilibili import _cookies
 
@@ -143,7 +145,7 @@ async def fetch_danmaku(credential: dict, bvid: str, cid: int, duration: int, ou
     xml = build_danmaku_xml("".join(chunks))
     if "<d " not in xml:
         return ""
-    target = Path(out_dir) / f"{bvid}.xml"
+    target = Path(out_dir) / f"{stem or bvid}.xml"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(xml, encoding="utf-8")
     return target.name

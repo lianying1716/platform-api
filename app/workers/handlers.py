@@ -150,14 +150,35 @@ async def _download_content(content: ContentItem, target_dir, cookie: str):
             logger.warning("B站 playurl 解析失败（%s），回退 yt-dlp：%s", bvid, exc)
             resolved = None
         if resolved:
-            name = _download_output_name(content, content.url)
-            result = await media_download.download_dash(
-                resolved["video"], resolved["audio"], target_dir, name, cookie=cookie
-            )
-            if result.ok:
-                await _write_bili_extras(content, cookie, resolved, target_dir)
-            return result
+            return await _download_bili_pages(content, cookie, resolved, target_dir)
         return await media_download.download(content.url, target_dir, cookie=cookie)
+
+
+async def _download_bili_pages(content: ContentItem, cookie: str, resolved: dict, target_dir) -> object:
+    """按分P下载：单P行为不变；多P每集单独命名 + 各自字幕/弹幕/NFO。
+
+    返回 DownloadResult（video_file 指向第一个分P产物，兼容既有状态判断）。
+    """
+    pages = resolved.get("pages") or [{
+        "cid": resolved.get("cid"), "page": 1, "part": "",
+        "video": resolved["video"], "audio": resolved.get("audio") or [],
+    }]
+    base_name = _download_output_name(content, content.url)
+    first_result = None
+    for idx, page in enumerate(pages, start=1):
+        if len(pages) > 1:
+            page_title = page.get("part") or f"P{page.get('page') or idx}"
+            name = f"{base_name}_{idx:02d}_{page_title}"
+        else:
+            name = base_name
+        result = await media_download.download_dash(
+            page["video"], page.get("audio") or [], target_dir, name, cookie=cookie
+        )
+        if result.ok:
+            await _write_bili_extras(content, cookie, page, target_dir, name=name)
+        if first_result is None:
+            first_result = result
+    return first_result
 
     return await media_download.download(content.url, target_dir, cookie=cookie)
 
@@ -177,7 +198,8 @@ async def _resolve_bili_urls(*, cookie: str, bvid: str):
     return await bili_module.resolve_play_urls(cred, bvid)
 
 
-async def _write_bili_extras(content: ContentItem, cookie: str, resolved: dict, target_dir) -> None:
+async def _write_bili_extras(content: ContentItem, cookie: str, resolved: dict, target_dir,
+                             name: str | None = None) -> None:
     """B站下载成功后补齐字幕/弹幕/NFO（对齐 bili-sync 的媒体库体验）。
 
     属于增强项：任一失败只记日志，绝不翻转已完成的下载状态。
@@ -197,18 +219,21 @@ async def _write_bili_extras(content: ContentItem, cookie: str, resolved: dict, 
         if k in ("SESSDATA", "bili_jct", "buvid3", "DedeUserID", "ac_time_value"):
             cred[k.lower() if k != "DedeUserID" else "dedeuserid"] = v.strip()
     try:
-        await bili_extras.fetch_subtitles(cred, bvid, int(cid), target_dir)
+        await bili_extras.fetch_subtitles(cred, bvid, int(cid), target_dir, stem=name)
     except Exception:  # noqa: BLE001 增强项失败不翻转下载
         logger.warning("B站字幕抓取失败 %s，已忽略", bvid, exc_info=True)
     try:
-        await bili_extras.fetch_danmaku(cred, bvid, int(cid), content.duration_sec or 0, target_dir)
+        await bili_extras.fetch_danmaku(
+            cred, bvid, int(cid), resolved.get("duration") or content.duration_sec or 0,
+            target_dir, stem=name,
+        )
     except Exception:  # noqa: BLE001
         logger.warning("B站弹幕抓取失败 %s，已忽略", bvid, exc_info=True)
     try:
         published = content.published_at.isoformat() if content.published_at else None
         bili_extras.write_nfo(
             target_dir,
-            bvid,
+            name or bvid,
             title=content.title or bvid,
             author=content.author_name or "",
             published_at=published,
