@@ -55,7 +55,7 @@
       </div>
       <div v-else class="asset-grid">
         <article v-for="a in assets" :key="a.asset_id" class="asset" :class="{ picked: isPicked(a) }">
-          <!-- 左：封面（可点即开始：视频播放 / 文章阅读） -->
+          <!-- 上：封面（可点即开始：视频播放 / 文章阅读） -->
           <div
             class="cover"
             :class="{ clickable: canOpen(a) }"
@@ -68,7 +68,10 @@
             <img v-if="a.cover_url && !coverFailed(a.asset_id)"
               :src="`/api/assets/${a.asset_id}/cover`" alt=""
               loading="lazy" @error="markCoverFailed(a.asset_id)" />
-            <span v-else class="ph">{{ typeLabel(a.content_type) }}</span>
+            <span v-else class="ph">
+              <span class="ph-ic" aria-hidden="true">{{ a.content_type === 'video' ? '▶' : '¶' }}</span>
+              <span class="ph-t">{{ typeLabel(a.content_type) }}</span>
+            </span>
             <!-- 平台标：纯图标，无黑底 -->
             <span class="badge-plat"><PlatformMark :platform="a.platform" :show-label="false" size="sm" plain /></span>
             <span v-if="a.duration_sec" class="badge-dur">{{ mmss(a.duration_sec) }}</span>
@@ -78,7 +81,7 @@
             <span v-else-if="a.content_type === 'video'" class="badge-nofile">未下载</span>
           </div>
 
-          <!-- 右：信息（标题在上，元数据左右两列，降低垂直高度） -->
+          <!-- 下：信息（正文用 flex:1 撑满，操作区贴底） -->
           <div class="body">
             <div class="title-row">
               <span class="type-tag">{{ typeLabel(a.content_type) }}</span>
@@ -928,13 +931,14 @@ onUnmounted(() => {
 .ui-filters .grow { margin-left: auto; }
 
 /* 素材卡片网格 */
-.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: var(--sp-3); }
+/* 列宽下限 300px：保证四个操作按钮单行放下，卡片仍够紧凑 */
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp-3); }
 .asset {
   background: var(--surface);
   border: 1px solid var(--ink);
   box-shadow: var(--shadow-1);
-  display: grid;
-  grid-template-columns: 176px 1fr;   /* 左封面 + 右信息，横向布局降低高度 */
+  display: flex;
+  flex-direction: column;
   transition: transform .14s ease-out, box-shadow .14s ease-out;
 }
 .asset:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
@@ -942,16 +946,22 @@ onUnmounted(() => {
 
 .asset .cover {
   position: relative;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   display: grid;
   place-items: center;
-  min-height: 132px;
   background-color: var(--surface-3);
   background-size: cover;
   background-position: center;
-  border-right: 1px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
 }
-.asset .cover .ph { font-size: var(--fs-2xl); font-weight: 800; color: var(--muted); letter-spacing: .08em; }
+/* 无封面占位：图标 + 类型，避免整块空地 */
+.asset .cover .ph {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  color: var(--muted);
+}
+.asset .cover .ph .ph-ic { font-size: var(--fs-3xl); line-height: 1; opacity: .5; }
+.asset .cover .ph .ph-t { font-size: var(--fs-sm); font-weight: 700; letter-spacing: .14em; }
 .asset .cover > img {
   position: absolute;
   inset: 0;
@@ -995,7 +1005,7 @@ onUnmounted(() => {
   border: 2px solid #fff; background: rgba(0,0,0,.28);
   font-size: 20px;
 }
-.asset .body { padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.asset .body { padding: 13px 15px 15px; display: flex; flex-direction: column; gap: 9px; min-width: 0; flex: 1; }
 .asset .title-row { display: flex; align-items: flex-start; gap: 8px; }
 .asset .type-tag {
   flex: none; margin-top: 1px;
@@ -1041,19 +1051,22 @@ onUnmounted(() => {
 }
 .asset .nums b { color: var(--ink); font-variant-numeric: tabular-nums; }
 
-.asset .foot { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
+.asset .foot { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--muted); margin-top: 2px; }
 .asset .foot .grow { margin-left: auto; }
 .asset .stagers { display: flex; gap: 5px; flex-wrap: wrap; }
 .asset .stagers .ui-badge { font-size: 10px; padding: 1px 6px; }
-/* 窄屏：卡片回落为纵向 */
-@media (max-width: 720px) {
+/* 窄屏：单列 */
+@media (max-width: 640px) {
   .asset-grid { grid-template-columns: 1fr; }
-  .asset { grid-template-columns: 1fr; }
-  .asset .cover { min-height: 160px; border-right: 0; border-bottom: 1px solid var(--ink); }
 }
 .asset .pick input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
-.asset .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+/* 操作区贴底：卡片同排等高时，按钮始终落在卡片下沿，不留空白 */
+.asset .acts {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: auto; padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
 
 /* ---------- 素材详情抽屉（横向 tab 布局） ---------- */
 .dt { display: flex; flex-direction: column; gap: 14px; }
