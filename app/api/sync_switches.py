@@ -30,6 +30,7 @@ router = APIRouter(prefix="/api", tags=["sync-switches"], dependencies=[Depends(
 _KIND_LABELS = {
     "favorite": ("收藏同步", "把「我的收藏」里的作品同步入库"),
     "like": ("点赞同步", "把我点赞过的作品同步入库"),
+    "watch_later": ("稍后再看", "把 B站「稍后再看」列表同步入库"),
 }
 _CREATOR_LABEL = ("关注列表", "跟踪我关注的博主；博主名下视频需要在卡片上单独开启")
 
@@ -61,7 +62,7 @@ def _switch_view(db: Session, account: PlatformAccount, source_type: str) -> dic
     supported = getattr(adapter, "singleton_sync_sources", None)
     if supported is not None and source_type not in supported:
         return None
-    if source_type == "favorite" or source_type == "like":
+    if source_type in _KIND_LABELS:
         label, desc = _KIND_LABELS[source_type]
         sub = _singleton_sub(db, account.id, source_type)
         return {
@@ -86,7 +87,7 @@ def list_switches(account_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="账号不存在或已停用")
 
     switches: list[dict] = []
-    for source_type in ("favorite", "like"):
+    for source_type in ("favorite", "like", "watch_later"):
         view = _switch_view(db, account, source_type)
         if view is not None:
             switches.append(view)
@@ -133,7 +134,7 @@ async def update_switch(account_id: int, key: str, body: SwitchIn, db: Session =
         db.commit()
         return {"key": "creator", "enabled": body.enabled, "affected": len(creators)}
 
-    if key not in ("favorite", "like"):
+    if key not in _KIND_LABELS:
         raise HTTPException(status_code=404, detail=f"未知的同步开关: {key}")
 
     view = _switch_view(db, account, key)

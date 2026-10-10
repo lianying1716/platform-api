@@ -135,15 +135,15 @@ async def test_bilibili_missing_mid_returns_empty(monkeypatch, source_type):
 
 
 @pytest.mark.asyncio
-async def test_bilibili_unsupported_type_returns_empty(monkeypatch):
+async def test_bilibili_watch_later_is_singleton_source(monkeypatch):
     from app.modules import bilibili
 
     def boom(*args, **kwargs):
-        raise AssertionError("不支持的类型不应发起请求")
+        raise AssertionError("单例源列举不应发起请求")
 
     monkeypatch.setattr(bilibili, "_client", boom)
     out = await bilibili.BilibiliAdapter().list_sources(_bili_credential(), "watch_later")
-    assert out == []
+    assert out == [{"remote_id": "watch_later", "title": "稍后再看"}]
 
 
 @pytest.mark.asyncio

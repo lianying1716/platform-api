@@ -39,6 +39,7 @@ _NAV = "https://api.bilibili.com/x/web-interface/nav"
 _FAV_LIST_ALL = "https://api.bilibili.com/x/v3/fav/folder/created/list-all"
 _SEASONS_SERIES = "https://api.bilibili.com/x/polymer/web-space/seasons_series_list"
 _FOLLOWINGS = "https://api.bilibili.com/x/relation/followings"
+_WATCH_LATER = "https://api.bilibili.com/x/v2/history/toview"
 _CORRESPOND = "https://www.bilibili.com/correspond/1/"
 _REFRESH = "https://passport.bilibili.com/x/passport-login/web/cookie/refresh"
 _CONFIRM_REFRESH = "https://passport.bilibili.com/x/passport-login/web/confirm/refresh"
@@ -140,8 +141,8 @@ class BilibiliAdapter:
     label = "B站"
     credential_kind = "cookie"
     supports_qr = True
-    # B站收藏夹是「多个命名收藏夹」，不是账号级单例源，所以不提供账号级开关。
-    singleton_sync_sources: tuple[str, ...] = ()
+    # B站收藏夹是「多个命名收藏夹」，不是账号级单例源；「稍后再看」是账号级单例。
+    singleton_sync_sources: tuple[str, ...] = ("watch_later",)
     credential_fields = [
         {"key": "sessdata", "label": "SESSDATA", "required": True},
         {"key": "bili_jct", "label": "bili_jct", "required": True},
@@ -280,8 +281,11 @@ class BilibiliAdapter:
         - favorite：自己创建的收藏夹（需 dedeuserid）
         - collection：自己创建的合集/系列（需 dedeuserid）
         - creator：自己关注的 UP 主（需 dedeuserid）
+        - watch_later：稍后再看（账号级单例，无需额外标识）
         缺少必需凭证字段或类型不支持时返回 []（不抛异常）。
         """
+        if source_type == "watch_later":
+            return [{"remote_id": "watch_later", "title": "稍后再看"}]
         mid = str(credential.get("dedeuserid") or "").strip()
         if not mid:
             return []
@@ -428,9 +432,47 @@ class BilibiliAdapter:
         """
         if source_type == "creator":
             return await self._fetch_creator_videos(credential, remote_id, limit)
+        if source_type == "watch_later":
+            return await self._fetch_watch_later(credential, limit)
         if source_type != "favorite":
             return []
         return await self._fetch_favorite_videos(credential, remote_id, limit)
+
+    async def _fetch_watch_later(self, credential: dict, limit: int) -> list[dict]:
+        """稍后再看（/x/v2/history/toview）。接口一次性返回全部，无分页参数。"""
+        async with _http() as client:
+            resp = await client.get(_WATCH_LATER, cookies=_cookies(credential))
+            payload = resp.json()
+        if payload.get("code") != 0:
+            raise RuntimeError(f"稍后再看拉取失败: {payload.get('message', payload.get('code'))}")
+        out: list[dict] = []
+        for v in ((payload.get("data") or {}).get("list") or []):
+            bvid = str(v.get("bvid") or "")
+            if not bvid:
+                continue
+            owner = v.get("owner") or {}
+            stat = v.get("stat") or {}
+            out.append(
+                {
+                    "external_id": bvid,
+                    "content_type": "video",
+                    "title": v.get("title", ""),
+                    "author_name": owner.get("name", ""),
+                    "author_id": str(owner.get("mid", "")),
+                    "url": f"https://www.bilibili.com/video/{bvid}",
+                    "cover_url": _https(v.get("pic", "")),
+                    "published_at": _ts_to_iso(v.get("pubdate")),
+                    "duration_sec": int(v.get("duration") or 0),
+                    "metrics": {
+                        "play": stat.get("view", 0),
+                        "favorite": stat.get("favorite", 0),
+                        "comment": stat.get("danmaku", 0),
+                    },
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
 
     async def _fetch_favorite_videos(self, credential: dict, remote_id: str, limit: int) -> list[dict]:
         items: list[dict] = []

@@ -231,11 +231,12 @@ def test_toggle_like_then_off_reuses_same_row(client, session):
     assert len(rows) == 1 and rows[0].enabled is True
 
 
-def test_bilibili_has_no_account_level_favorite_switch(client, session):
+def test_bilibili_has_watch_later_but_no_account_level_favorite_switch(client, session):
     acc = _account(session, platform="bilibili")
     data = client.get(f"/api/accounts/{acc.id}/sync-switches").json()
     keys = {s["key"] for s in data["switches"]}
-    assert keys == {"creator"}, "B站没有账号级收藏单例源，只保留关注列表开关"
+    # B站没有账号级收藏单例源（收藏夹是多个命名源），但「稍后再看」是账号级单例。
+    assert keys == {"creator", "watch_later"}
 
     r = client.put(f"/api/accounts/{acc.id}/sync-switches/favorite", json={"enabled": True})
     assert r.status_code == 400
