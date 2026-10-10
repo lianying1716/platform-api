@@ -26,8 +26,15 @@ async def search(
 
 
 async def fetch_comments(*, aweme_id: str, cookie: str, pages: int = 2, per_page: int = 20,
-                         top_n: int = 20, interval: float = 1.0) -> list[dict]:
-    """当前仅抖音支持评论抓取。"""
+                         top_n: int = 20, interval: float = 1.0, platform: str = "douyin") -> list[dict]:
+    """评论抓取分发：抖音走浏览器同源，B站走 aid + reply/wbi/main。"""
+    if platform == "bilibili":
+        from app.modules import bili_comments
+
+        return await bili_comments.fetch_comments(
+            bvid=aweme_id, cookie=cookie, pages=pages, per_page=per_page,
+            top_n=top_n, interval=interval,
+        )
     return await _client.fetch_comments(
         aweme_id=aweme_id, cookie=cookie, pages=pages, per_page=per_page,
         top_n=top_n, interval=interval,

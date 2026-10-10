@@ -215,9 +215,10 @@ def test_with_comments_false_keeps_gate(session, monkeypatch):
     assert _comment_jobs(session) == []
 
 
-def test_with_comments_true_still_skips_non_douyin(session, monkeypatch):
-    _, sub = _seed(session, platform="bilibili", with_comments=True)
-    _patch_fetch(monkeypatch, "bilibili", [_item("BV1", metrics={"play": 5, "like": 1, "comment": 0})])
+def test_with_comments_true_still_skips_unsupported_platform(session, monkeypatch):
+    """with_comments 也不能给不在评论白名单的平台入队。"""
+    _, sub = _seed(session, platform="xhs", with_comments=True)
+    _patch_fetch(monkeypatch, "xhs", [_item("n1", metrics={"play": 5, "like": 1, "comment": 0})])
 
     run = _run(session, sub)
 

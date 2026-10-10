@@ -140,15 +140,15 @@ def test_handler_dedups_duplicate_cids_in_one_batch(_engine, monkeypatch):
     db.close()
 
 
-def test_handler_skips_non_douyin_content(_engine, monkeypatch):
-    """I2：非抖音 content 直接跳过，不取 cookie 也不抓取（不抛错）。"""
+def test_handler_skips_non_comment_platform_content(_engine, monkeypatch):
+    """非评论白名单平台（如小红书）直接跳过，不取 cookie 也不抓取（不抛错）。"""
     from sqlalchemy.orm import sessionmaker
 
     from app.models import Comment, ContentItem
     from app.workers.handlers import handle_fetch_comments
 
     db = sessionmaker(bind=_engine)()
-    c = ContentItem(account_id=1, platform="bilibili", external_id="BV1", content_type="video")
+    c = ContentItem(account_id=1, platform="xhs", external_id="note1", content_type="video")
     db.add(c)
     db.commit()
 

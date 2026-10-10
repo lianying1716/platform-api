@@ -414,7 +414,7 @@ def _ts_to_dt(ts) -> datetime | None:
 
 
 async def handle_fetch_comments(db: Session, payload: dict) -> None:
-    """抓抖音作品一级评论：复用账号 cookie，按配置抓 K 页取 Top-N，幂等写库 + state。"""
+    """抓作品一级评论（抖音/B站）：复用账号 cookie，按配置抓 K 页取 Top-N，幂等写库 + state。"""
     from app.core.comment_settings import get_comment_settings
     from app.models import Comment, CommentFetchState, ContentItem
     from app.modules import crawler
@@ -423,7 +423,7 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
     content = db.get(ContentItem, content_id)
     if content is None:
         return
-    # 仅抖音有评论适配器（本版范围）。非抖音 content 直接跳过，避免无适配器时抛错重试。
+    # 仅白名单平台有评论适配器。非白名单 content 直接跳过，避免无适配器时抛错重试。
     from app.services.comment_gate import COMMENT_PLATFORMS
 
     if content.platform not in COMMENT_PLATFORMS:
@@ -438,6 +438,7 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
     comments = await crawler.fetch_comments(
         aweme_id=content.external_id, cookie=cookie,
         pages=s["pages"], per_page=s["per_page"], top_n=s["top_n"], interval=s["interval"],
+        platform=content.platform,
     )
 
     existing = {c.comment_id for c in db.query(Comment).filter(Comment.content_id == content_id).all()}

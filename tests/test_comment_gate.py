@@ -142,17 +142,17 @@ def test_enqueue_comment_jobs(_engine):
     db.close()
 
 
-def test_enqueue_skips_non_douyin_platform(_engine):
-    """I2：本版仅抖音有评论适配器，其他平台不得入队（否则 worker 反复失败重试）。"""
+def test_enqueue_skips_unsupported_platform(_engine):
+    """非评论白名单平台（如小红书）不得入队（否则 worker 反复失败重试）。"""
     from sqlalchemy.orm import sessionmaker
 
     from app.models import JobQueue
     from app.services.comment_gate import enqueue_comment_jobs
 
     db = sessionmaker(bind=_engine)()
-    cs = [_mk(db, "bv1", like=5000, comment=300, platform="bilibili")]
+    cs = [_mk(db, "n1", like=5000, comment=300, platform="xhs")]
     settings = {"top_pct": 1.0, "budget": 10, "min_comments": 20, "min_likes": 100, "weight": 20}
-    n = enqueue_comment_jobs(db, cs, platform="bilibili", settings=settings)
+    n = enqueue_comment_jobs(db, cs, platform="xhs", settings=settings)
     assert n == 0
     assert db.query(JobQueue).filter_by(job_type="fetch_comments").count() == 0
     db.close()
