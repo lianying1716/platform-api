@@ -161,6 +161,7 @@
               >
                 {{ isAnalyzed(a) ? '重新分析' : '分析' }}
               </button>
+              <button class="ui-btn sm" @click="refreshMetrics(a.asset_id)">刷新指标</button>
             </div>
           </div>
         </article>
@@ -884,6 +885,12 @@ async function loadMoreComments() {
 async function act(id: number, kind: string) {
   await api.post(`/api/assets/${id}/${kind}`)
   ElMessage.success('已加入队列')
+  await load()
+}
+
+async function refreshMetrics(id: number) {
+  await api.post(`/api/assets/${id}/refresh-metrics`)
+  ElMessage.success('已加入指标刷新队列')
   await load()
 }
 
