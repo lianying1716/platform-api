@@ -283,14 +283,22 @@ async def browser_qr_start(platform: str) -> QrStart:
     headless = not needs_display
     pw = await async_playwright().start()
     try:
-        browser = await pw.chromium.launch(
-            headless=headless,
-            env=launch_env,
-            args=[
+        launch_kwargs = {
+            "headless": headless,
+            "env": launch_env,
+            "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
             ],
+        }
+        from app.core import outbound
+
+        proxy = outbound.proxy_for(platform)
+        if proxy:
+            launch_kwargs["proxy"] = {"server": proxy}
+        browser = await pw.chromium.launch(
+            **launch_kwargs,
         )
         context = await browser.new_context(
             user_agent=_UA, viewport={"width": 1400, "height": 900}, locale="zh-CN"

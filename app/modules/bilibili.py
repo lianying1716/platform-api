@@ -67,7 +67,13 @@ _CODE_EXPIRED = 86038
 
 
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(headers={"User-Agent": _UA, "Referer": "https://www.bilibili.com"}, timeout=15)
+    from app.core import outbound
+
+    return httpx.AsyncClient(
+        headers={"User-Agent": _UA, "Referer": "https://www.bilibili.com"},
+        timeout=15,
+        **outbound.httpx_proxy_kwargs("bilibili"),
+    )
 
 
 # 翻页之间的随机等待（秒）。B站 412 风控很敏感，翻页必须拉开间隔；

@@ -199,7 +199,9 @@ async def http_client(platform: str, *, headers: dict | None = None, timeout: fl
     这样"新加一条请求路径忘了限速"不会重演。
     """
     import httpx
+    from app.core import outbound
 
     # 进会话不取令牌，交给 _ThrottledClient 在每次请求前取 —— 否则会话内连发会绕过限速。
-    async with httpx.AsyncClient(headers=headers, timeout=timeout, **kw) as client:
+    proxy_kw = outbound.httpx_proxy_kwargs(platform)
+    async with httpx.AsyncClient(headers=headers, timeout=timeout, **proxy_kw, **kw) as client:
         yield _ThrottledClient(platform, client)

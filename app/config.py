@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     # 取明显更保守的 12 次/分钟（≈5 秒一次），避免 WAF/412/封号。
     rate_limit_per_minute: int = 12
     # 转录默认模型与设备（faster-whisper）
+    # 出站代理（可选，默认关闭）：需要隔离出口 IP 时配置。
+    # PLATFORM_OUTBOUND_PROXY 为全局代理；PLATFORM_PLATFORM_PROXIES 为按平台 JSON，
+    # 例如 {"douyin": "http://user:pass@host:port", "bilibili": "none"}（none=强制直连）。
+    outbound_proxy: str = ""
+    platform_proxies: dict = {}
+    # 转录默认模型与设备（faster-whisper）
     whisper_model: str = "base"
     whisper_device: str = "auto"  # auto / cpu / cuda
     whisper_compute_type: str = "int8"

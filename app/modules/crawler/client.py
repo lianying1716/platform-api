@@ -27,9 +27,10 @@ async def _http(platform: str, headers: dict):
     实测一次同步里 1.4 秒内连发 4 个 comment/list 请求。现在统一过平台桶。
     """
     from app.core import rate_limit
+    from app.core import outbound
 
     # 逐请求限速：评论抓取在一个会话里 for 循环翻页，只在会话开始限速等于没限。
-    client = httpx.AsyncClient(headers=headers, timeout=20)
+    client = httpx.AsyncClient(headers=headers, timeout=20, **outbound.httpx_proxy_kwargs(platform))
     async with rate_limit._ThrottledClient.wrap(platform, client) as c:
         yield c
 

@@ -63,15 +63,21 @@ async def acquire(key: str, *, cookie: str, domain: str):
         await _drop(key)
 
     async_playwright = _require_playwright()
+    from app.core import outbound
+
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        headless=True,
-        args=[
+    launch_kwargs = {
+        "headless": True,
+        "args": [
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
         ],
-    )
+    }
+    proxy = outbound.proxy_for(key)
+    if proxy:
+        launch_kwargs["proxy"] = {"server": proxy}
+    browser = await pw.chromium.launch(**launch_kwargs)
     context = await browser.new_context(
         user_agent=_UA, viewport={"width": 1400, "height": 900}, locale="zh-CN"
     )

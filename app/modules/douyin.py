@@ -280,10 +280,13 @@ def _pick_play_url(aw: dict) -> str:
 
 
 def _client(cookie: str, referer: str) -> httpx.AsyncClient:
+    from app.core import outbound
+
     return httpx.AsyncClient(
         base_url=_HOST,
         headers={"User-Agent": _UA, "Referer": referer, "Cookie": cookie},
         timeout=15,
+        **outbound.httpx_proxy_kwargs("douyin"),
     )
 
 
