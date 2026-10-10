@@ -438,7 +438,7 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
     comments = await crawler.fetch_comments(
         aweme_id=content.external_id, cookie=cookie,
         pages=s["pages"], per_page=s["per_page"], top_n=s["top_n"], interval=s["interval"],
-        platform=content.platform,
+        platform=content.platform, extra=getattr(content, "extra", None),
     )
 
     existing = {c.comment_id for c in db.query(Comment).filter(Comment.content_id == content_id).all()}
