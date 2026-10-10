@@ -167,6 +167,11 @@ async def search_xhs(keyword: str, cookie: str, limit: int, sort: str) -> list[d
                     "url": f"https://www.xiaohongshu.com/explore/{n.get('id', '')}",
                     "cover_url": ((card.get("cover") or {}).get("url_default") or ""),
                     "metrics": {"like": int(inter.get("liked_count", 0) or 0)},
+                    # 后续详情/评论接口必须带 xsec_token + xsec_source，搜索时就要留存。
+                    "extra": {
+                        "xsec_token": n.get("xsec_token", ""),
+                        "xsec_source": n.get("xsec_source", "pc_search"),
+                    },
                 })
             page += 1
     return items[:limit]

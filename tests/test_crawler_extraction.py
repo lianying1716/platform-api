@@ -92,6 +92,39 @@ async def test_search_bilibili_normalizes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_search_xhs_keeps_xsec_token_for_detail(monkeypatch):
+    """小红书详情/评论接口依赖 xsec_token，搜索阶段必须留存。"""
+    from app.modules.crawler import client, xhs_sign
+
+    monkeypatch.setattr(xhs_sign, "sign", lambda *a, **k: {})
+
+    class Resp:
+        def json(self):
+            return {"success": True, "data": {"items": [{
+                "id": "note1",
+                "xsec_token": "TOKEN123",
+                "xsec_source": "pc_search",
+                "note_card": {"display_title": "标题", "type": "normal",
+                              "user": {"nickname": "作者", "user_id": "u1"},
+                              "interact_info": {"liked_count": "5"}},
+            }]}}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return Resp()
+
+    monkeypatch.setattr(client.httpx, "AsyncClient", lambda **k: Client())
+    items = await client.search_xhs("露营", "a1=x", limit=1, sort="popular")
+    assert items[0]["extra"]["xsec_token"] == "TOKEN123"
+
+
+@pytest.mark.asyncio
 async def test_search_requires_cookie():
     from app.modules import crawler
 

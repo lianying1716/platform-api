@@ -482,7 +482,9 @@ async def handle_refresh_metrics(db: Session, payload: dict) -> None:
     cookie = _content_cookie(db, content)
     if not cookie:
         raise ValueError(f"{content.platform} 无在线账号，无法刷新指标")
-    metrics = await content_metrics.fetch_metrics(content.platform, content.external_id, cookie)
+    metrics = await content_metrics.fetch_metrics(
+        content.platform, content.external_id, cookie, getattr(content, "extra", None)
+    )
     if not metrics:
         raise ValueError(f"{content.platform} 暂不支持指标刷新或返回为空")
     db.add(ContentMetricSnapshot(

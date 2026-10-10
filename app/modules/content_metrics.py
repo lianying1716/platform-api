@@ -8,6 +8,7 @@ from __future__ import annotations
 
 _BILI_VIEW = "https://api.bilibili.com/x/web-interface/view"
 _DOUYIN_DETAIL = "/aweme/v1/web/aweme/detail/"
+_XHS_FEED = "/api/sns/web/v1/feed"
 
 
 def _bili_http():
@@ -68,10 +69,44 @@ async def fetch_douyin_metrics(aweme_id: str, cookie: str) -> dict | None:
     }
 
 
-async def fetch_metrics(platform: str, external_id: str, cookie: str) -> dict | None:
+async def fetch_metrics(platform: str, external_id: str, cookie: str, extra: dict | None = None) -> dict | None:
     """统一入口：不支持的平台返回 None。"""
     if platform == "bilibili":
         return await fetch_bilibili_metrics(external_id, _bili_credential(cookie))
     if platform == "douyin":
         return await fetch_douyin_metrics(external_id, cookie)
+    if platform == "xhs":
+        return await fetch_xhs_metrics(external_id, cookie, extra)
     return None
+
+
+async def fetch_xhs_metrics(note_id: str, cookie: str, extra: dict | None = None) -> dict | None:
+    """小红书笔记指标：/api/sns/web/v1/feed，需搜索阶段留存的 xsec_token。"""
+    from app.modules.crawler import xhs_sign
+    from app.core import rate_limit
+
+    extra = extra or {}
+    payload = {
+        "source_note_id": note_id,
+        "image_formats": ["jpg", "webp", "avif"],
+        "extra": {"need_body_topic": 1},
+        "xsec_source": extra.get("xsec_source") or "pc_search",
+        "xsec_token": extra.get("xsec_token") or "",
+    }
+    sig = xhs_sign.sign(_XHS_FEED, payload, cookie, "POST")
+    async with rate_limit.http_client("xhs", headers={"Cookie": cookie}, timeout=20) as c:
+        resp = await c.post(f"https://edith.xiaohongshu.com{_XHS_FEED}", json=payload, headers=sig)
+        data = resp.json()
+    if not data.get("success"):
+        return None
+    items = (data.get("data") or {}).get("items") or []
+    if not items:
+        return None
+    inter = (items[0].get("note_card") or {}).get("interact_info") or {}
+    return {
+        "play": 0,
+        "like": int(inter.get("liked_count") or 0),
+        "comment": int(inter.get("comment_count") or 0),
+        "favorite": int(inter.get("collected_count") or 0),
+        "share": int(inter.get("share_count") or 0),
+    }
