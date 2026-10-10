@@ -128,6 +128,13 @@ MCP 是本地 **stdio** 小进程（`mcp_server/server.py`），不是 HTTP 端�
 | `PLATFORM_ACCOUNT_CHECK_INTERVAL` | 15 | 体检间隔（分钟），0 关闭 |
 | `PLATFORM_CREDENTIAL_ENC_KEY` | （空） | base64 的 32 字节凭证密钥，生产首选 |
 | `PLATFORM_CREDENTIAL_KEY_FILE` | （空） | 密钥文件路径，可置于项目目录外 |
+| `PLATFORM_RATE_LIMIT_PER_MINUTE` | 12 | 每平台出站请求限速（次/分钟），保守档 |
+| `PLATFORM_DOWNLOAD_MIN_GAP_SECONDS` | 4 | 相邻下载最小间隔（秒） |
+| `PLATFORM_OUTBOUND_PROXY` | （空） | 可选全局出站代理，如 `http://user:pass@host:port`；默认直连 |
+| `PLATFORM_PLATFORM_PROXIES` | （空） | 按平台代理 JSON，如 `{"douyin":"http://a:1","bilibili":"none"}`；`none`=强制直连 |
+
+出站代理默认关闭（单机自用通常直连即可）。需要隔离出口 IP 时再配置：`PLATFORM_PLATFORM_PROXIES`
+按平台覆盖 `PLATFORM_OUTBOUND_PROXY`，HTTP 抓取、受管浏览器与扫码会话都会走同一代理。
 
 凭证加密密钥来源优先级：环境变量 > 密钥文件 > `data/secret.key`（开发兜底，自动生成）。
 **密钥不进 git、迁移机器必须随行，丢了凭证全部作废。**

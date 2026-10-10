@@ -19,6 +19,7 @@ _DEFAULTS: dict[str, tuple[object, type]] = {
     "comment_fetch_per_page": (20, int),
     "comment_fetch_top_n": (20, int),
     "comment_fetch_interval_sec": (1.0, float),
+    "comment_fetch_sub_comments": (False, bool),
 }
 
 # 对外短名 -> system_setting key（单一事实来源：app/api/system.py 复用此映射）
@@ -32,6 +33,7 @@ COMMENT_KEYS = {
     "per_page": "comment_fetch_per_page",
     "top_n": "comment_fetch_top_n",
     "interval": "comment_fetch_interval_sec",
+    "with_sub_comments": "comment_fetch_sub_comments",
 }
 
 

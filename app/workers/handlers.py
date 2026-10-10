@@ -465,6 +465,7 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
         pages=s["pages"], per_page=s["per_page"], top_n=s["top_n"], interval=s["interval"],
         platform=content.platform,
         extra={**(getattr(content, "extra", None) or {}), "url": content.url},
+        with_sub_comments=bool(s.get("with_sub_comments")),
     )
 
     existing = {c.comment_id for c in db.query(Comment).filter(Comment.content_id == content_id).all()}
