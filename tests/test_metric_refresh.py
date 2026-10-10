@@ -60,7 +60,7 @@ async def test_refresh_douyin_metrics_uses_browser_fetch(monkeypatch):
 async def test_unsupported_platform_returns_none():
     from app.modules import content_metrics
 
-    assert await content_metrics.fetch_metrics("zhihu", "x", "c") is None
+    assert await content_metrics.fetch_metrics("wechat_mp", "x", "c") is None
 
 
 @pytest.mark.asyncio

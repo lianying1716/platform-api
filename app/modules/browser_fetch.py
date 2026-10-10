@@ -127,3 +127,22 @@ async def fetch_until(
     if not captured:
         raise RuntimeError("浏览器抓取超时：平台未在限定时间内返回评论接口响应")
     return captured[0]
+
+
+async def fetch_page_html(
+    *,
+    page_url: str,
+    cookie: str,
+    domain: str,
+    platform: str,
+    wait_ms: int = 1_500,
+) -> str:
+    """导航到页面并返回渲染后的 HTML（用于解析内嵌 initialState 的详情页）。"""
+    from app.core import rate_limit
+    from app.modules import browser_pool
+
+    await rate_limit.acquire(platform)
+    _context, page = await browser_pool.acquire(platform, cookie=cookie, domain=domain)
+    await page.goto(page_url, wait_until="domcontentloaded", timeout=30_000)
+    await asyncio.sleep(max(0, wait_ms) / 1000)
+    return await page.content()

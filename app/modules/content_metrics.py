@@ -93,6 +93,10 @@ async def fetch_metrics(platform: str, external_id: str, cookie: str, extra: dic
         return await fetch_xhs_metrics(external_id, cookie, extra)
     if platform == "kuaishou":
         return await fetch_kuaishou_metrics(external_id, cookie)
+    if platform == "zhihu":
+        from app.modules import zhihu_metrics
+
+        return await zhihu_metrics.fetch_metrics(external_id, cookie, extra)
     return None
 
 
