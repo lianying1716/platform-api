@@ -57,6 +57,12 @@ async def fetch_search(
     页面加载完成后平台会自己带签名头请求搜索接口；我们只读取响应，不复制签名。
     pages > 1 时通过滚动页面触发后续分页请求。
     """
+    from app.core import rate_limit
+
+    # 受管浏览器打开页面本身也是一次平台出站访问：先过该平台的统一限速桶。
+    platform = "zhihu" if "zhihu.com" in search_url else ""
+    if platform:
+        await rate_limit.acquire(platform)
     async_playwright = _require_playwright()
     captured: list[dict] = []
 

@@ -2,7 +2,7 @@
   <div class="ui-app">
     <aside class="ui-side">
       <div class="ui-brand">
-        <img class="mark" src="/logo-symbol-dark.svg" alt="星采 Stargather" width="28" height="28" />
+        <img class="mark" src="/logo-symbol-dark.svg" alt="星采 Stargather" width="30" height="30" />
         <span class="bt">星采</span>
         <span class="bt-en">Stargather</span>
       </div>
@@ -79,7 +79,7 @@ function logout() {
 </script>
 
 <style scoped>
-.ui-brand .bt { white-space: nowrap; font-size: 15px; }
+.ui-brand .bt { white-space: nowrap; font-size: 16px; }
 .ui-brand .bt-en {
   font-size: 10px;
   font-weight: 600;
@@ -90,7 +90,7 @@ function logout() {
   padding-bottom: 1px;
 }
 /* 品牌标志（M3）：深色侧栏用透明底版本，无白色方底 */
-.ui-brand .mark { background: none; width: 28px; height: 28px; flex: none; display: block; }
+.ui-brand .mark { background: none; width: 30px; height: 30px; flex: none; display: block; }
 
 /* V3：左侧栏顶部加一条砖红色块，呼应包豪斯原色。
    用绝对定位，不参与 flex 流，避免把侧栏内容顶出视口。 */
@@ -113,9 +113,9 @@ function logout() {
 
 .ui-nav-item { text-decoration: none; }
 .ui-nav-item .ic {
-  width: 18px;
+  width: 20px;
   text-align: center;
-  font-size: 13px;
+  font-size: 15px;
   opacity: 0.85;
 }
 .ui-nav-item.on .ic { opacity: 1; }

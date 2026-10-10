@@ -19,12 +19,12 @@ def test_platform_config_covers_kuaishou_zhihu():
 
 def test_stealth_is_a_mit_dependency_not_vendored_script():
     """反检测改用 MIT 的 playwright-stealth 依赖，不再随包携带复制脚本。"""
-    import playwright_stealth  # noqa: F401
-
     from pathlib import Path
 
     vendored = Path(browser_qr.__file__).parent / "crawler" / "libs" / "stealth.min.js"
     assert not vendored.exists()
+    pyproject = Path(browser_qr.__file__).resolve().parents[2] / "pyproject.toml"
+    assert "playwright-stealth" in pyproject.read_text(encoding="utf-8")
 
 
 def test_login_flag_detection():

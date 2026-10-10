@@ -981,7 +981,7 @@ onMounted(async () => {
 .sw-state.ok { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 40%, var(--line-soft)); }
 .sw-state.off { color: var(--muted); }
 .sw-desc { margin: 0; font-size: var(--fs-sm); color: var(--ink-2); }
-.sw-foot { display: flex; align-items: center; gap: 8px; }
+.sw-foot { display: flex; align-items: center; gap: 12px; }
 .sw-meta { font-size: var(--fs-xs); color: var(--muted); }
 .ui-switch[disabled] { opacity: .45; cursor: not-allowed; }
 

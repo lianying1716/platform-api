@@ -384,19 +384,6 @@ onMounted(async () => {
   margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line-soft);
 }
 
-.ui-switch {
-  width: 36px; height: 20px; border-radius: 999px; background: var(--surface-3);
-  border: 1px solid var(--ink); position: relative; cursor: pointer; padding: 0; flex: none;
-  transition: background .16s ease-out;
-}
-.ui-switch i {
-  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 999px;
-  background: var(--surface); border: 1px solid var(--ink);
-  transition: transform .16s cubic-bezier(.16,1,.3,1);
-}
-.ui-switch.on { background: var(--accent); }
-.ui-switch.on i { transform: translateX(16px); }
-
 /* 删除确认弹层 */
 .ui-modal {
   position: fixed; inset: 0; z-index: 200;

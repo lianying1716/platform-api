@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core import queue, security
 from app.db import get_db
-from app.models import JobQueue
+from app.models import ContentItem, JobQueue, MediaAsset
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"], dependencies=[Depends(security.require_admin)])
 
@@ -31,21 +31,53 @@ def list_jobs(
         stmt = stmt.where(JobQueue.job_type == job_type)
     stmt = stmt.order_by(JobQueue.id.desc()).limit(min(limit, 300)).offset(offset)
     jobs = db.scalars(stmt).all()
-    return [
-        {
-            "id": j.id,
-            "job_type": j.job_type,
-            "status": j.status,
-            "attempts": j.attempts,
-            "max_attempts": j.max_attempts,
-            "priority": j.priority,
-            "error": j.error,
-            "payload": j.payload,
-            "run_after": j.run_after.isoformat() if j.run_after else None,
-            "updated_at": j.updated_at.isoformat() if j.updated_at else None,
-        }
-        for j in jobs
-    ]
+
+    # 关联出「这个任务在加工哪条素材」，让队列页能用人话展示在做什么，
+    # 而不是只看到一个孤零零的 id。（payload 里存的是 asset_id / content_id / task_id）
+    asset_ids = {int(j.payload.get("asset_id")) for j in jobs if (j.payload or {}).get("asset_id")}
+    content_ids = {int(j.payload.get("content_id")) for j in jobs if (j.payload or {}).get("content_id")}
+    asset_titles: dict[int, str] = {}
+    content_titles: dict[int, str] = {}
+    if asset_ids:
+        rows = db.execute(
+            select(MediaAsset.id, ContentItem.title)
+            .join(ContentItem, MediaAsset.content_id == ContentItem.id)
+            .where(MediaAsset.id.in_(asset_ids))
+        ).all()
+        asset_titles = {aid: (title or "") for aid, title in rows}
+    if content_ids:
+        rows = db.execute(
+            select(ContentItem.id, ContentItem.title).where(ContentItem.id.in_(content_ids))
+        ).all()
+        content_titles = {cid: (title or "") for cid, title in rows}
+
+    out = []
+    for j in jobs:
+        payload = j.payload or {}
+        title = ""
+        if payload.get("asset_id") is not None:
+            title = asset_titles.get(int(payload["asset_id"]), "")
+        elif payload.get("content_id") is not None:
+            title = content_titles.get(int(payload["content_id"]), "")
+        out.append(
+            {
+                "id": j.id,
+                "job_type": j.job_type,
+                "status": j.status,
+                "attempts": j.attempts,
+                "max_attempts": j.max_attempts,
+                "priority": j.priority,
+                "error": j.error,
+                "payload": payload,
+                # 供队列页展示「在加工什么」
+                "target_title": title,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "locked_at": j.locked_at.isoformat() if j.locked_at else None,
+                "run_after": j.run_after.isoformat() if j.run_after else None,
+                "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+            }
+        )
+    return out
 
 
 @router.get("/summary")

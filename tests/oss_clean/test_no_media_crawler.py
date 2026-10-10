@@ -32,3 +32,12 @@ def test_old_signature_modules_are_removed():
         if d.exists():
             files = [p for p in d.rglob("*") if p.is_file()]
             assert files == [], f"残留第三方资源: {files}"
+
+
+def test_browser_fetch_paths_are_rate_limited():
+    """浏览器同源抓取也属于平台出站流量，必须过统一限速桶。"""
+    root = Path(__file__).resolve().parents[2]
+    douyin = (root / "app" / "modules" / "douyin_browser_fetch.py").read_text(encoding="utf-8")
+    generic = (root / "app" / "modules" / "browser_fetch.py").read_text(encoding="utf-8")
+    assert 'rate_limit.acquire("douyin")' in douyin
+    assert "rate_limit.acquire(platform)" in generic

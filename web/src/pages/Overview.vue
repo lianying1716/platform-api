@@ -1,15 +1,18 @@
 <template>
   <div class="ov" v-loading="loading">
-    <div class="ui-head">
-      <h1>总览</h1>
-      <span class="sub">资产总况 · 平台与分类 · 趋势与对标</span>
+    <!-- 页头：标题降级，工具条归位到右侧 -->
+    <div class="ov-top">
+      <div class="ov-title">
+        <h1>总览</h1>
+        <span class="sub">你的个人素材库</span>
+      </div>
       <div class="grow" />
-      <div class="ui-seg">
+      <div class="ui-seg ov-seg">
         <button v-for="r in trendRanges" :key="r.k" :class="{ on: trendRange === r.k }" @click="trendRange = r.k">
           {{ r.label }}
         </button>
       </div>
-      <el-select v-model="accountId" placeholder="全部账号" clearable size="small" style="width: 180px" @change="load">
+      <el-select v-model="accountId" placeholder="全部账号" clearable size="small" style="width: 170px" @change="load">
         <el-option
           v-for="a in accounts"
           :key="a.id"
@@ -17,59 +20,68 @@
           :value="a.id"
         />
       </el-select>
-      <button class="ui-btn" :disabled="loading" @click="load">刷新</button>
+      <button class="ui-btn sm" :disabled="loading" @click="load">刷新</button>
     </div>
 
-    <div class="ui-metrics">
-      <div class="ui-metric">
-        <div class="k">总素材</div>
-        <div class="v">{{ num(content.total) }}</div>
-        <div class="d"><span class="ui-badge acc">视频 {{ num(content.video) }}</span> 文章 {{ num(content.article) }}</div>
+    <!-- 头条：一句话说清「库里有什么 + 有什么要处理」，右上是待办动作 -->
+    <section class="ov-hero">
+      <div class="ov-hero-left">
+        <p class="ov-hero-line">
+          素材库里已有 <b>{{ num(content.total) }}</b> 条
+        </p>
+        <p class="ov-hero-sub">
+          视频总时长 {{ durText }} · 占用 {{ bytesText }} · 覆盖 {{ num(accountsStat.total) }} 个账号
+        </p>
       </div>
-      <div class="ui-metric">
-        <div class="k">视频总时长</div>
-        <div class="v">{{ durText }}</div>
-        <div class="d">共 {{ num(content.video) }} 条视频 · 平均 {{ avgDur }}</div>
+      <div class="ov-hero-todo" :class="{ hot: todoCount > 0 }">
+        <template v-if="todoCount > 0">
+          <span class="ov-todo-n">{{ num(todoCount) }}</span>
+          <span class="ov-todo-l">项待办</span>
+          <button class="ui-btn sm" @click="go(todoTarget)">{{ todoAction }}</button>
+        </template>
+        <template v-else>
+          <span class="ov-todo-ok"><span class="ui-dot ok" />队列已清空</span>
+          <span class="ov-todo-l">没有待办</span>
+        </template>
       </div>
-      <div class="ui-metric">
-        <div class="k">存储占用</div>
-        <div class="v">{{ bytesText }}</div>
-        <div class="d">{{ storageRootText }}</div>
-      </div>
-      <div class="ui-metric" :class="{ alert: processing.failed > 0 }">
-        <div class="k"><span v-if="processing.failed" class="ui-dot bad" />加工队列</div>
-        <div class="v">{{ num(processing.pending) }}</div>
-        <div class="d">
-          待处理 · 失败 <b>{{ processing.failed }}</b>
-          <button class="ui-btn ghost sm" @click="go('/pipeline')">去处理</button>
-        </div>
-      </div>
+    </section>
+
+    <!-- 主指标：只留 4 个真正要紧的，字号拉开层级 -->
+    <div class="ov-main">
+      <button class="ov-kpi tone-ink" @click="go('/assets')">
+        <span class="ov-kpi-k">素材总量</span>
+        <span class="ov-kpi-v">{{ num(content.total) }}</span>
+        <span class="ov-kpi-d">{{ num(content.video) }} 视频 · {{ num(content.article) }} 文章</span>
+      </button>
+      <button class="ov-kpi tone-warn" :class="{ warn: processing.pending > 0 }" @click="go('/pipeline')">
+        <span class="ov-kpi-k">待加工</span>
+        <span class="ov-kpi-v">{{ num(processing.pending) }}</span>
+        <span class="ov-kpi-d">
+          <template v-if="processing.failed">含 {{ num(processing.failed) }} 条失败，需重试</template>
+          <template v-else>队列顺畅</template>
+        </span>
+      </button>
+      <button class="ov-kpi tone-ok" @click="go('/assets')">
+        <span class="ov-kpi-k">已判类</span>
+        <span class="ov-kpi-v">{{ classifiedPct }}</span>
+        <span class="ov-kpi-d">{{ num(categorizedCount) }} 已分类 · {{ num(uncategorizedCount) }} 待判</span>
+      </button>
+      <button class="ov-kpi tone-bad" :class="{ bad: accountsStat.abnormal > 0 }" @click="go('/accounts')">
+        <span class="ov-kpi-k">账号在线</span>
+        <span class="ov-kpi-v">{{ num(accountsStat.total - accountsStat.abnormal) }}<em>/{{ num(accountsStat.total) }}</em></span>
+        <span class="ov-kpi-d">
+          <template v-if="accountsStat.abnormal">{{ accountsStat.abnormal }} 个异常，去处理</template>
+          <template v-else>全部正常</template>
+        </span>
+      </button>
     </div>
 
-    <div class="ui-metrics second">
-      <div class="ui-metric">
-        <div class="k">今日入库</div>
-        <div class="v">{{ num(todayCrawled) }}</div>
-        <div class="d">近 7 天 {{ num(weekCrawled) }}</div>
-      </div>
-      <div class="ui-metric">
-        <div class="k">已转录</div>
-        <div class="v">{{ num(processing.transcribed) }}</div>
-        <div class="d">已理解 {{ num(processing.understood) }}</div>
-      </div>
-      <div class="ui-metric">
-        <div class="k">已判类</div>
-        <div class="v">{{ num(categorizedCount) }}</div>
-        <div class="d">未判类 {{ num(uncategorizedCount) }} · {{ classifiedPct }}</div>
-      </div>
-      <div class="ui-metric" :class="{ alert: accountsStat.abnormal > 0 }">
-        <div class="k"><span v-if="accountsStat.abnormal" class="ui-dot bad" />账号状态</div>
-        <div class="v">{{ num(accountsStat.total - accountsStat.abnormal) }}</div>
-        <div class="d">
-          在线 · 异常 <b>{{ accountsStat.abnormal }}</b>
-          <button class="ui-btn ghost sm" @click="go('/accounts')">去处理</button>
-        </div>
-      </div>
+    <!-- 次级信息：一行紧凑条，不与主指标抢视觉 -->
+    <div class="ov-sub">
+      <span><b>{{ num(todayCrawled) }}</b> 今日入库</span>
+      <span><b>{{ num(processing.understood) }}</b> 已视频理解</span>
+      <span><b>{{ num(storageRoots.length) }}</b> 存储根</span>
+      <span class="ov-sub-root" :title="storageRootText">{{ storageRootText }}</span>
     </div>
 
     <div class="ui-cols">
@@ -347,6 +359,17 @@ const classifiedPct = computed(() => {
   if (!total) return '—'
   return `${Math.round((categorizedCount.value / total) * 100)}%`
 })
+// 待办：加工失败的优先，其次队列积压，最后账号异常。决定 hero 右上角显示什么。
+// 待办 = 队列里的待处理条数 + 异常账号数。两者语义不重叠，相加不会自相矛盾。
+// （processing.pending 已经包含失败项，所以这里不再单独加 failed。）
+const todoCount = computed(() => (processing.value.pending || 0) + (accountsStat.value.abnormal || 0))
+const todoTarget = computed(() => {
+  if (processing.value.failed || processing.value.pending) return '/pipeline'
+  if (accountsStat.value.abnormal) return '/accounts'
+  return '/pipeline'
+})
+const todoAction = computed(() => (todoTarget.value === '/pipeline' ? '去处理' : '去查看'))
+
 const bytesText = computed(() => bytes(storageUsed.value))
 const durText = computed(() => dur(content.value.duration_sec || 0))
 const avgDur = computed(() => {
@@ -527,44 +550,83 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.ov { display: flex; flex-direction: column; gap: var(--sp-6); }
+.ov { display: flex; flex-direction: column; gap: var(--sp-5); }
 
-.ui-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-3); }
-.ui-metrics.second { grid-template-columns: repeat(4, 1fr); }
-.ui-metric {
+/* 页头：标题不再抢戏，工具条靠右 */
+.ov-top { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.ov-title { display: flex; align-items: baseline; gap: 10px; }
+.ov-title h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+.ov-title .sub { color: var(--muted); font-size: var(--fs-sm); }
+.ov-top .grow { margin-left: auto; }
+
+/* 头条：一句话结论 + 待办入口（首屏第一视线） */
+.ov-hero {
+  display: flex; align-items: center; gap: var(--sp-5); flex-wrap: wrap;
+  padding: var(--sp-5) var(--sp-5);
   background: var(--surface);
-  border: 1px solid var(--ink);
-  box-shadow: var(--shadow-1);
-  padding: var(--sp-4);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 118px;
+  border: 2px solid var(--ink);
+  box-shadow: var(--shadow-2);
+  border-left: 0;
 }
-.ui-metric.alert { border-color: var(--danger); }
-.ui-metric .k { font-size: var(--fs-sm); color: var(--muted); display: flex; align-items: center; gap: 6px; }
-.ui-metric .v {
-  font-size: var(--fs-3xl);
-  font-weight: 750;
-  letter-spacing: -0.03em;
-  line-height: 1.05;
-  font-variant-numeric: tabular-nums;
+.ov-hero > * { position: relative; }
+.ov-hero-left { flex: 1; min-width: 260px; }
+.ov-hero-line { margin: 0; font-size: 26px; line-height: 1.25; color: var(--ink-2); font-weight: 500; }
+.ov-hero-line b { font-size: 40px; font-weight: 800; letter-spacing: -0.03em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ov-sep { margin: 0 6px; color: var(--line-soft); }
+.ov-soft { color: var(--muted); font-size: 15px; }
+.ov-hero-sub { margin: 8px 0 0; color: var(--muted); font-size: var(--fs-sm); }
+
+.ov-hero-todo {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 16px; border: 1px solid var(--line-soft); background: var(--surface-2);
 }
-.ui-metric.alert .v { color: var(--danger); }
-.ui-metric .d {
-  font-size: var(--fs-xs);
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: auto;
+.ov-hero-todo.hot { border: 2px solid var(--accent); background: var(--surface); }
+.ov-hero-todo.hot .ov-todo-n { color: var(--accent); }
+.ov-todo-n { font-size: 30px; font-weight: 800; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ov-todo-l { font-size: var(--fs-sm); color: var(--ink-2); }
+.ov-todo-ok { display: inline-flex; align-items: center; gap: 7px; font-weight: 650; }
+
+/* 主指标：4 个，字号明显大于次级信息 */
+.ov-main { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-3); }
+.ov-kpi {
+  appearance: none; cursor: pointer; font-family: inherit; text-align: left;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: var(--sp-4) var(--sp-4) calc(var(--sp-4) - 2px);
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--ink); box-shadow: var(--shadow-1);
+  border-top: 4px solid var(--ink);
+  transition: transform .12s ease-out, box-shadow .12s ease-out;
 }
+.ov-kpi:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
+.ov-kpi { border-top: 5px solid var(--ink); }
+.ov-kpi.tone-ink { border-top-color: var(--accent); }
+.ov-kpi.tone-warn { border-top-color: var(--warn); }
+.ov-kpi.tone-ok { border-top-color: var(--ok); }
+.ov-kpi.tone-bad { border-top-color: var(--danger); }
+.ov-kpi-k { font-size: var(--fs-sm); color: var(--muted); }
+.ov-kpi-v { font-size: 36px; font-weight: 800; line-height: 1.05; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.ov-kpi-v em { font-style: normal; font-size: 18px; color: var(--muted); font-weight: 650; }
+.ov-kpi-d { font-size: var(--fs-xs); color: var(--muted); margin-top: 2px; }
+.ov-kpi.warn .ov-kpi-v { color: var(--warn-strong, var(--warn)); }
+.ov-kpi.bad .ov-kpi-v { color: var(--danger); }
+
+/* 次级信息：一行紧凑条 */
+.ov-sub {
+  display: flex; align-items: center; gap: var(--sp-5); flex-wrap: wrap;
+  padding: 9px var(--sp-4);
+  border: 1px dashed var(--line-soft);
+  font-size: var(--fs-sm); color: var(--muted);
+}
+.ov-sub b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.ov-sub-root { margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .ui-cols { display: grid; grid-template-columns: 1.15fr 1fr; gap: var(--sp-4); }
 @media (max-width: 1180px) {
-  .ui-metrics, .ui-metrics.second { grid-template-columns: repeat(2, 1fr); }
+  .ov-main { grid-template-columns: repeat(2, 1fr); }
   .ui-cols { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .ov-main { grid-template-columns: 1fr; }
 }
 
 .cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; padding: var(--sp-4); }

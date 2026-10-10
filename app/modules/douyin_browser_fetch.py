@@ -83,6 +83,11 @@ async def fetch_json(
 
     浏览器不可用时抛 RuntimeError（由上层转成可读错误，不影响其它平台）。
     """
+    from app.core import rate_limit
+
+    # 浏览器同源请求同样是抖音出站流量：必须过统一桶，否则会绕过保守限速。
+    # 每次调用取一个令牌（含评论翻页、搜索翻页、博主兜底等所有路径）。
+    await rate_limit.acquire("douyin")
     try:
         from playwright.async_api import async_playwright
     except ImportError as exc:  # pragma: no cover - 环境相关

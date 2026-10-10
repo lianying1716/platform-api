@@ -101,12 +101,9 @@ async def search_zhihu(keyword: str, cookie: str, limit: int, sort: str) -> list
     通过受管浏览器打开搜索页并监听平台自身的 search_v3 响应，由平台页面完成签名。
     """
     from app.modules import browser_fetch
-    from app.core import rate_limit
 
     sort_value = "created_time" if sort == "latest" else ""
     search_url = browser_fetch.build_search_url("https://www.zhihu.com", keyword, sort)
-    # 浏览器加载页面本身也算一次平台出站访问：先过平台限速，遵守保守档。
-    await rate_limit.acquire("zhihu")
     pages = max(1, (limit + _PAGE_SIZE - 1) // _PAGE_SIZE)
     responses = await browser_fetch.fetch_search(
         search_url=search_url,

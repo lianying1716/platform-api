@@ -4,7 +4,7 @@
 .ui-app {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 236px 1fr;
+  grid-template-columns: 252px 1fr;
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
@@ -30,7 +30,7 @@
 [data-dir='grotesk'] .ui-side-foot { margin: 0 0 0 auto; padding: 0; border: 0; }
 
 /* V3 包豪斯：左侧加粗色块 + 印刷页边 */
-[data-dir='bauhaus'] .ui-app { grid-template-columns: 224px 1fr; border-top: 6px solid var(--ink); }
+[data-dir='bauhaus'] .ui-app { grid-template-columns: 244px 1fr; border-top: 6px solid var(--ink); }
 [data-dir='bauhaus'] .ui-side { border-right: 2px solid var(--ink); }
 [data-dir='bauhaus'] .ui-brand { border-bottom: 2px solid var(--sidebar-ink); padding-bottom: var(--sp-4); }
 
@@ -66,10 +66,10 @@
 
 .ui-nav { display: flex; flex-direction: column; }
 .ui-nav-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px var(--sp-5);
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px var(--sp-5);
   color: var(--sidebar-ink-dim);
-  font-size: var(--fs-md);
+  font-size: 14.5px;
   cursor: pointer;
   border: 0; background: none; text-align: left; width: 100%;
   font-family: inherit;
@@ -135,6 +135,11 @@
 /* 账号/采集/队列等页共用的操作条 */
 .ui-bar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 .ui-bar .grow { margin-left: auto; }
+/* 筛选/操作条里，自建分段控件与 Element 下拉框必须一样高，否则看着参差 */
+.ui-filters { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.ui-filters .grow { margin-left: auto; }
+.ui-filters .el-select__wrapper,
+.ui-bar .el-select__wrapper { min-height: 32px; }
 .ui-head h1 {
   margin: 0; font-size: var(--fs-display); font-weight: 750;
   letter-spacing: var(--tracking-display); line-height: 1.05;
@@ -168,9 +173,9 @@
 [data-dir='nocturne'] .ui-btn.primary { box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 45%, transparent), 0 6px 18px color-mix(in oklab, var(--accent) 26%, transparent); }
 
 /* ---------- 分段控件 ---------- */
-.ui-seg { display: inline-flex; padding: 3px; gap: 3px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+.ui-seg { display: inline-flex; align-items: center; padding: 3px; gap: 3px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
 .ui-seg button {
-  padding: 5px 13px; border: 0; background: none; border-radius: calc(var(--radius) - 1px);
+  padding: 0 13px; height: 24px; border: 0; background: none; border-radius: calc(var(--radius) - 1px);
   font-size: var(--fs-sm); font-family: inherit; color: var(--muted); cursor: pointer;
   transition: background .15s ease-out, color .15s ease-out;
 }
@@ -179,6 +184,25 @@
 [data-dir='nocturne'] .ui-seg button.on { background: var(--surface-3); color: var(--ink); }
 
 /* ---------- 徽标 / 状态 ---------- */
+.ui-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.ui-chip {
+  padding: 4px 12px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--muted);
+  font-family: inherit; font-size: var(--fs-sm); cursor: pointer;
+  transition: color .15s ease-out, border-color .15s ease-out, background .15s ease-out;
+}
+.ui-chip:hover { color: var(--ink); border-color: var(--accent-line); }
+.ui-chip.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
+.ui-chip .chip-n { margin-left: 6px; font-variant-numeric: tabular-nums; opacity: .8; }
+.ui-icon-btn {
+  width: 30px; height: 30px; display: grid; place-items: center; flex: none;
+  border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink-2); cursor: pointer; font-size: 15px; line-height: 1;
+  transition: color .15s ease-out, border-color .15s ease-out, background .15s ease-out;
+}
+.ui-icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+.ui-icon-btn[disabled] { opacity: .45; cursor: not-allowed; }
+
 .ui-badge {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: var(--fs-xs); font-weight: 550; padding: 2px 8px;
@@ -308,6 +332,44 @@
 }
 .el-tag--dark { border-color: transparent; }
 
+/* 按钮：与自建 .ui-btn 对齐（同一边框、同级硬阴影与位移反馈）。
+ * 页面上既有 el-button 也有 ui-btn，不做这一层就会一半平、一半带阴影。 */
+.el-button {
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-weight: 550;
+  transition: transform .12s ease-out, background .15s ease-out, border-color .15s ease-out, color .15s ease-out, box-shadow .15s ease-out;
+}
+.el-button--primary {
+  --el-button-text-color: var(--accent-ink);
+  --el-button-hover-text-color: var(--accent-ink);
+  --el-button-active-text-color: var(--accent-ink);
+  --el-button-bg-color: var(--accent);
+  --el-button-border-color: var(--accent);
+}
+[data-dir='bauhaus'] .el-button {
+  border: 1px solid var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+  font-weight: 600;
+}
+[data-dir='bauhaus'] .el-button:hover:not(.is-disabled) {
+  transform: translate(-1px,-1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+[data-dir='bauhaus'] .el-button:active:not(.is-disabled) {
+  transform: translate(1px,1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+[data-dir='bauhaus'] .el-button.is-text,
+[data-dir='bauhaus'] .el-button.is-link,
+[data-dir='bauhaus'] .el-button--text {
+  box-shadow: none;
+  border-color: transparent;
+}
+[data-dir='bauhaus'] .el-button.is-disabled {
+  box-shadow: 2px 2px 0 color-mix(in oklab, var(--ink) 35%, var(--surface));
+}
+
 /* 表单控件：方角 + 粗描边 */
 .el-input__wrapper,
 .el-textarea__inner,
@@ -331,7 +393,34 @@
 .el-switch__core { border-radius: 0; }
 .el-radio-button:first-child .el-radio-button__inner,
 .el-radio-button:last-child .el-radio-button__inner { border-radius: 0; }
-.el-switch__core { border: 1px solid var(--ink); }
+
+/* Element 开关与自建 .ui-switch 对齐：同一套轨道/手柄尺寸与配色，
+ * 免得列表里的开关是胶囊、表单里的开关是方块。 */
+.el-switch {
+  --el-switch-on-color: var(--accent);
+  --el-switch-off-color: var(--surface-3);
+  --el-switch-border-color: var(--ink);
+}
+.el-switch__core {
+  border: 1px solid var(--ink);
+  min-width: 36px;
+  height: 20px;
+}
+.el-switch__core .el-switch__action {
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-pill);
+  width: 14px;
+  height: 14px;
+  left: 2px;
+  top: 2px;
+}
+.el-switch.is-checked .el-switch__core .el-switch__action { left: 100%; margin-left: -16px; }
+.el-switch.is-checked .el-switch__core { border-color: var(--accent); }
+.el-switch--large .el-switch__core { min-width: 46px; height: 26px; }
+.el-switch--large .el-switch__core .el-switch__action { width: 19px; height: 19px; }
+.el-switch--small .el-switch__core { min-width: 30px; height: 17px; }
+.el-switch--small .el-switch__core .el-switch__action { width: 11px; height: 11px; left: 1px; top: 1px; }
 
 /* 分页 / 进度 / 抽屉内表格背景对齐 */
 .el-pagination button,
@@ -353,12 +442,12 @@
  * 这里提供统一样式；.sm / .lg 两个尺寸供紧凑行与卡片头部使用。
  */
 .ui-switch {
-  width: 36px; height: 20px; border-radius: 999px; background: var(--surface-3);
+  width: 36px; height: 20px; border-radius: var(--radius-pill); background: var(--surface-3);
   border: 1px solid var(--ink); position: relative; cursor: pointer; padding: 0; flex: none;
   transition: background .16s ease-out;
 }
 .ui-switch i {
-  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 999px;
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: var(--radius-pill);
   background: var(--surface); border: 1px solid var(--ink);
   transition: transform .16s cubic-bezier(.16,1,.3,1);
 }

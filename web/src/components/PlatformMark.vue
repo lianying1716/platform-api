@@ -1,5 +1,5 @@
 <template>
-  <span class="pm" :class="[`pm-${size}`, { muted }]" :style="style">
+  <span class="pm" :class="[`pm-${size}`, { muted, plain }]" :style="style">
     <span class="pm-badge">
       <svg v-if="meta.path" viewBox="0 0 24 24" aria-hidden="true">
         <path :d="meta.path" />
@@ -26,8 +26,10 @@ const props = withDefaults(
     muted?: boolean
     /** 是否用品牌色；false 则用当前文字色 */
     colored?: boolean
+    /** 纯图标模式：去掉徽标底与描边（素材卡封面等已有底色的场合） */
+    plain?: boolean
   }>(),
-  { showLabel: true, size: 'md', muted: false, colored: true },
+  { showLabel: true, size: 'md', muted: false, colored: true, plain: false },
 )
 
 // 未知平台：回退成中性标记，避免出现空白或裂图
@@ -77,6 +79,14 @@ function color2rgba(hex: string, alpha: number) {
   border: 1px solid color-mix(in oklab, var(--pm-color) 34%, transparent);
   color: var(--pm-color);
 }
+/* 纯图标模式：无底、无描边，图标直接坐落在卡片封面上 */
+.pm.plain .pm-badge {
+  background: none;
+  border: 0;
+  color: #fff;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .55));
+}
+.pm.plain .pm-badge svg { width: 100%; height: 100%; }
 .pm-badge svg {
   width: 62%;
   height: 62%;

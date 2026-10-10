@@ -55,7 +55,7 @@
       </div>
       <div v-else class="asset-grid">
         <article v-for="a in assets" :key="a.asset_id" class="asset" :class="{ picked: isPicked(a) }">
-          <!-- 封面：整块可点即开始（视频播放 / 文章阅读），不再需要额外按钮 -->
+          <!-- 左：封面（可点即开始：视频播放 / 文章阅读） -->
           <div
             class="cover"
             :class="{ clickable: canOpen(a) }"
@@ -69,21 +69,22 @@
               :src="`/api/assets/${a.asset_id}/cover`" alt=""
               loading="lazy" @error="markCoverFailed(a.asset_id)" />
             <span v-else class="ph">{{ typeLabel(a.content_type) }}</span>
-            <span class="badge-plat"><PlatformMark :platform="a.platform" :show-label="false" size="sm" :colored="false" /></span>
-            <span class="badge-type">{{ typeLabel(a.content_type) }}</span>
+            <!-- 平台标：纯图标，无黑底 -->
+            <span class="badge-plat"><PlatformMark :platform="a.platform" :show-label="false" size="sm" plain /></span>
             <span v-if="a.duration_sec" class="badge-dur">{{ mmss(a.duration_sec) }}</span>
-            <!-- 悬浮提示：点封面即可开始 -->
             <span v-if="canOpen(a)" class="cover-cta">
-              <span class="cta-ic">{{ a.content_type === 'video' ? '▶' : '📖' }}</span>
-              {{ a.content_type === 'video' ? '播放' : '阅读' }}
+              <span class="cta-ic">{{ a.content_type === 'video' ? '▶' : '阅' }}</span>
             </span>
             <span v-else-if="a.content_type === 'video'" class="badge-nofile">未下载</span>
           </div>
 
+          <!-- 右：信息（标题在上，元数据左右两列，降低垂直高度） -->
           <div class="body">
-            <div class="title" :title="a.title">{{ a.title || '（无标题）' }}</div>
+            <div class="title-row">
+              <span class="type-tag">{{ typeLabel(a.content_type) }}</span>
+              <div class="title" :title="a.title">{{ a.title || '（无标题）' }}</div>
+            </div>
 
-            <!-- 博主：头像 + 昵称，可点跳主页 -->
             <div class="author">
               <span class="ava" :style="a.author_avatar ? { backgroundImage: `url(${a.author_avatar})` } : {}">
                 {{ a.author_avatar ? '' : (a.author_name || '?').slice(0, 1) }}
@@ -92,37 +93,45 @@
                 {{ a.author_name || a.author_id }}
               </a>
               <span v-else class="aname">{{ a.author_name || '未知博主' }}</span>
+              <span v-if="a.auto_category" class="ui-badge acc cat-inline">
+                {{ taxonomy[a.auto_category] || a.auto_category }}
+              </span>
+              <span v-else class="ui-badge none cat-inline">未判类</span>
             </div>
 
-            <!-- 分类 + 发布时间 + 同步时间 -->
-            <div class="meta-rows">
-              <div class="mrow">
-                <span class="mk">分类</span>
-                <span v-if="a.auto_category" class="ui-badge acc">
-                  {{ taxonomy[a.auto_category] || a.auto_category }}
-                  <em v-if="a.category_confidence">· {{ (a.category_confidence * 100).toFixed(0) }}%</em>
-                </span>
-                <span v-else class="ui-badge none">未判类</span>
-              </div>
+            <!-- 元数据：左右两列，压缩卡片高度 -->
+            <div class="meta-grid">
               <div class="mrow"><span class="mk">发布</span><span class="mv">{{ fmtDate(a.published_at) }}</span></div>
-              <div class="mrow"><span class="mk">同步</span><span class="mv">{{ fmtTime(a.synced_at || a.created_at) }}</span></div>
-            </div>
-
-            <!-- 指标 -->
-            <div class="nums">
-              <span><b>{{ compact(a.metrics?.play) }}</b> 播放</span>
-              <span><b>{{ compact(a.metrics?.like) }}</b> 赞</span>
-              <span><b>{{ compact(a.metrics?.comment) }}</b> 评论</span>
-              <span><b>{{ compact(a.metrics?.favorite) }}</b> 收藏</span>
+              <div class="mrow"><span class="mk">同步</span><span class="mv">{{ fmtMinute(a.synced_at || a.created_at) }}</span></div>
+              <div class="mrow" v-if="hasEngagement(a)">
+                <span class="mk">互动</span>
+                <span class="mv nums-inline">
+                  <span v-if="a.metrics?.like"><b>{{ compact(a.metrics.like) }}</b> 赞</span>
+                  <span v-if="a.metrics?.comment"><b>{{ compact(a.metrics.comment) }}</b> 评</span>
+                  <span v-if="a.metrics?.favorite"><b>{{ compact(a.metrics.favorite) }}</b> 藏</span>
+                </span>
+              </div>
+              <div class="mrow"><span class="mk">大小</span><span class="mv">{{ bytes(a.size_bytes) }}</span></div>
             </div>
 
             <div class="foot">
-              <span class="size">{{ bytes(a.size_bytes) }}</span>
-              <span
-                class="ui-badge"
-                :class="statusTone(a.download_status)"
-                :title="a.download_status === 'error' ? (a.error || '下载失败') : ''"
-              >{{ s(a.download_status) }}</span>
+              <span class="stagers">
+                <span
+                  class="ui-badge"
+                  :class="statusTone(a.transcribe_status)"
+                  :title="'转录：' + s(a.transcribe_status)"
+                >转录 {{ s(a.transcribe_status) }}</span>
+                <span
+                  class="ui-badge"
+                  :class="statusTone(a.analyze_status)"
+                  :title="'分析：' + s(a.analyze_status)"
+                >分析 {{ s(a.analyze_status) }}</span>
+                <span
+                  class="ui-badge"
+                  :class="statusTone(a.download_status)"
+                  :title="a.download_status === 'error' ? (a.error || '下载失败') : ''"
+                >{{ s(a.download_status) }}</span>
+              </span>
               <span class="grow" />
               <label v-if="selected.length || pickMode" class="pick">
                 <input type="checkbox" :checked="isPicked(a)" @change="togglePick(a)" />
@@ -209,57 +218,88 @@
       </template>
     </el-dialog>
 
-    <el-drawer v-model="drawer" title="素材详情" size="50%" @close="closeDrawer">
-      <div v-if="detail">
-        <h3>{{ detail.content?.title }}</h3>
-        <p class="meta"><PlatformMark :platform="detail.content?.platform" size="sm" /> · {{ detail.content?.author_name }}</p>
-        <el-descriptions :column="1" border size="small">
-          <el-descriptions-item label="文件目录">{{ detail.file?.full_dir || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="视频文件">{{ detail.file?.video_file || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="链接"><a :href="detail.content?.url" target="_blank">打开原页面</a></el-descriptions-item>
-        </el-descriptions>
+    <el-drawer v-model="drawer" title="素材详情" size="58%" @close="closeDrawer">
+      <div v-if="detail" class="dt">
+        <!-- 头部：标题 + 来源 -->
+        <header class="dt-head">
+          <h3 class="dt-title">{{ detail.content?.title }}</h3>
+          <p class="dt-sub">
+            <PlatformMark :platform="detail.content?.platform" size="sm" />
+            <span>{{ detail.content?.author_name }}</span>
+            <span v-if="fmtDate(detail.content?.published_at)">· {{ fmtDate(detail.content?.published_at) }} 发布</span>
+          </p>
+        </header>
 
-        <el-divider>转录文本</el-divider>
-        <el-input v-if="detail.transcript" type="textarea" :rows="10" :model-value="detail.transcript.full_text" readonly />
-        <el-empty v-else description="尚无转录" :image-size="60" />
-
-        <el-divider>AI 分析</el-divider>
-        <div v-if="detail.analysis">
-          <p><b>摘要：</b>{{ detail.analysis.summary }}</p>
-          <el-tag v-for="tag in detail.analysis.tags" :key="tag" style="margin-right: 6px">{{ tag }}</el-tag>
-        </div>
-        <el-empty v-else description="尚无分析" :image-size="60" />
-
-        <el-divider>评论（按点赞排序）</el-divider>
-        <p class="comment-total">评论总数 {{ detail?.metrics?.comment ?? '—' }}</p>
-        <div v-if="comments.length">
-          <div v-for="c in comments" :key="c.comment_id" class="comment">
-            <div class="c-head">
-              <b>{{ c.nickname || '匿名' }}</b>
-              <span class="c-meta">{{ c.ip_location }} · 赞 {{ c.like_count }}<template v-if="fmtTime(c.created_at)"> · {{ fmtTime(c.created_at) }}</template></span>
-            </div>
-            <div class="c-body">{{ c.content }}</div>
+        <!-- 分档加工：置顶（最常做的操作放最上面） -->
+        <section class="dt-block dt-pin">
+          <div class="tier-row">
+            <span class="dt-block-title">分档加工</span>
+            <el-tag size="small" type="info">当前档位：{{ tierLabel(detail.status?.tier) }}</el-tag>
+            <el-tag size="small" :type="t(proc.understand_status)">理解 {{ sStatus(proc.understand_status) }}</el-tag>
           </div>
-          <el-button v-if="comments.length < commentTotal" text @click="loadMoreComments">加载更多</el-button>
-        </div>
-        <p v-else class="comment-hint">
-          该作品评论数或点赞数未达抓取门槛，仅显示数量。
-        </p>
+          <div class="tier-actions">
+            <el-button size="small" :loading="procBusy" :disabled="procBusy" @click="runProcess('basic')">转录（普通）</el-button>
+            <el-button size="small" type="primary" :loading="procBusy" :disabled="procBusy" @click="runProcess('advanced')">视频理解（高级）</el-button>
+            <el-checkbox v-model="proc.use_cover">判类用封面</el-checkbox>
+            <el-select v-model="proc.force_category" placeholder="改类型重跑（可选）" clearable size="small" style="width: 180px">
+              <el-option v-for="(label, key) in taxonomy" :key="key" :label="label" :value="key" />
+            </el-select>
+            <el-button size="small" :loading="procBusy" :disabled="!proc.force_category || procBusy" @click="runReclassify">按类型重跑</el-button>
+          </div>
+        </section>
 
-        <el-divider>分档加工</el-divider>
-        <div class="tier-row">
-          <el-tag size="small" type="info">当前档位：{{ tierLabel(detail.status?.tier) }}</el-tag>
-          <el-tag size="small" :type="t(proc.understand_status)">理解 {{ sStatus(proc.understand_status) }}</el-tag>
-        </div>
-        <div class="tier-actions">
-          <el-button size="small" :loading="procBusy" :disabled="procBusy" @click="runProcess('basic')">转录（普通）</el-button>
-          <el-button size="small" type="primary" :loading="procBusy" :disabled="procBusy" @click="runProcess('advanced')">视频理解（高级）</el-button>
-          <el-checkbox v-model="proc.use_cover">判类用封面</el-checkbox>
-          <el-select v-model="proc.force_category" placeholder="改类型重跑（可选）" clearable size="small" style="width: 180px">
-            <el-option v-for="(label, key) in taxonomy" :key="key" :label="label" :value="key" />
-          </el-select>
-          <el-button size="small" :loading="procBusy" :disabled="!proc.force_category || procBusy" @click="runReclassify">按类型重跑</el-button>
-        </div>
+        <!-- 横向 tab -->
+        <nav class="dt-tabs" role="tablist">
+          <button
+            v-for="tb in detailTabs" :key="tb.k"
+            class="dt-tab" :class="{ on: detailTab === tb.k }"
+            role="tab" :aria-selected="detailTab === tb.k"
+            @click="detailTab = tb.k"
+          >
+            {{ tb.label }}
+            <span v-if="tb.count !== undefined && tb.count !== null" class="dt-tab-n">{{ tb.count }}</span>
+          </button>
+        </nav>
+
+        <!-- Tab: 文件 / 链接 -->
+        <section v-show="detailTab === 'files'" class="dt-pane">
+          <div class="dt-field">
+            <span class="dt-k">文件目录</span>
+            <code class="dt-dir" :title="detail.file?.full_dir || ''">{{ detail.file?.full_dir || '—' }}</code>
+          </div>
+          <div class="dt-field">
+            <span class="dt-k">视频文件</span>
+            <span class="dt-v">{{ detail.file?.video_file || '—' }}</span>
+          </div>
+          <div class="dt-actions">
+            <a
+              v-if="detail.content?.url"
+              class="ui-btn primary sm"
+              :href="detail.content.url" target="_blank" rel="noopener"
+            >打开原链接</a>
+            <span v-else class="c-meta">该素材没有原始链接</span>
+          </div>
+        </section>
+
+        <!-- Tab: 转录 -->
+        <section v-show="detailTab === 'transcript'" class="dt-pane">
+          <el-input v-if="detail.transcript" type="textarea" :rows="18" :model-value="detail.transcript.full_text" readonly />
+          <el-empty v-else description="尚无转录" :image-size="60" />
+        </section>
+
+        <!-- Tab: 分析 -->
+        <section v-show="detailTab === 'analysis'" class="dt-pane">
+          <div v-if="detail.analysis">
+            <p><b>摘要：</b>{{ detail.analysis.summary }}</p>
+            <div class="dt-tags">
+              <el-tag v-for="tag in detail.analysis.tags" :key="tag" size="small">{{ tag }}</el-tag>
+            </div>
+          </div>
+          <el-empty v-else description="尚无分析" :image-size="60" />
+        </section>
+
+        <!-- Tab: 视频理解 -->
+        <section v-show="detailTab === 'understand'" class="dt-pane">
 
         <div v-if="understanding" class="understand">
           <p>
@@ -283,8 +323,26 @@
           <p v-if="understanding.error" class="err">{{ understanding.error }}</p>
         </div>
         <p v-else-if="proc.understand_status === 'error'" class="err">理解失败：{{ understandError || detail.status?.error }}</p>
+        </section>
 
-        <el-divider>爆款拆解</el-divider>
+        <!-- Tab: 评论 -->
+        <section v-show="detailTab === 'comments'" class="dt-pane">
+          <p class="comment-total">评论总数 {{ detail?.metrics?.comment ?? '—' }}</p>
+          <div v-if="comments.length">
+            <div v-for="c in comments" :key="c.comment_id" class="comment">
+              <div class="c-head">
+                <b>{{ c.nickname || '匿名' }}</b>
+                <span class="c-meta">{{ c.ip_location }} · 赞 {{ c.like_count }}<template v-if="fmtTime(c.created_at)"> · {{ fmtTime(c.created_at) }}</template></span>
+              </div>
+              <div class="c-body">{{ c.content }}</div>
+            </div>
+            <el-button v-if="comments.length < commentTotal" text @click="loadMoreComments">加载更多</el-button>
+          </div>
+          <p v-else class="comment-hint">该作品评论数或点赞数未达抓取门槛，仅显示数量。</p>
+        </section>
+
+        <!-- Tab: 爆款拆解 -->
+        <section v-show="detailTab === 'breakdown'" class="dt-pane">
         <div class="bd-actions">
           <el-button size="small" type="primary" :loading="bdBusy" :disabled="bdBusy || isBdActive()" @click="runBreakdown(!!breakdown)">
             {{ breakdown ? '重新拆解' : '生成爆款拆解' }}
@@ -388,6 +446,7 @@
           </div>
         </div>
         <el-empty v-else-if="!isBdActive() && bdStatus !== 'error'" description="尚无拆解报告" :image-size="60" />
+        </section>
       </div>
     </el-drawer>
   </div>
@@ -407,6 +466,16 @@ const selected = ref<any[]>([])
 const loading = ref(false)
 const drawer = ref(false)
 const detail = ref<any>(null)
+// 详情抽屉的横向 tab（详情页内容较多，拆成并列 tab 而不是纵向长滚动）
+const detailTab = ref<'files' | 'transcript' | 'analysis' | 'understand' | 'comments' | 'breakdown'>('files')
+const detailTabs = computed(() => [
+  { k: 'files', label: '文件 / 链接' },
+  { k: 'transcript', label: '转录' },
+  { k: 'analysis', label: '分析' },
+  { k: 'understand', label: '视频理解' },
+  { k: 'comments', label: '评论', count: commentTotal.value || undefined },
+  { k: 'breakdown', label: '爆款拆解' },
+])
 const filters = reactive({
   platform: '',
   account_id: null as number | null,
@@ -480,6 +549,18 @@ function isTranscribed(a: any) {
 }
 function isAnalyzed(a: any) {
   return a.analyze_status === 'done'
+}
+// 同步时间在卡片里只到分钟，避免 04:09:55 被截断成 04:0…
+function fmtMinute(v: string | null | undefined) {
+  if (!v) return '—'
+  const d = new Date(/Z$/.test(v) || v.includes('+') ? v : v + 'Z')
+  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+// 互动指标（赞/评/藏）：平台常拿不到，全为 0 时不占用版面。
+function hasEngagement(a: any) {
+  const m = a.metrics || {}
+  return Boolean(m.like || m.comment || m.favorite)
 }
 
 const importDialog = ref(false)
@@ -767,6 +848,7 @@ async function load() {
 async function openDetail(id: number) {
   const { data } = await api.get(`/api/assets/${id}`)
   detail.value = data
+  detailTab.value = 'files'
   drawer.value = true
   await loadComments(id)
   await loadProcess(id, { resetInputs: true })
@@ -839,13 +921,13 @@ onUnmounted(() => {
 .ui-filters .grow { margin-left: auto; }
 
 /* 素材卡片网格 */
-.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: var(--sp-3); }
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: var(--sp-3); }
 .asset {
   background: var(--surface);
   border: 1px solid var(--ink);
   box-shadow: var(--shadow-1);
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 176px 1fr;   /* 左封面 + 右信息，横向布局降低高度 */
   transition: transform .14s ease-out, box-shadow .14s ease-out;
 }
 .asset:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
@@ -853,16 +935,14 @@ onUnmounted(() => {
 
 .asset .cover {
   position: relative;
-  aspect-ratio: 16 / 9;
   overflow: hidden;
   display: grid;
   place-items: center;
+  min-height: 132px;
   background-color: var(--surface-3);
   background-size: cover;
   background-position: center;
-  border-bottom: 1px solid var(--ink);
-  display: grid;
-  place-items: center;
+  border-right: 1px solid var(--ink);
 }
 .asset .cover .ph { font-size: var(--fs-2xl); font-weight: 800; color: var(--muted); letter-spacing: .08em; }
 .asset .cover > img {
@@ -885,7 +965,7 @@ onUnmounted(() => {
   background: var(--surface);
   color: var(--ink);
 }
-.asset .cover .badge-plat { top: 8px; left: 8px; background: var(--ink); color: var(--surface); }
+.asset .cover .badge-plat { top: 6px; left: 6px; background: none; border: 0; padding: 0; }
 .asset .cover .badge-type { top: 8px; right: 8px; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .asset .cover .badge-dur { bottom: 8px; right: 8px; font-variant-numeric: tabular-nums; }
 .asset .cover .badge-nofile { bottom: 8px; right: 8px; color: var(--muted); }
@@ -908,10 +988,18 @@ onUnmounted(() => {
   border: 2px solid #fff; background: rgba(0,0,0,.28);
   font-size: 20px;
 }
-.asset .body { padding: var(--sp-4); display: flex; flex-direction: column; gap: 9px; flex: 1; }
+.asset .body { padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.asset .title-row { display: flex; align-items: flex-start; gap: 8px; }
+.asset .type-tag {
+  flex: none; margin-top: 1px;
+  font-size: var(--fs-xs); font-weight: 700;
+  padding: 1px 6px; border: 1px solid var(--ink);
+  background: var(--surface-2); color: var(--ink-2);
+}
 .asset .title {
-  font-weight: 650; font-size: var(--fs-md); color: var(--ink); line-height: 1.4;
+  font-weight: 650; font-size: var(--fs-md); color: var(--ink); line-height: 1.35;
   display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  min-width: 0;
 }
 .asset .author { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .asset .ava {
@@ -927,11 +1015,14 @@ onUnmounted(() => {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .asset .aname:hover { color: var(--accent); text-decoration: underline; }
+.asset .cat-inline { margin-left: auto; flex: none; }
 
-.asset .meta-rows { display: flex; flex-direction: column; gap: 3px; }
-.asset .mrow { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xs); }
-.asset .mk { color: var(--muted); min-width: 28px; }
-.asset .mv { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.asset .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+.asset .mrow { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); min-width: 0; }
+.asset .mk { color: var(--muted); min-width: 26px; flex: none; }
+.asset .mv { color: var(--ink-2); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset .nums-inline { display: flex; gap: 8px; }
+.asset .nums-inline b { color: var(--ink); font-weight: 650; }
 .ui-badge.none { border-style: dashed; color: var(--muted); background: transparent; }
 .ui-badge em { font-style: normal; opacity: .75; }
 
@@ -943,12 +1034,56 @@ onUnmounted(() => {
 }
 .asset .nums b { color: var(--ink); font-variant-numeric: tabular-nums; }
 
-.asset .foot { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--muted); }
+.asset .foot { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
 .asset .foot .grow { margin-left: auto; }
-.asset .size { font-variant-numeric: tabular-nums; }
+.asset .stagers { display: flex; gap: 5px; flex-wrap: wrap; }
+.asset .stagers .ui-badge { font-size: 10px; padding: 1px 6px; }
+/* 窄屏：卡片回落为纵向 */
+@media (max-width: 720px) {
+  .asset-grid { grid-template-columns: 1fr; }
+  .asset { grid-template-columns: 1fr; }
+  .asset .cover { min-height: 160px; border-right: 0; border-bottom: 1px solid var(--ink); }
+}
 .asset .pick input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
-.asset .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.asset .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+
+/* ---------- 素材详情抽屉（横向 tab 布局） ---------- */
+.dt { display: flex; flex-direction: column; gap: 14px; }
+.dt-head { border-bottom: 2px solid var(--ink); padding-bottom: 10px; }
+.dt-title { margin: 0 0 6px; font-size: 17px; line-height: 1.4; }
+.dt-sub { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: var(--fs-sm); }
+
+/* 分档加工置顶块 */
+.dt-block { border: 1px solid var(--ink); background: var(--surface-2); padding: 10px 12px; }
+.dt-pin { box-shadow: var(--shadow-1); }
+.dt-block-title { font-weight: 700; font-size: var(--fs-md); margin-right: 4px; }
+
+/* 横向 tab 栏 */
+.dt-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--ink); overflow-x: auto; }
+.dt-tab {
+  appearance: none; background: none; border: 0; cursor: pointer;
+  font-family: inherit; font-size: var(--fs-md); color: var(--muted);
+  padding: 9px 14px; white-space: nowrap;
+  border-bottom: 3px solid transparent; margin-bottom: -2px;
+  transition: color .15s ease-out, border-color .15s ease-out;
+}
+.dt-tab:hover { color: var(--ink); }
+.dt-tab.on { color: var(--ink); font-weight: 700; border-bottom-color: var(--accent); }
+.dt-tab-n {
+  margin-left: 6px; font-size: 10px; padding: 0 5px;
+  border: 1px solid var(--line-soft); color: var(--ink-2);
+}
+.dt-pane { padding-top: 6px; min-height: 120px; }
+.dt-field { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.dt-k { flex: none; width: 72px; color: var(--muted); font-size: var(--fs-sm); }
+.dt-dir {
+  flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-sm);
+  word-break: break-all; color: var(--ink-2);
+}
+.dt-v { flex: 1; min-width: 0; word-break: break-all; font-size: var(--fs-sm); color: var(--ink-2); }
+.dt-actions { margin-top: 14px; }
+.dt-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 
 /* 播放器 / 文章阅读 */
 .ui-modal {

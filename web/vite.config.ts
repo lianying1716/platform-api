@@ -15,10 +15,15 @@ export default defineConfig({
     // 局域网 / Tailscale / 域名访问开发服时，Vite 默认会以 Host 头做白名单校验，
     // 非 IP 的 Host 一律 403（表现为“页面能开但接口全部失败”）。开发环境全放开。
     allowedHosts: true,
-    proxy: {
-      '/api': 'http://127.0.0.1:9100',
-      // 后端静态资源（如 <video src=/api/...> 之外的直链）也一并代理，避免跨端口
-      '/media': 'http://127.0.0.1:9100',
-    },
+    // 代理目标可用 VITE_API_TARGET 覆盖：便于把界面指向另一个后端（例如
+    // 用独立 SQLite + 演示数据起一个预览实例做界面验收，不动开发库）。
+    proxy: (() => {
+      const target = process.env.VITE_API_TARGET || 'http://127.0.0.1:9100'
+      return {
+        '/api': target,
+        // 后端静态资源（如 <video src=/api/...> 之外的直链）也一并代理，避免跨端口
+        '/media': target,
+      }
+    })(),
   },
 })
