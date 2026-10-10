@@ -106,7 +106,9 @@ async def fetch_until(
 ) -> dict:
     """导航到 page_url，监听平台自身发出的第一个 api_token 响应并返回其 JSON。
 
-    与 ``fetch_search`` 的区别：只取第一个匹配响应，用于详情/评论这类单页数据。
+    与 ``fetch_search`` 的区别：以详情/列表首屏响应为主数据，并在 ``pages > 1``
+    时继续滚动触发分页，把同名的列表字段合并回首个响应，供创作者全量同步使用。
+    详情/评论类单页调用保持 ``pages=1``，行为不变。
     """
     from app.core import rate_limit
     from app.modules import browser_pool
@@ -116,13 +118,13 @@ async def fetch_until(
     captured: list[dict] = []
 
     async def _on_response(resp):
-        if api_token not in resp.url or captured:
+        if api_token not in resp.url:
             return
         try:
             data = await resp.json()
         except Exception:  # noqa: BLE001
             return
-        if isinstance(data, dict):
+        if isinstance(data, dict) and data not in captured:
             captured.append(data)
 
     def _hook(resp):
@@ -142,12 +144,48 @@ async def fetch_until(
                 await asyncio.sleep(0.4)
             if not captured:
                 raise RuntimeError("浏览器抓取超时：平台未在限定时间内返回评论接口响应")
-            return captured[0]
+            for _ in range(max(0, pages - 1)):
+                before = len(captured)
+                # 后续翻页同样会发起平台请求：逐页过统一限速桶，避免滚动绕过保守档。
+                await rate_limit.acquire(platform)
+                try:
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                except Exception:  # noqa: BLE001 页面切换中滚动失败可忽略
+                    pass
+                page_deadline = asyncio.get_running_loop().time() + 6.0
+                while len(captured) == before and asyncio.get_running_loop().time() < page_deadline:
+                    await asyncio.sleep(0.4)
+                if len(captured) == before:
+                    break
+            return _merge_paginated_responses(captured)
         finally:
             try:
                 page.remove_listener("response", _hook)
             except Exception:  # noqa: BLE001
                 logger.debug("摘除 response 监听失败", exc_info=True)
+
+
+def _merge_paginated_responses(responses: list[dict]) -> dict:
+    """把多页响应合并为首个响应的形状：同名列表字段拼接，其余字段以首页为准。"""
+    first = dict(responses[0])
+    list_keys = ("data", "notes", "comments", "items", "aweme_list")
+    for key in list_keys:
+        if not any(key in resp for resp in responses):
+            continue
+        merged: list = []
+        for resp in responses:
+            value = resp.get(key)
+            if isinstance(value, list):
+                merged.extend(value)
+            elif isinstance(value, dict):
+                for nested in ("notes", "comments", "items", "data"):
+                    nested_value = value.get(nested)
+                    if isinstance(nested_value, list):
+                        merged.extend(nested_value)
+                        break
+        if merged:
+            first[key] = merged
+    return first
 
 
 async def fetch_page_html(

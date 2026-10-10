@@ -9,13 +9,15 @@
 
     <div class="bar">
       <button class="ui-btn primary" @click="openCreate">新建跟踪</button>
-      <el-tooltip content="从平台拉取「我关注的人」。关注列表默认开始跟踪；某个博主名下视频要单独手动开启">
-        <button class="ui-btn" :loading="refreshing" :disabled="!currentAccount" @click="refresh(false)">
+      <el-tooltip :content="canImportFollowings
+        ? '从平台拉取「我关注的人」。关注列表默认开始跟踪；某个博主名下视频要单独手动开启'
+        : '小红书 / 知乎暂不支持自动导入关注列表，请用「新建跟踪」手动填写博主 ID'">
+        <button class="ui-btn" :loading="refreshing" :disabled="!currentAccount || !canImportFollowings" @click="refresh(false)">
           {{ refreshing ? '拉取中…' : '导入我的关注' }}
         </button>
       </el-tooltip>
       <el-tooltip content="忽略缓存立即重拉（仍受平台风控冷却限制，请勿频繁点击）">
-        <button class="ui-btn" :disabled="refreshing || !currentAccount" @click="refresh(true)">强制刷新</button>
+        <button class="ui-btn" :disabled="refreshing || !currentAccount || !canImportFollowings" @click="refresh(true)">强制刷新</button>
       </el-tooltip>
       <span class="grow" />
       <span class="ui-badge">跟踪中 {{ accountRows.length }}</span>
@@ -238,7 +240,7 @@
         <el-form-item label="来源" v-if="!editing">
           <div style="width: 100%">
             <el-radio-group v-model="subPickMode" size="small" style="margin-bottom: 6px" @change="onPickModeChange">
-              <el-radio-button value="list">从列表选择</el-radio-button>
+              <el-radio-button value="list" :disabled="manualSourceOnly">从列表选择</el-radio-button>
               <el-radio-button value="manual">手动填 ID</el-radio-button>
             </el-radio-group>
             <el-select
@@ -252,7 +254,10 @@
             >
               <el-option v-for="s in sources" :key="s.remote_id" :label="s.title || s.remote_id" :value="s.remote_id" />
             </el-select>
-            <el-input v-else v-model="form.remote_id" placeholder="收藏夹ID / 合集ID / UP主mid / 博主sec_uid" />
+            <el-input v-else v-model="form.remote_id" :placeholder="manualSourcePlaceholder" />
+            <span v-if="manualSourceOnly" class="detail">
+              {{ currentFormPlatformLabel }}暂不支持自动发现关注博主，可手动填写主页 ID；保存后再开启该博主的视频同步。
+            </span>
           </div>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.title" placeholder="例如：技术收藏夹（可留空）" /></el-form-item>
@@ -434,8 +439,11 @@ interface SyncSwitch {
   video_sync_count?: number
 }
 
-const PLATFORM_LABELS: Record<string, string> = { douyin: '抖音', bilibili: 'B站' }
-const SUPPORTED = ['douyin', 'bilibili']
+const PLATFORM_LABELS: Record<string, string> = {
+  douyin: '抖音', bilibili: 'B站', xhs: '小红书', zhihu: '知乎',
+}
+const SUPPORTED = ['douyin', 'bilibili', 'xhs', 'zhihu']
+const MANUAL_SOURCE_PLATFORMS = new Set(['xhs', 'zhihu'])
 const SOURCE_TYPES: Record<string, string> = {
   favorite: '收藏', like: '点赞', collect_folder: '收藏夹', collection: '合集',
   series: '短剧', creator: '博主',
@@ -454,12 +462,17 @@ const BILIBILI_SOURCE_TYPES = [
   { value: 'collection', label: '合集' },
   { value: 'creator', label: '博主（我关注的）' },
 ]
+const MANUAL_CREATOR_SOURCE_TYPES = [
+  { value: 'creator', label: '博主（手动添加）' },
+]
 const DEFAULT_SUBDIR = '{platform}/{account}/{creator}/{date}'
 
 const sourceTypeOptions = computed(() => {
   const acc = accounts.value.find((a) => a.id === form.account_id)
   const platform = acc?.platform || activePlatform.value
-  return platform === 'douyin' ? DOUYIN_SOURCE_TYPES : BILIBILI_SOURCE_TYPES
+  if (platform === 'douyin') return DOUYIN_SOURCE_TYPES
+  if (platform === 'bilibili') return BILIBILI_SOURCE_TYPES
+  return MANUAL_CREATOR_SOURCE_TYPES
 })
 
 const accounts = ref<Account[]>([])
@@ -524,6 +537,19 @@ const accountsForPlatform = computed(() =>
 const currentAccount = computed(() =>
   accountsForPlatform.value.find((a) => String(a.id) === activeAccountId.value),
 )
+const currentFormPlatform = computed(() =>
+  accounts.value.find((a) => a.id === form.account_id)?.platform || activePlatform.value,
+)
+const currentFormPlatformLabel = computed(() => PLATFORM_LABELS[currentFormPlatform.value] || currentFormPlatform.value)
+const manualSourceOnly = computed(() => MANUAL_SOURCE_PLATFORMS.has(currentFormPlatform.value))
+const canImportFollowings = computed(() =>
+  Boolean(currentAccount.value && !MANUAL_SOURCE_PLATFORMS.has(currentAccount.value.platform)),
+)
+const manualSourcePlaceholder = computed(() => {
+  if (currentFormPlatform.value === 'xhs') return '小红书博主 user_id（主页链接 /user/profile/ 后的 ID）'
+  if (currentFormPlatform.value === 'zhihu') return '知乎博主 url_token（主页链接 /people/ 后的 ID）'
+  return '收藏夹ID / 合集ID / UP主mid / 博主sec_uid'
+})
 
 /** 表单当前账号：新建时按 form.account_id，编辑时按行归属。 */
 const formAccount = computed(() =>
@@ -792,6 +818,10 @@ function openCreate() {
   editing.value = null
   resetForm()
   if (currentAccount.value) form.account_id = currentAccount.value.id
+  if (manualSourceOnly.value) {
+    form.source_type = 'creator'
+    subPickMode.value = 'manual'
+  }
   dialog.value = true
 }
 
@@ -871,11 +901,13 @@ function onFormAccountChange() {
     form.source_type = allowed[0]
     form.remote_id = ''
   }
+  subPickMode.value = manualSourceOnly.value ? 'manual' : 'list'
   if (subPickMode.value === 'list') loadSources()
 }
 function onSourceTypeChange() {
   form.remote_id = ''
   sources.value = []
+  if (manualSourceOnly.value) subPickMode.value = 'manual'
   if (subPickMode.value === 'list') loadSources()
 }
 

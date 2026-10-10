@@ -22,6 +22,8 @@ class XhsAdapter:
     label = "小红书"
     credential_kind = "browser"
     supports_qr = True
+    # 小红书没有账号级「收藏/点赞」单例源；关注博主由用户手动添加。
+    singleton_sync_sources: tuple[str, ...] = ()
     credential_fields = [
         {"key": "cookie", "label": "Cookie 字符串（含 web_session，整段粘贴）", "required": True},
     ]
@@ -66,6 +68,18 @@ class XhsAdapter:
         from app.modules.browser_qr import browser_qr_poll
 
         return await browser_qr_poll("xhs", session_data)
+
+    async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
+        """拉取订阅源。目前支持 ``creator``：按博主拉主页笔记。"""
+        if source_type != "creator":
+            return []
+        from app.modules import creator_fetch
+
+        return await creator_fetch.fetch_xhs_creator(
+            user_id=remote_id,
+            cookie=credential.get("cookie", ""),
+            limit=limit,
+        )
 
 
 register(XhsAdapter())

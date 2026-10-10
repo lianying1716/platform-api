@@ -101,6 +101,8 @@ class ZhihuAdapter(_CookieAdapter):
     label = "知乎"
     hint_cookie_keys = ("z_c0",)
     supports_qr = True
+    # 知乎没有账号级「收藏/点赞」单例源；关注博主由用户手动添加。
+    singleton_sync_sources: tuple[str, ...] = ()
 
     async def qr_start(self) -> QrStart:
         from app.modules.browser_qr import browser_qr_start
@@ -131,6 +133,19 @@ class ZhihuAdapter(_CookieAdapter):
                 ok=True, message="在线", external_id=str(data["id"]), display_name=data.get("name", "")
             )
         return CheckResult(ok=False, message="登录态无效（Cookie 失效或缺少 z_c0）")
+
+    async def fetch_source(self, credential: dict, source_type: str, remote_id: str, limit: int) -> list[dict]:
+        """拉取订阅源。目前支持 ``creator``：按博主拉回答/文章/视频。"""
+        if source_type != "creator":
+            return []
+        from app.modules import creator_fetch
+
+        return await creator_fetch.fetch_zhihu_creator(
+            url_token=remote_id,
+            cookie=credential.get("cookie", ""),
+            content_kind="answer",
+            limit=limit,
+        )
 
 
 register(KuaishouAdapter())
