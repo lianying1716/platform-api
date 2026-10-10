@@ -9,6 +9,20 @@ from __future__ import annotations
 _BILI_VIEW = "https://api.bilibili.com/x/web-interface/view"
 _DOUYIN_DETAIL = "/aweme/v1/web/aweme/detail/"
 _XHS_FEED = "/api/sns/web/v1/feed"
+_KS_GRAPHQL = "https://www.kuaishou.com/graphql"
+_KS_DETAIL_QUERY = """
+query visionVideoDetail($photoId: String, $page: String) {
+  visionVideoDetail(photoId: $photoId, page: $page) {
+    status
+    photo {
+      id
+      viewCount
+      likeCount
+      commentCount
+    }
+  }
+}
+"""
 
 
 def _bili_http():
@@ -77,6 +91,8 @@ async def fetch_metrics(platform: str, external_id: str, cookie: str, extra: dic
         return await fetch_douyin_metrics(external_id, cookie)
     if platform == "xhs":
         return await fetch_xhs_metrics(external_id, cookie, extra)
+    if platform == "kuaishou":
+        return await fetch_kuaishou_metrics(external_id, cookie)
     return None
 
 
@@ -109,4 +125,35 @@ async def fetch_xhs_metrics(note_id: str, cookie: str, extra: dict | None = None
         "comment": int(inter.get("comment_count") or 0),
         "favorite": int(inter.get("collected_count") or 0),
         "share": int(inter.get("share_count") or 0),
+    }
+
+
+async def fetch_kuaishou_metrics(photo_id: str, cookie: str) -> dict | None:
+    """快手视频指标：GraphQL visionVideoDetail（查询文档在仓库内自行定义）。"""
+    from app.core import rate_limit
+
+    body = {
+        "operationName": "visionVideoDetail",
+        "variables": {"photoId": str(photo_id), "page": "search"},
+        "query": _KS_DETAIL_QUERY,
+    }
+    headers = {
+        "Cookie": cookie,
+        "Content-Type": "application/json;charset=UTF-8",
+        "Origin": "https://www.kuaishou.com",
+        "Referer": "https://www.kuaishou.com",
+    }
+    async with rate_limit.http_client("kuaishou", headers=headers, timeout=20) as c:
+        resp = await c.post(_KS_GRAPHQL, json=body)
+        payload = resp.json() or {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    photo = ((data.get("visionVideoDetail") or {}).get("photo")) or {}
+    if not photo:
+        return None
+    return {
+        "play": int(photo.get("viewCount") or 0),
+        "like": int(photo.get("likeCount") or 0),
+        "comment": int(photo.get("commentCount") or 0),
+        "favorite": 0,
+        "share": 0,
     }

@@ -60,7 +60,38 @@ async def test_refresh_douyin_metrics_uses_browser_fetch(monkeypatch):
 async def test_unsupported_platform_returns_none():
     from app.modules import content_metrics
 
-    assert await content_metrics.fetch_metrics("kuaishou", "x", "c") is None
+    assert await content_metrics.fetch_metrics("zhihu", "x", "c") is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_kuaishou_metrics(monkeypatch):
+    from app.modules import content_metrics
+    from app.core import rate_limit
+
+    calls = []
+
+    class Resp:
+        def json(self):
+            return {"data": {"visionVideoDetail": {"status": 1, "photo": {
+                "id": "v1", "viewCount": 100, "likeCount": 9, "commentCount": 2,
+            }}}}
+
+    class Client:
+        async def post(self, url, json=None, **kw):
+            calls.append({"url": url, "json": json})
+            return Resp()
+
+    class Ctx:
+        async def __aenter__(self):
+            return Client()
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(rate_limit, "http_client", lambda *a, **k: Ctx())
+    m = await content_metrics.fetch_kuaishou_metrics("v1", "did=1")
+    assert m == {"play": 100, "like": 9, "comment": 2, "favorite": 0, "share": 0}
+    assert calls[0]["json"]["operationName"] == "visionVideoDetail"
 
 
 def test_refresh_metrics_endpoint_enqueues_job(client, session):
