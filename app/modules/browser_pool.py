@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 logger = logging.getLogger("platform.browser_pool")
@@ -17,6 +18,7 @@ _UA = (
 )
 
 _sessions: dict[str, dict] = {}
+_locks: dict[str, asyncio.Lock] = {}
 
 
 def _require_playwright():
@@ -93,6 +95,15 @@ async def acquire(key: str, *, cookie: str, domain: str):
         "fingerprint": fp,
     }
     return context, page
+
+
+def lock_for(key: str) -> asyncio.Lock:
+    """取该 key 的页面互斥锁：同一浏览器的页面不能并发导航。"""
+    lock = _locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[key] = lock
+    return lock
 
 
 async def _drop(key: str) -> None:
