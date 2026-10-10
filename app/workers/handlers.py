@@ -151,9 +151,12 @@ async def _download_content(content: ContentItem, target_dir, cookie: str):
             resolved = None
         if resolved:
             name = _download_output_name(content, content.url)
-            return await media_download.download_dash(
+            result = await media_download.download_dash(
                 resolved["video"], resolved["audio"], target_dir, name, cookie=cookie
             )
+            if result.ok:
+                await _write_bili_extras(content, cookie, resolved, target_dir)
+            return result
         return await media_download.download(content.url, target_dir, cookie=cookie)
 
     return await media_download.download(content.url, target_dir, cookie=cookie)
@@ -172,6 +175,47 @@ async def _resolve_bili_urls(*, cookie: str, bvid: str):
         if k in ("SESSDATA", "bili_jct", "buvid3", "DedeUserID", "ac_time_value"):
             cred[k.lower() if k != "DedeUserID" else "dedeuserid"] = v.strip()
     return await bili_module.resolve_play_urls(cred, bvid)
+
+
+async def _write_bili_extras(content: ContentItem, cookie: str, resolved: dict, target_dir) -> None:
+    """B站下载成功后补齐字幕/弹幕/NFO（对齐 bili-sync 的媒体库体验）。
+
+    属于增强项：任一失败只记日志，绝不翻转已完成的下载状态。
+    """
+    from app.modules import bili_extras
+
+    bvid = str(content.external_id or "")
+    cid = resolved.get("cid")
+    if not bvid or not cid:
+        return
+    cred: dict = {}
+    for part in (cookie or "").split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k = k.strip()
+        if k in ("SESSDATA", "bili_jct", "buvid3", "DedeUserID", "ac_time_value"):
+            cred[k.lower() if k != "DedeUserID" else "dedeuserid"] = v.strip()
+    try:
+        await bili_extras.fetch_subtitles(cred, bvid, int(cid), target_dir)
+    except Exception:  # noqa: BLE001 增强项失败不翻转下载
+        logger.warning("B站字幕抓取失败 %s，已忽略", bvid, exc_info=True)
+    try:
+        await bili_extras.fetch_danmaku(cred, bvid, int(cid), content.duration_sec or 0, target_dir)
+    except Exception:  # noqa: BLE001
+        logger.warning("B站弹幕抓取失败 %s，已忽略", bvid, exc_info=True)
+    try:
+        published = content.published_at.isoformat() if content.published_at else None
+        bili_extras.write_nfo(
+            target_dir,
+            bvid,
+            title=content.title or bvid,
+            author=content.author_name or "",
+            published_at=published,
+            bvid=bvid,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("B站 NFO 写入失败 %s，已忽略", bvid, exc_info=True)
 
 
 async def handle_download(db: Session, payload: dict) -> None:

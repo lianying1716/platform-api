@@ -575,7 +575,7 @@ async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
     再 /x/player/playurl 拿 dash 流）。**不要**用 yt-dlp：B站对 yt-dlp 的元数据请求
     直接回 412 风控，实测连不带 Cookie 的公开视频都下不动。
 
-    返回 ``{"video": [url...], "audio": [url...]}``；拿不到返回 None。
+    返回 ``{"video": [url...], "audio": [url...], "cid": int}``；拿不到返回 None。
     """
     bvid = str(bvid or "").strip()
     if not bvid:
@@ -624,10 +624,10 @@ async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
                         if isinstance(u, str) and u and u not in mixed:
                             mixed.append(u)
                 if mixed:
-                    return {"video": mixed, "audio": []}
+                    return {"video": mixed, "audio": [], "cid": cid}
             return None
         audio_urls = _stream_urls(_pick_best_audio_stream(dash.get("audio") or []))
-        return {"video": video_urls, "audio": audio_urls}
+        return {"video": video_urls, "audio": audio_urls, "cid": cid}
 
 
 register(BilibiliAdapter())
