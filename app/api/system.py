@@ -178,6 +178,7 @@ _COMMENT_SPECS = {
     "per_page": lambda v: _as_int(v, lo=1),
     "top_n": lambda v: _as_int(v, lo=1),
     "interval": lambda v: _as_float(v, lo=0.0),
+    "with_sub_comments": lambda v: bool(v) if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes", "on"),
 }
 
 

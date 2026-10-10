@@ -112,6 +112,10 @@
           <el-form-item label="翻页间隔（秒）interval">
             <el-input-number v-model="commentSettings.interval" :min="0" :step="0.5" :precision="2" />
           </el-form-item>
+          <el-form-item label="抓取二级评论">
+            <el-switch v-model="commentSettings.with_sub_comments" />
+            <span class="detail">开启后每平台会额外抓取一级评论下的回复（请求量更大，默认关闭）</span>
+          </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="saveCommentSettings">保存</el-button>
           </el-form-item>
@@ -314,6 +318,7 @@ const commentSettings = reactive({
   per_page: 20,
   top_n: 20,
   interval: 1,
+  with_sub_comments: false,
 })
 const proc = reactive<any>({
   min_heat: 1000,

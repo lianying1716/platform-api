@@ -8,6 +8,13 @@ from sqlalchemy.orm import Session
 
 from app.models import SystemSetting
 
+
+def _as_bool(raw) -> bool:
+    """KV 里存的是字符串，不能用 bool("False")（会得到 True）。"""
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
 # system_setting key -> (默认值, 类型)
 _DEFAULTS: dict[str, tuple[object, type]] = {
     "comment_gate_top_pct": (0.2, float),
@@ -47,6 +54,9 @@ def get_comment_settings(db: Session) -> dict:
             out[short] = typ(default)  # 默认值也按声明类型归一（如 weight 20 -> 20.0）
             continue
         try:
+            if typ is bool:
+                out[short] = _as_bool(raw)
+                continue
             out[short] = typ(raw)
         except (TypeError, ValueError):
             out[short] = typ(default)
