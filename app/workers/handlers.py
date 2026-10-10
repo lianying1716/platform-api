@@ -471,6 +471,31 @@ async def handle_fetch_comments(db: Session, payload: dict) -> None:
     db.commit()
 
 
+async def handle_refresh_metrics(db: Session, payload: dict) -> None:
+    """刷新单条内容的互动指标快照（评论门控/趋势分析依赖最新值）。"""
+    from app.models import ContentMetricSnapshot, ContentItem
+    from app.modules import content_metrics
+
+    content = db.get(ContentItem, payload["content_id"])
+    if content is None:
+        return
+    cookie = _content_cookie(db, content)
+    if not cookie:
+        raise ValueError(f"{content.platform} 无在线账号，无法刷新指标")
+    metrics = await content_metrics.fetch_metrics(content.platform, content.external_id, cookie)
+    if not metrics:
+        raise ValueError(f"{content.platform} 暂不支持指标刷新或返回为空")
+    db.add(ContentMetricSnapshot(
+        content_id=content.id,
+        play=metrics.get("play", 0),
+        like=metrics.get("like", 0),
+        comment=metrics.get("comment", 0),
+        favorite=metrics.get("favorite", 0),
+        share=metrics.get("share", 0),
+    ))
+    db.commit()
+
+
 async def handle_understand_video(db: Session, payload: dict) -> None:
     """高级档视频理解：判类 → 类型专属提示词 → 调 vision → 写 VideoUnderstanding。"""
     from app.services.understand_service import UnderstandInputError, run_understand
@@ -511,6 +536,7 @@ HANDLERS = {
     "sync": handle_sync,
     "crawl": handle_crawl,
     "fetch_comments": handle_fetch_comments,
+    "refresh_metrics": handle_refresh_metrics,
     "understand_video": handle_understand_video,
     "breakdown": handle_breakdown,
 }

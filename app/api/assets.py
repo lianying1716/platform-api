@@ -499,6 +499,19 @@ def enqueue_download(asset_id: int, db: Session = Depends(get_db)):
     return {"job_id": job.id}
 
 
+@router.post("/assets/{asset_id}/refresh-metrics")
+def enqueue_refresh_metrics(asset_id: int, db: Session = Depends(get_db)):
+    """按需刷新该素材的互动指标（worker 拉平台详情后写入新快照）。"""
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    content = db.get(ContentItem, asset.content_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="素材内容不存在")
+    job = enqueue(db, "refresh_metrics", {"content_id": content.id})
+    return {"job_id": job.id}
+
+
 @router.get("/assets/{asset_id}/understanding")
 def get_understanding(asset_id: int, db: Session = Depends(get_db)):
     """高级档视频理解结果；尚未生成时返回 status=pending（含素材当前状态）。"""
