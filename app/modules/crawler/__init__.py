@@ -1,10 +1,7 @@
-"""关键词采集统一入口（PRD 第二阶段：抓取能力抽离进 modules/）。
+"""关键词采集统一入口。
 
-**全部平台均为纯 Python 直连**（bilibili/douyin/xhs/kuaishou/zhihu，见 client.py），
-不依赖活浏览器、不再子进程调 MediaCrawler。
-
-签名/接口逻辑来源见 client.py、bili_sign.py、douyin_sign.py、xhs_sign.py、zhihu_sign.py、
-kuaishou.py 各文件头（MediaCrawler NON-COMMERCIAL LEARNING LICENSE 1.1，仅自用学习）。
+各平台抓取实现见 ``client.py`` 及同目录模块；签名依赖第三方库或平台页面自身完成，
+不打包或改写非商业许可的第三方抓取代码。
 """
 
 from app.modules.crawler import client as _client

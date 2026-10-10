@@ -394,7 +394,7 @@ def diagnostics(db: Session = Depends(get_db)):
             add("浏览器运行时", False, "Playwright 已装但缺 Chromium：uv run playwright install chromium")
         else:
             add("浏览器运行时", False, "未安装。抖音/小红书扫码不可用，可用手动粘 Cookie 兜底")
-        add("Node(execjs)", st["node_for_execjs"], "抖音 a_bogus 签名需要，缺失则抖音抓取不可用")
+        add("Node", st["node_available"], "受管浏览器/JS 运行时检查")
     except ImportError:
         add("浏览器运行时", False, "未安装。抖音/小红书扫码不可用，可用手动粘 Cookie 兜底")
     add("定时体检", scheduler.running, f"间隔 {settings.account_check_interval} 分钟")

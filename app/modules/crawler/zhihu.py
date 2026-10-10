@@ -1,22 +1,12 @@
-"""知乎关键词搜索（纯 Python + JS 签名直连，无 MediaCrawler 子进程）。
+"""知乎关键词搜索。
 
-接口路径/参数与归一化字段来源：MediaCrawler media_platform/zhihu/client.py:get_note_by_keyword
-与 media_platform/zhihu/help.py:ZhihuExtractor.extract_contents_from_search
-（NON-COMMERCIAL LEARNING LICENSE 1.1, Copyright (c) 2024 relakkes@gmail.com，仅自用学习）
-
-签名算法来源见 zhihu_sign.py（execjs 调 libs/zhihu.js 的 get_sign，同源，仅自用学习）。
+搜索响应由知乎页面自身的签名逻辑产生：本模块在受管浏览器里打开搜索页并监听
+平台自己发出的 ``search_v3`` 响应，不打包或执行第三方签名脚本。
 真实抓取需有效 Cookie（须含 d_c0）；无 Cookie 或被风控时抛出可读异常，由上层记 error。
 """
 
 import html
 import re
-from urllib.parse import urlencode
-
-import httpx
-
-from app.core import rate_limit
-
-from app.modules.crawler import zhihu_sign
 
 _SEARCH_PATH = "/api/v4/search_v3"  # 签名只覆盖路径+查询串（不含 host）
 
@@ -108,65 +98,33 @@ def _normalize_item(item: dict) -> dict | None:
 async def search_zhihu(keyword: str, cookie: str, limit: int, sort: str) -> list[dict]:
     """按关键词搜索知乎内容（回答/文章/视频），返回归一化 item 列表（最多 limit 条）。
 
-    search_v3 接口 offset/lc_idx 翻页，paging.is_end 为真时停止。
+    通过受管浏览器打开搜索页并监听平台自身的 search_v3 响应，由平台页面完成签名。
     """
+    from app.modules import browser_fetch
+    from app.core import rate_limit
+
     sort_value = "created_time" if sort == "latest" else ""
-    headers = {
-        "User-Agent": _UA,
-        "Referer": "https://www.zhihu.com/search",
-        "Cookie": cookie,
-        "x-zse-93": "101_3_3.0",
-        "x-api-version": "3.0.91",
-        "x-app-za": "OS=Web",
-        "x-requested-with": "fetch",
-    }
+    search_url = browser_fetch.build_search_url("https://www.zhihu.com", keyword, sort)
+    # 浏览器加载页面本身也算一次平台出站访问：先过平台限速，遵守保守档。
+    await rate_limit.acquire("zhihu")
+    pages = max(1, (limit + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    responses = await browser_fetch.fetch_search(
+        search_url=search_url,
+        api_token="/api/v4/search_v3",
+        cookie=cookie,
+        domain=".zhihu.com",
+        pages=pages,
+    )
+
     items: list[dict] = []
-    page = 1
-    async with rate_limit.http_client("zhihu", timeout=20) as c:
-        while len(items) < limit:
-            offset = (page - 1) * _PAGE_SIZE
-            params = {
-                "gk_version": "gz-gaokao",
-                "t": "general",
-                "q": keyword,
-                "correction": 1,
-                "offset": offset,
-                "limit": _PAGE_SIZE,
-                "filter_fields": "",
-                "lc_idx": offset,
-                "show_all_topics": 0,
-                "search_source": "Filter",
-                "time_interval": "",
-                "sort": sort_value,
-                "vertical": "",
-            }
-            # 签名覆盖「路径+查询串」（与 MediaCrawler help.py 一致；服务器按此重建签名字符串）。
-            # 手工拼查询串，避免 httpx 重编码导致签名与服务端不一致。
-            query = urlencode(params)
-            signed_url = f"{_SEARCH_PATH}?{query}"
-            sig = zhihu_sign.sign(signed_url, cookie)
-            resp = await c.get(f"https://www.zhihu.com{signed_url}", headers={**headers, **sig})
-            try:
-                data = resp.json()
-            except ValueError:
-                raise RuntimeError("知乎搜索失败：Cookie 可能失效或被风控")
-
-            rows = data.get("data") or []
-            before = len(items)
-            for row in rows:
-                norm = _normalize_item(row)
-                if norm is None:
-                    continue
-                items.append(norm)
-                if len(items) >= limit:
-                    break
-
-            paging = data.get("paging") if isinstance(data.get("paging"), dict) else {}
-            if paging.get("is_end"):
+    for data in responses:
+        for row in data.get("data") or []:
+            norm = _normalize_item(row)
+            if norm is None:
+                continue
+            items.append(norm)
+            if len(items) >= limit:
                 break
-            # 防死循环：本页没有任何**可用**条目（全部被过滤/类型未知）时停止，
-            # 否则 offset 持续推进会让 while 永不退出、拖死 worker。
-            if not rows or len(items) == before:
-                break
-            page += 1
+        if len(items) >= limit:
+            break
     return items[:limit]

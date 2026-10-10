@@ -3,7 +3,7 @@
 验证：
 1. 三平台签名纯 Python 可算（不出网、不依赖浏览器）。
 2. crawler.search 对各平台的 HTTP 响应归一化解析正确（mock httpx，不发真实请求）。
-3. 未抽离平台无 MediaCrawler 目录时给出可读错误。
+3. 不支持的平台给出可读错误。
 """
 
 import httpx
@@ -18,13 +18,11 @@ def test_bili_wbi_sign_pure_python():
     assert "wts" in signed
 
 
-def test_douyin_a_bogus_via_execjs():
-    from app.modules.crawler import douyin_sign
+def test_douyin_signature_uses_browser_same_origin_module():
+    """抖音签名不再本地打包/执行，改由受管浏览器同源请求完成。"""
+    from app.modules import douyin_browser_fetch
 
-    ab = douyin_sign.get_a_bogus(
-        "https://www.douyin.com/aweme/v1/web/general/search/single/", "keyword=x&offset=0", "UA"
-    )
-    assert isinstance(ab, str) and len(ab) > 50
+    assert callable(douyin_browser_fetch.fetch_json)
 
 
 def test_xhs_sign_via_xhshow():

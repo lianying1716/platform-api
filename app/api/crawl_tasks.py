@@ -15,7 +15,7 @@ from app.modules import REGISTRY
 
 router = APIRouter(prefix="/api/crawl-tasks", tags=["crawl"], dependencies=[Depends(security.require_admin)])
 
-# MediaCrawler 支持的平台（一期）
+# 关键词采集支持的平台
 _CRAWL_PLATFORMS = {"xhs", "douyin", "bilibili", "kuaishou", "zhihu"}
 
 

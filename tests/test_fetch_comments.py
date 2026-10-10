@@ -1,9 +1,10 @@
-"""抖音评论抓取解析测试（不联网）。"""
+"""抖音评论抓取解析测试（不联网：浏览器同源请求用桩替代）。"""
 import asyncio
 
 
 def test_fetch_comments_parses_and_sorts(monkeypatch):
     from app.modules.crawler import client
+    from app.modules import douyin_browser_fetch
 
     pages_payload = [
         {"comments": [
@@ -14,14 +15,12 @@ def test_fetch_comments_parses_and_sorts(monkeypatch):
         ], "has_more": 0},
     ]
 
-    async def fake_get(self, url, params=None, **kw):
-        class R:
-            def json(self_inner):
-                return pages_payload.pop(0)
-            status_code = 200
-        return R()
+    async def fake_fetch_json(path, params, cookie, *, method="GET", referer="https://www.douyin.com/"):
+        assert path == "/aweme/v1/web/comment/list/"
+        assert params["aweme_id"] == "a1"
+        return pages_payload.pop(0)
 
-    monkeypatch.setattr("httpx.AsyncClient.get", fake_get)
+    monkeypatch.setattr(douyin_browser_fetch, "fetch_json", fake_fetch_json)
     out = asyncio.run(client.fetch_comments(aweme_id="a1", cookie="c", pages=1, per_page=20, top_n=2, interval=0))
     assert [c["comment_id"] for c in out] == ["c2", "c1"]  # 按点赞降序
     assert out[0]["nickname"] == "乙" and out[0]["content"] == "高赞"

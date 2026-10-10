@@ -17,8 +17,14 @@ def test_platform_config_covers_kuaishou_zhihu():
     assert zh["qr_kind"] == "canvas"
 
 
-def test_stealth_script_available():
-    assert browser_qr._STEALTH_JS.exists()
+def test_stealth_is_a_mit_dependency_not_vendored_script():
+    """反检测改用 MIT 的 playwright-stealth 依赖，不再随包携带复制脚本。"""
+    import playwright_stealth  # noqa: F401
+
+    from pathlib import Path
+
+    vendored = Path(browser_qr.__file__).parent / "crawler" / "libs" / "stealth.min.js"
+    assert not vendored.exists()
 
 
 def test_login_flag_detection():
@@ -36,7 +42,7 @@ def test_douyin_local_storage_signal():
     """回归：抖音 PC 端登录主要写 localStorage.HasUserLogin，只看 cookie 会永远 pending。
 
     实测用户扫码授权后无任何反应、一直停在"等待扫码"直到超时。
-    参考实现（MediaCrawler douyin/client.py:pong）同时看 localStorage 与 cookie。
+    登录态判定必须同时看 localStorage 与 cookie（平台 PC 端主要写前者）。
     """
     assert browser_qr._is_logged_in("douyin", {}, {"HasUserLogin": "1"}) is True
     assert browser_qr._is_logged_in("douyin", {}, {"HasUserLogin": "0"}) is False

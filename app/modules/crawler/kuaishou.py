@@ -1,24 +1,15 @@
-"""快手关键词搜索（纯 Python GraphQL 直连，无 MediaCrawler 子进程）。
+"""快手关键词搜索（GraphQL 直连）。
 
-接口路径/参数与归一化字段来源：MediaCrawler media_platform/kuaishou/client.py:search_info_by_keyword
-与 media_platform/kuaishou/core.py:KuaishouCrawler.search
-（NON-COMMERCIAL LEARNING LICENSE 1.1, Copyright (c) 2024 relakkes@gmail.com，仅自用学习）
-
-GraphQL 查询文档随包携带于 graphql/kuaishou/search_query.graphql（同源，仅自用学习）。
+查询文档在本模块内按公开字段契约定义，不打包任何第三方 GraphQL 文档。
 真实抓取需有效 Cookie；无 Cookie 或被风控时抛出可读异常，由上层记 error。
 """
 
 import asyncio
-import functools
-from pathlib import Path
-
 import httpx
 
 from app.core import rate_limit
 
 _GRAPHQL_URL = "https://www.kuaishou.com/graphql"
-_GRAPHQL_PATH = Path(__file__).parent / "graphql" / "kuaishou" / "search_query.graphql"
-
 # 与 client._UA 保持一致；各平台模块各自持有常量，避免与 client 相互 import。
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
@@ -26,10 +17,32 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 _PAGE_SLEEP = 1.0
 
 
-@functools.lru_cache(maxsize=1)
-def _search_query() -> str:
-    """读取并缓存打包的 GraphQL 查询文本（仅读一次）。"""
-    return _GRAPHQL_PATH.read_text(encoding="utf-8")
+_SEARCH_QUERY = """\
+query visionSearchPhoto($keyword: String, $pcursor: String, $page: String, $searchSessionId: String) {
+  visionSearchPhoto(keyword: $keyword, pcursor: $pcursor, page: $page, searchSessionId: $searchSessionId) {
+    result
+    pcursor
+    searchSessionId
+    feeds {
+      author {
+        id
+        name
+        headerUrl
+      }
+      photo {
+        id
+        caption
+        likeCount
+        viewCount
+        commentCount
+        coverUrl
+        timestamp
+        duration
+      }
+    }
+  }
+}
+"""
 
 
 def _normalize_feed(feed: dict) -> dict | None:
@@ -67,7 +80,7 @@ async def search_kuaishou(keyword: str, cookie: str, limit: int, sort: str) -> l
         "Origin": "https://www.kuaishou.com",
         "Referer": "https://www.kuaishou.com",
     }
-    query = _search_query()
+    query = _SEARCH_QUERY
     items: list[dict] = []
     cursor = "1"
     prev_cursor = ""

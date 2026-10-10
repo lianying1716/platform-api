@@ -4,14 +4,9 @@
 截取二维码图片返回给前端/AI 展示，用户手机扫码后从浏览器上下文自动提取全部
 Cookie（无需用户手动复制任何东西），随后关闭浏览器。
 
-选择器与成功判定来源：MediaCrawler media_platform/{douyin,xhs,kuaishou,zhihu}/login.py（已获授权）。
-- 抖音：登录面板 #login-panel-new，二维码 #animate_qrcode_container//img，
-  成功标志 Cookie LOGIN_STATUS == "1"
-- 小红书：二维码 img.qrcode-img（首页自动弹登录框），成功标志出现 web_session
-- 快手：passport.kuaishou.com 登录页点「扫码」→ img[src^='data:image']（180×180），
-  成功标志出现 passToken。**无头必触验证码**，需真实显示：无 DISPLAY 时进程内起 Xvfb 以有头模式运行。
-- 知乎：https://www.zhihu.com/signin 的 canvas.Qrcode-qrcode（canvas → 截图），
-  成功标志出现 z_c0。无头可用。
+选择器与成功判定按各平台公开登录页的实际结构维护；登录成功的权威信号是平台写入的
+会话 Cookie（抖音另看 localStorage 与跳转 URL）。快手无头模式易触发验证码，需要图形
+显示；无 DISPLAY 时进程内起 Xvfb 以有头模式运行。
 
 需要安装 browser 扩展依赖：uv sync --extra browser && uv run playwright install chromium
 未安装时返回明确报错，前端引导用户走"手动粘 Cookie"兜底。
@@ -44,7 +39,6 @@ _PLATFORM_CONF = {
         "cookie_domain": "douyin.com",
         # 登录信号（任一命中即算成功）：
         # 1. localStorage.HasUserLogin —— 抖音 PC 端登录后主要写这里
-        #    来源：MediaCrawler media_platform/douyin/client.py:pong()
         # 2. LOGIN_STATUS cookie —— 部分路径只写 cookie
         # 3. sessionid / sid_tt —— 登录会话 cookie，作为兜底
         # 4. 页面已跳到用户主页/个人页
@@ -107,9 +101,6 @@ _PLATFORM_CONF = {
         "qr_kind": "canvas",
     },
 }
-
-# 反检测脚本（来源 MediaCrawler libs/stealth.min.js，随包携带，仅自用学习）。
-_STEALTH_JS = Path(__file__).parent / "crawler" / "libs" / "stealth.min.js"
 
 # browser_session_id -> 活浏览器上下文
 _live: dict[str, dict] = {}
@@ -304,8 +295,13 @@ async def browser_qr_start(platform: str) -> QrStart:
         context = await browser.new_context(
             user_agent=_UA, viewport={"width": 1400, "height": 900}, locale="zh-CN"
         )
-        if _STEALTH_JS.exists():
-            await context.add_init_script(path=str(_STEALTH_JS))
+        try:
+            from playwright_stealth import Stealth
+
+            await Stealth().apply_stealth_async(context)
+        except ImportError:
+            # 反检测是增强项：没装 browser extra 时仍可继续扫码流程。
+            pass
         page = await context.new_page()
         await page.goto(conf["url"], wait_until="domcontentloaded", timeout=30_000)
 

@@ -69,9 +69,9 @@ async def health() -> dict:
 
 def status() -> dict:
     """同步快速状态（诊断页用，不真正起浏览器）。"""
-    has_node = shutil.which("node") is not None  # 抖音 a_bogus 的 execjs 后端
+    has_node = shutil.which("node") is not None  # 浏览器运行时兜底
     return {
         "playwright": playwright_installed(),
         "chromium": chromium_installed(),
-        "node_for_execjs": has_node,
+        "node_available": has_node,
     }

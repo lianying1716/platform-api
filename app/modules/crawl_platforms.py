@@ -4,17 +4,8 @@
 否则 `crawl_service._platform_cookie` 永远取不到 Cookie，采集任务必然失败。
 
 凭证 JSON: { cookie }（整段 Cookie 字符串）。
-体检接口：
-- 快手：POST www.kuaishou.com/graphql visionProfileUserList（result==1 视为在线）
-- 知乎：GET www.zhihu.com/api/v4/me（返回 id/name 视为在线）
-
-接口来源：MediaCrawler media_platform/{kuaishou,zhihu}/client.py:pong
-（NON-COMMERCIAL LEARNING LICENSE 1.1, Copyright (c) 2024 relakkes@gmail.com，仅自用学习）
-快手 / 知乎支持浏览器扫码登录（browser_qr，与抖音/小红书同款）。
+体检通过各平台公开的登录态接口完成；查询文档在本模块内自行定义。
 """
-
-import functools
-from pathlib import Path
 
 import httpx
 
@@ -25,15 +16,14 @@ from app.modules.base import CheckResult, QrPoll, QrStart, register
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
 _KS_GRAPHQL = "https://www.kuaishou.com/graphql"
-_KS_PROFILE_QUERY = (
-    Path(__file__).parent / "crawler" / "graphql" / "kuaishou" / "vision_profile_user_list.graphql"
-)
-
-
-@functools.lru_cache(maxsize=1)
-def _ks_profile_query() -> str:
-    """读取并缓存打包的 visionProfileUserList GraphQL 查询。"""
-    return _KS_PROFILE_QUERY.read_text(encoding="utf-8")
+_KS_PROFILE_QUERY = """
+query visionProfileUserList($pcursor: String, $ftype: Int) {
+  visionProfileUserList(pcursor: $pcursor, ftype: $ftype) {
+    result
+    hostName
+  }
+}
+"""
 
 
 class _CookieAdapter:
@@ -91,7 +81,7 @@ class KuaishouAdapter(_CookieAdapter):
         body = {
             "operationName": "visionProfileUserList",
             "variables": {"ftype": 1},
-            "query": _ks_profile_query(),
+            "query": _KS_PROFILE_QUERY,
         }
         try:
             async with rate_limit.http_client("kuaishou", headers=headers, timeout=15) as client:

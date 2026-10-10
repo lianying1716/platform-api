@@ -151,12 +151,6 @@ def _patch_douyin(monkeypatch, routes, sign_ok=True):
 
     monkeypatch.setattr(douyin, "_client", lambda *a, **k: _C())
 
-    def _sign(url, params, ua):
-        if not sign_ok:
-            raise RuntimeError("签名失败")
-        return "ABOGUS"
-
-    monkeypatch.setattr(douyin.douyin_sign, "get_a_bogus", _sign)
     return calls
 
 
@@ -191,19 +185,17 @@ async def test_douyin_fetch_creator_videos(monkeypatch):
     # （实测 Blocked by ArgusSecurityPlugin Uifid Not Found）。
     assert "/aweme/v1/web/aweme/post?" in calls[0]["url"]
     assert "/aweme/v1/web/aweme/post/?" not in calls[0]["url"]
-    # 不真算签名：抖小云同样不签名。
-    # 注意它的参数模板里**保留 a_bogus 空键**（"带空键"与"完全不带"服务端处理不同），
-    # 所以这里断言的是"没有真的签名值"，而不是"没有这个键"。
+    # 不再本地打包/执行签名脚本；参数模板仍保留空签名键，由平台按既有逻辑处理。
     assert "a_bogus=&" in calls[0]["url"] or calls[0]["url"].endswith("a_bogus=")
-    assert "ABOGUS" not in calls[0]["url"]
 
 
 @pytest.mark.asyncio
-async def test_douyin_creator_argus_block_retries_with_signature(monkeypatch):
-    """万一又被 Argus 拦（平台改版），应带上 a_bogus 重试一次，而不是直接失败。"""
-    from app.modules import douyin
+async def test_douyin_creator_argus_block_falls_back_to_browser(monkeypatch):
+    """被 Argus 拦时改用受管浏览器同源请求，由页面自身完成签名。"""
+    from app.modules import douyin, douyin_browser_fetch
 
     calls = []
+    browser_calls = []
 
     class _Resp:
         def __init__(self, status, text, payload=None):
@@ -223,17 +215,19 @@ async def test_douyin_creator_argus_block_retries_with_signature(monkeypatch):
 
         async def get(self, url, params=None):
             calls.append(url)
-            # 模板里本来就有空的 a_bogus= 键，所以要看"有没有真签名值"
-            if "a_bogus=FAKEBOGUS" not in url:
-                return _Resp(403, "Blocked by ArgusSecurityPlugin Uifid Not Found")
-            return _Resp(200, "", {"status_code": 0, "has_more": False,
-                                   "aweme_list": [{"aweme_id": "9001", "desc": "重试拿到",
-                                                   "statistics": {}, "author": {}}]})
+            return _Resp(403, "Blocked by ArgusSecurityPlugin Uifid Not Found")
 
     monkeypatch.setattr(douyin, "_client", lambda *a, **k: _C())
-    monkeypatch.setattr(douyin.douyin_sign, "get_a_bogus", lambda *a, **k: "FAKEBOGUS")
+
+    async def fake_fetch_json(path, params, cookie, *, method="GET", referer="https://www.douyin.com/"):
+        browser_calls.append({"path": path, "cookie": cookie})
+        return {"status_code": 0, "has_more": False,
+                "aweme_list": [{"aweme_id": "9001", "desc": "浏览器兜底拿到",
+                                "statistics": {}, "author": {}}]}
+
+    monkeypatch.setattr(douyin_browser_fetch, "fetch_json", fake_fetch_json)
 
     items = await douyin.DouyinAdapter().fetch_source({"cookie": "c=1"}, "creator", "SEC1", 10)
-    assert len(calls) == 2, "被拦后应重试一次"
-    assert "a_bogus=FAKEBOGUS" in calls[1]
+    assert len(calls) == 1, "纯 HTTP 被拦后不再本地算签名重试"
+    assert browser_calls and browser_calls[0]["path"] == "/aweme/v1/web/aweme/post"
     assert items[0]["external_id"] == "9001"

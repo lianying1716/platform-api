@@ -15,7 +15,6 @@ from contextlib import asynccontextmanager
 import httpx
 
 from app.modules.base import CheckResult, QrPoll, QrStart, register
-from app.modules.crawler import douyin_sign
 
 logger = logging.getLogger("platform.douyin")
 
@@ -840,12 +839,19 @@ class DouyinAdapter:
                 # 保留 a_bogus 相关代码只在被 Argus 拦时才需要，见下方兜底分支。
                 resp = await client.get(f"{base}?{qs}")
                 if resp.status_code in (403, 412) or "ArgusSecurityPlugin" in resp.text:
-                    # 兜底：正常情况下不会走到这里（路径无尾斜杠即 200，实测）。
-                    # 万一平台以后又收紧，就真算一个 a_bogus 覆盖掉模板里的空值重试一次。
-                    signed = dict(params)
-                    qs2 = urlencode(signed)
-                    signed["a_bogus"] = douyin_sign.get_a_bogus(base, qs2, _UA)
-                    resp = await client.get(f"{base}?{urlencode(signed)}")
+                    # 被 Argus 拦时改由页面自身完成签名：在受管浏览器里同源请求。
+                    from app.modules.douyin_browser_fetch import fetch_json
+
+                    payload = await fetch_json(base, params, cookie, referer=referer)
+                    for aw in payload.get("aweme_list") or []:
+                        items.append(_aweme_to_item(aw, fallback_author_id=sec_user_id))
+                        if len(items) >= limit:
+                            break
+                    if not payload.get("has_more"):
+                        break
+                    max_cursor = str(payload.get("max_cursor") or payload.get("cursor") or "0")
+                    await _pace()
+                    continue
                 try:
                     data = resp.json()
                 except ValueError:

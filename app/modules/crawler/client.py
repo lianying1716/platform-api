@@ -1,12 +1,8 @@
-"""平台抓取客户端：用纯 Python 签名直接 HTTP 调用各平台搜索接口。
-
-接口路径与参数来源：MediaCrawler media_platform/<平台>/client.py
-（NON-COMMERCIAL LEARNING LICENSE 1.1, Copyright (c) 2024 relakkes@gmail.com，仅自用学习）
+"""平台抓取客户端：用各平台接口与第三方宽松许可证签名库完成搜索。
 
 设计：每个平台一个 async 函数 search_<platform>(keyword, cookie, limit, sort) -> list[item]，
 item 为归一化 dict（与 services/crawl_service 约定一致）。
 真实抓取需有效 Cookie；无 Cookie 或被风控时抛出可读异常，由上层记 error。
-不依赖活浏览器（B站 WBI / 抖音 a_bogus / 小红书 xhshow 均纯算法/JS）。
 """
 
 import asyncio
@@ -16,7 +12,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from app.modules.crawler import bili_sign, douyin_sign, xhs_sign
+from app.modules.crawler import bili_sign, xhs_sign
 from app.modules.crawler.kuaishou import search_kuaishou
 from app.modules.crawler.zhihu import search_zhihu
 
@@ -89,50 +85,47 @@ async def search_bilibili(keyword: str, cookie: str, limit: int, sort: str) -> l
 async def search_douyin(keyword: str, cookie: str, limit: int, sort: str) -> list[dict]:
     items: list[dict] = []
     offset = 0
-    headers = {"User-Agent": _UA, "Referer": "https://www.douyin.com/", "Cookie": cookie}
     base = "https://www.douyin.com/aweme/v1/web/general/search/single/"
     sort_type = "0" if sort == "popular" else "1"
-    async with _http("douyin", headers) as c:
-        while len(items) < limit:
-            query = {
-                "device_platform": "webapp", "aid": "6383", "channel": "channel_pc_web",
-                "search_channel": "aweme_general", "keyword": keyword, "search_source": "normal_search",
-                "query_correct_type": "1", "is_filter_search": "0", "offset": str(offset),
-                "count": "15", "sort_type": sort_type, "publish_time": "0",
-            }
-            qs = urlencode(query)
-            a_bogus = douyin_sign.get_a_bogus(base, qs, _UA)
-            resp = await c.get(f"{base}?{qs}&a_bogus={a_bogus}")
-            try:
-                data = resp.json()
-            except ValueError:
-                raise RuntimeError("抖音搜索失败：Cookie 可能失效或被风控")
-            results = data.get("data") or []
-            if not results:
-                break
-            for r in results:
-                aw = r.get("aweme_info") or {}
-                if not aw:
-                    continue
-                stats = aw.get("statistics") or {}
-                author = aw.get("author") or {}
-                items.append({
-                    "external_id": str(aw.get("aweme_id", "")),
-                    "content_type": "video",
-                    "title": aw.get("desc", ""),
-                    "author_name": author.get("nickname", ""),
-                    "author_id": author.get("sec_uid", ""),
-                    "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
-                    "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
-                    "metrics": {
-                        "play": stats.get("play_count", 0), "like": stats.get("digg_count", 0),
-                        "comment": stats.get("comment_count", 0), "favorite": stats.get("collect_count", 0),
-                        "share": stats.get("share_count", 0),
-                    },
-                })
-            if not data.get("has_more"):
-                break
-            offset += 15
+    from app.modules import douyin_browser_fetch
+
+    while len(items) < limit:
+        query = {
+            "device_platform": "webapp", "aid": "6383", "channel": "channel_pc_web",
+            "search_channel": "aweme_general", "keyword": keyword, "search_source": "normal_search",
+            "query_correct_type": "1", "is_filter_search": "0", "offset": str(offset),
+            "count": "15", "sort_type": sort_type, "publish_time": "0",
+        }
+        data = await douyin_browser_fetch.fetch_json(
+            "/aweme/v1/web/general/search/single/", query, cookie,
+            method="GET", referer="https://www.douyin.com/",
+        )
+        results = data.get("data") or []
+        if not results:
+            break
+        for r in results:
+            aw = r.get("aweme_info") or {}
+            if not aw:
+                continue
+            stats = aw.get("statistics") or {}
+            author = aw.get("author") or {}
+            items.append({
+                "external_id": str(aw.get("aweme_id", "")),
+                "content_type": "video",
+                "title": aw.get("desc", ""),
+                "author_name": author.get("nickname", ""),
+                "author_id": author.get("sec_uid", ""),
+                "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
+                "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
+                "metrics": {
+                    "play": stats.get("play_count", 0), "like": stats.get("digg_count", 0),
+                    "comment": stats.get("comment_count", 0), "favorite": stats.get("collect_count", 0),
+                    "share": stats.get("share_count", 0),
+                },
+            })
+        if not data.get("has_more"):
+            break
+        offset += 15
     return items[:limit]
 
 
@@ -195,41 +188,36 @@ async def fetch_comments(
 ) -> list[dict]:
     """抓抖音作品一级评论：默认排序抓 pages 页，本地按点赞降序取 top_n。"""
     from app.modules.douyin import BASE_PARAMS
-    from app.modules.crawler import douyin_sign
+    from app.modules import douyin_browser_fetch
 
     base = "https://www.douyin.com/aweme/v1/web/comment/list/"
-    headers = {"User-Agent": _UA, "Referer": "https://www.douyin.com/", "Cookie": cookie}
     collected: list[dict] = []
     cursor = "0"
-    async with _http("douyin", headers) as c:
-        for _ in range(max(1, pages)):
-            query = dict(BASE_PARAMS, aweme_id=aweme_id, cursor=cursor, count=str(per_page), item_type="0")
-            qs = urlencode(query)
-            a_bogus = douyin_sign.get_a_bogus(base, qs, _UA)
-            resp = await c.get(f"{base}?{qs}&a_bogus={a_bogus}")
-            try:
-                data = resp.json()
-            except ValueError:
-                raise RuntimeError("抖音评论抓取失败：Cookie 可能失效或被风控")
-            for it in data.get("comments") or []:
-                user = it.get("user") or {}
-                avatar = (((user.get("avatar_thumb") or {}).get("url_list") or [""])[0])
-                collected.append({
-                    "comment_id": str(it.get("cid", "")),
-                    "parent_comment_id": "0",
-                    "user_id": str(user.get("uid", "")),
-                    "nickname": user.get("nickname", ""),
-                    "avatar": avatar,
-                    "content": it.get("text", ""),
-                    "like_count": int(it.get("digg_count") or 0),
-                    "ip_location": it.get("ip_label", ""),
-                    "created_at": it.get("create_time"),
-                })
-            if not data.get("has_more"):
-                break
-            cursor = str(data.get("cursor", "0"))
-            if interval:
-                await asyncio.sleep(interval)
+    for _ in range(max(1, pages)):
+        query = dict(BASE_PARAMS, aweme_id=aweme_id, cursor=cursor, count=str(per_page), item_type="0")
+        data = await douyin_browser_fetch.fetch_json(
+            "/aweme/v1/web/comment/list/", query, cookie,
+            method="GET", referer="https://www.douyin.com/",
+        )
+        for it in data.get("comments") or []:
+            user = it.get("user") or {}
+            avatar = (((user.get("avatar_thumb") or {}).get("url_list") or [""])[0])
+            collected.append({
+                "comment_id": str(it.get("cid", "")),
+                "parent_comment_id": "0",
+                "user_id": str(user.get("uid", "")),
+                "nickname": user.get("nickname", ""),
+                "avatar": avatar,
+                "content": it.get("text", ""),
+                "like_count": int(it.get("digg_count") or 0),
+                "ip_location": it.get("ip_label", ""),
+                "created_at": it.get("create_time"),
+            })
+        if not data.get("has_more"):
+            break
+        cursor = str(data.get("cursor", "0"))
+        if interval:
+            await asyncio.sleep(interval)
     collected.sort(key=lambda x: x["like_count"], reverse=True)
     return collected[:top_n]
 

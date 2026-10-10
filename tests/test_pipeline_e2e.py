@@ -1,7 +1,7 @@
 """端到端管线测试：证明 P2~P6 数据流真能闭环，不只是"能导入"。
 
 策略：用独立内存 SQLite，驱动真实的 队列(queue) + worker handler + service 编排，
-只 mock 最外层的"出网"依赖（yt-dlp 下载、faster-whisper 转录、LLM 分析、MediaCrawler 抓取）。
+只 mock 最外层的"出网"依赖（yt-dlp 下载、faster-whisper 转录、LLM 分析、平台抓取）。
 覆盖链路：
   订阅同步 -> content_item/metric/media_asset 入库 + download 任务入队
   download job  -> handler 写文件名、置 done

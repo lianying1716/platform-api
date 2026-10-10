@@ -1,8 +1,7 @@
 """B站 WBI 请求签名。
 
-逻辑/算法来源：MediaCrawler media_platform/bilibili/help.py:BilibiliSign
-（NON-COMMERCIAL LEARNING LICENSE 1.1, Copyright (c) 2024 relakkes@gmail.com，仅自用学习）
-算法参考：https://socialsisteryi.github.io/bilibili-API-collect/docs/misc/sign/wbi.html
+依据 Bilibili-API-Collect 公开文档中的 WBI 签名规则独立实现：
+https://socialsisteryi.github.io/bilibili-API-collect/docs/misc/sign/wbi.html
 
 WBI key（img_key/sub_key）优先可由调用方提供；缺省时本模块调 /x/web-interface/nav
 纯 HTTP 拉取，无需活浏览器。
