@@ -132,12 +132,29 @@ MCP 是本地 **stdio** 小进程（`mcp_server/server.py`），不是 HTTP 端�
 | `PLATFORM_DOWNLOAD_MIN_GAP_SECONDS` | 4 | 相邻下载最小间隔（秒） |
 | `PLATFORM_OUTBOUND_PROXY` | （空） | 可选全局出站代理，如 `http://user:pass@host:port`；默认直连 |
 | `PLATFORM_PLATFORM_PROXIES` | （空） | 按平台代理 JSON，如 `{"douyin":"http://a:1","bilibili":"none"}`；`none`=强制直连 |
+| `PLATFORM_AUTO_MIGRATE` | true | 启动版本门禁允许自动升级到 head；只读实例设 false |
+| `PLATFORM_ALLOW_UNKNOWN_DB` | false | 逃生开关：允许带未知 revision 启动，仅人工排障 |
+| `PLATFORM_RUN_MIGRATIONS` | true | 本容器是否执行迁移；worker 置 false（迁移单飞） |
 
 出站代理默认关闭（单机自用通常直连即可）。需要隔离出口 IP 时再配置：`PLATFORM_PLATFORM_PROXIES`
 按平台覆盖 `PLATFORM_OUTBOUND_PROXY`，HTTP 抓取、受管浏览器与扫码会话都会走同一代理。
 
 凭证加密密钥来源优先级：环境变量 > 密钥文件 > `data/secret.key`（开发兜底，自动生成）。
 **密钥不进 git、迁移机器必须随行，丢了凭证全部作废。**
+
+## 版本与升级
+
+版本信息见 `GET /api/system/version`（应用版本 + 数据库 revision + 是否同步），
+诊断页也会展示。升级走镜像 tag 驱动，**升级前强制备份，回滚靠恢复备份**（不做 downgrade）：
+
+```bash
+./scripts/backup.sh            # 强制备份（DB + /data 卷，含 secret.key）
+./scripts/upgrade.sh v1.3.0    # 拉镜像并按序升级，等待健康检查
+./scripts/restore.sh backups/backup-*.tar.gz   # 需要回滚时
+```
+
+升级系统的保证契约、兼容矩阵与排障见 [`docs/upgrade-compatibility.md`](docs/upgrade-compatibility.md)：
+**要么完整成功，要么在对外服务前失败并保持升级前状态**，不会出现"迁移做了一半带着坏数据运行"。
 
 ## 公众号能力边界
 

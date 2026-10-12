@@ -66,7 +66,7 @@
             <!-- 封面走服务端代理：抖音/B站封面是签名防盗链地址，直连会过期或 403。
                  加载失败时自动退回占位符，避免留下空白/破图。 -->
             <img v-if="a.cover_url && !coverFailed(a.asset_id)"
-              :src="`/api/assets/${a.asset_id}/cover`" alt=""
+              :src="coverSrc(a.asset_id)" alt=""
               loading="lazy" @error="markCoverFailed(a.asset_id)" />
             <span v-else class="ph">
               <span class="ph-ic" aria-hidden="true">{{ a.content_type === 'video' ? '▶' : '¶' }}</span>
@@ -89,8 +89,8 @@
             </div>
 
             <div class="author">
-              <span class="ava" :style="a.author_avatar ? { backgroundImage: `url(${a.author_avatar})` } : {}">
-                {{ a.author_avatar ? '' : (a.author_name || '?').slice(0, 1) }}
+              <span class="ava" :style="authorAvatarUrl(a) ? { backgroundImage: `url(${authorAvatarUrl(a)})` } : {}">
+                {{ authorAvatarUrl(a) ? '' : (a.author_name || '?').slice(0, 1) }}
               </span>
               <a v-if="a.author_home_url" :href="a.author_home_url" target="_blank" rel="noopener" class="aname">
                 {{ a.author_name || a.author_id }}
@@ -127,8 +127,8 @@
                 <span
                   class="ui-badge"
                   :class="statusTone(a.analyze_status)"
-                  :title="'分析：' + s(a.analyze_status)"
-                >分析 {{ s(a.analyze_status) }}</span>
+                  :title="'分析速览：' + s(a.analyze_status)"
+                >速览 {{ s(a.analyze_status) }}</span>
                 <span
                   class="ui-badge"
                   :class="statusTone(a.download_status)"
@@ -160,9 +160,10 @@
               <button
                 class="ui-btn sm"
                 :disabled="a.download_status !== 'done'"
+                title="生成速览：一段摘要 + 标签，快速了解内容"
                 @click="act(a.asset_id, 'analyze')"
               >
-                {{ isAnalyzed(a) ? '重新分析' : '分析' }}
+                {{ isAnalyzed(a) ? '重新速览' : '速览' }}
               </button>
               <button class="ui-btn sm" @click="refreshMetrics(a.asset_id)">刷新指标</button>
             </div>
@@ -181,7 +182,7 @@
         </div>
         <div class="player-wrap">
           <video
-            :src="`/api/assets/${player.asset_id}/media`"
+            :src="mediaSrc(player.asset_id)"
             controls
             autoplay
             playsinline
@@ -293,13 +294,17 @@
 
         <!-- Tab: 分析 -->
         <section v-show="detailTab === 'analysis'" class="dt-pane">
+          <p class="dt-hint">
+            <b>速览</b>：转录后可自动生成的轻量结果，只有摘要 + 标签，用于快速扫一眼、检索和导出。
+            要看「为什么火 + 怎么复刻」的深度报告，请切到「爆款拆解」。
+          </p>
           <div v-if="detail.analysis">
             <p><b>摘要：</b>{{ detail.analysis.summary }}</p>
             <div class="dt-tags">
               <el-tag v-for="tag in detail.analysis.tags" :key="tag" size="small">{{ tag }}</el-tag>
             </div>
           </div>
-          <el-empty v-else description="尚无分析" :image-size="60" />
+          <el-empty v-else description="尚无速览（可在卡片上点「分析」）" :image-size="60" />
         </section>
 
         <!-- Tab: 视频理解 -->
@@ -347,6 +352,10 @@
 
         <!-- Tab: 爆款拆解 -->
         <section v-show="detailTab === 'breakdown'" class="dt-pane">
+        <p class="dt-hint">
+          <b>深度报告</b>：手动触发的完整拆解，会综合转录、视频理解、评论与后端算好的互动数据，
+          产出「为什么火 + 怎么复刻」。它比「分析」速览更慢、更费 token，但结论更完整。
+        </p>
         <div class="bd-actions">
           <el-button size="small" type="primary" :loading="bdBusy" :disabled="bdBusy || isBdActive()" @click="runBreakdown(!!breakdown)">
             {{ breakdown ? '重新拆解' : '生成爆款拆解' }}
@@ -462,6 +471,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import PlatformMark from '../components/PlatformMark.vue'
 import { api } from '../api'
+import { coverSrc, localAssetUrl, mediaSrc } from '../demo/runtime'
 
 const route = useRoute()
 
@@ -475,10 +485,10 @@ const detailTab = ref<'files' | 'transcript' | 'analysis' | 'understand' | 'comm
 const detailTabs = computed(() => [
   { k: 'files', label: '文件 / 链接' },
   { k: 'transcript', label: '转录' },
-  { k: 'analysis', label: '分析' },
+  { k: 'analysis', label: '分析速览' },
   { k: 'understand', label: '视频理解' },
   { k: 'comments', label: '评论', count: commentTotal.value || undefined },
-  { k: 'breakdown', label: '爆款拆解' },
+  { k: 'breakdown', label: '爆款拆解 · 深度' },
 ])
 const filters = reactive({
   platform: '',
@@ -501,6 +511,7 @@ async function loadAccounts() {
 const failedCovers = reactive(new Set<string>())
 function coverFailed(id: string) { return failedCovers.has(id) }
 function markCoverFailed(id: string) { failedCovers.add(id) }
+const authorAvatarUrl = (a: any) => localAssetUrl(a.author_avatar)
 
 const typeTabs = [
   { k: '', label: '全部' },
@@ -1095,6 +1106,12 @@ onUnmounted(() => {
   border: 1px solid var(--line-soft); color: var(--ink-2);
 }
 .dt-pane { padding-top: 6px; min-height: 120px; }
+/* 区分「分析速览」与「爆款拆解·深度」：面板顶部一句话说明，避免用户混淆两个能力 */
+.dt-hint {
+  margin: 6px 0 12px; padding: 9px 12px;
+  background: var(--surface-2); border-left: 3px solid var(--accent);
+  font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.6;
+}
 .dt-field { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
 .dt-k { flex: none; width: 72px; color: var(--muted); font-size: var(--fs-sm); }
 .dt-dir {

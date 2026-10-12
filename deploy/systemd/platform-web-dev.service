@@ -1,0 +1,18 @@
+[Unit]
+Description=Platform Web (Vite development, 0.0.0.0:5173)
+After=network-online.target platform-api-dev.service
+Wants=network-online.target platform-api-dev.service
+
+[Service]
+Type=simple
+# 改成你 clone 后的实际路径
+WorkingDirectory=%h/platform-api/web
+Environment=NODE_ENV=development
+ExecStart=/usr/bin/npm run dev -- --host 0.0.0.0 --port 5173
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

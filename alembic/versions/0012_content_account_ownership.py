@@ -34,13 +34,14 @@ def _system_account_id(bind, platform: str) -> int:
     ).scalar()
     if existing is not None:
         return int(existing)
-    # 历史库可能手动指定过 id；先同步序列，避免系统账号撞主键。
-    bind.execute(
-        sa.text(
-            "SELECT setval(pg_get_serial_sequence('platform_account','id'), "
-            "COALESCE((SELECT MAX(id) FROM platform_account), 1), true)"
+    if bind.dialect.name != "sqlite":
+        # 历史库可能手动指定过 id；先同步序列，避免系统账号撞主键。
+        bind.execute(
+            sa.text(
+                "SELECT setval(pg_get_serial_sequence('platform_account','id'), "
+                "COALESCE((SELECT MAX(id) FROM platform_account), 1), true)"
+            )
         )
-    )
     return int(
         bind.execute(
             sa.text(
@@ -50,7 +51,7 @@ def _system_account_id(bind, platform: str) -> int:
                      status_message, is_system, created_at, updated_at)
                 VALUES
                     (:p, '系统归属（历史迁移）', '__system_owner__', 'system', 'active',
-                     '', true, now(), now())
+                     '', true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 RETURNING id
                 """
             ),
@@ -72,16 +73,18 @@ def upgrade() -> None:
     # 2) 采集运行记录：本次实际使用的账号
     op.add_column("crawl_task", sa.Column("account_id", sa.Integer(), nullable=True))
     op.create_index("ix_crawl_task_account_id", "crawl_task", ["account_id"])
-    op.create_foreign_key(
-        "fk_crawl_task_account_id", "crawl_task", "platform_account", ["account_id"], ["id"],
-        ondelete="SET NULL",
-    )
+    if bind.dialect.name != "sqlite":
+        op.create_foreign_key(
+            "fk_crawl_task_account_id", "crawl_task", "platform_account", ["account_id"], ["id"],
+            ondelete="SET NULL",
+        )
     op.add_column("crawl_run", sa.Column("account_id", sa.Integer(), nullable=True))
     op.create_index("ix_crawl_run_account_id", "crawl_run", ["account_id"])
-    op.create_foreign_key(
-        "fk_crawl_run_account_id", "crawl_run", "platform_account", ["account_id"], ["id"],
-        ondelete="SET NULL",
-    )
+    if bind.dialect.name != "sqlite":
+        op.create_foreign_key(
+            "fk_crawl_run_account_id", "crawl_run", "platform_account", ["account_id"], ["id"],
+            ondelete="SET NULL",
+        )
 
     # 3) 内容表先加可空账号，按来源分类回填；绝不把 crawl_task.id 当 subscription.id
     op.add_column("content_item", sa.Column("account_id", sa.Integer(), nullable=True))
@@ -89,12 +92,16 @@ def upgrade() -> None:
     bind.execute(
         sa.text(
             """
-            UPDATE content_item AS ci
-               SET account_id = s.account_id
-              FROM subscription AS s
-             WHERE ci.source_kind = 'subscription'
-               AND ci.source_id IS NOT NULL
-               AND ci.source_id = s.id
+            UPDATE content_item
+               SET account_id = (
+                   SELECT s.account_id FROM subscription s
+                    WHERE s.id = content_item.source_id
+               )
+             WHERE source_kind = 'subscription'
+               AND source_id IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM subscription s WHERE s.id = content_item.source_id
+               )
             """
         )
     )
@@ -116,20 +123,64 @@ def upgrade() -> None:
         )
 
     # 4) 收紧非空 + 外键 + 账号级唯一约束
-    op.alter_column("content_item", "account_id", existing_type=sa.Integer(), nullable=False)
-    op.create_foreign_key(
-        "fk_content_item_account_id", "content_item", "platform_account", ["account_id"], ["id"],
-        ondelete="RESTRICT",
-    )
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("crawl_task") as batch:
+            batch.create_foreign_key(
+                "fk_crawl_task_account_id", "platform_account", ["account_id"], ["id"],
+                ondelete="SET NULL",
+            )
+        with op.batch_alter_table("crawl_run") as batch:
+            batch.create_foreign_key(
+                "fk_crawl_run_account_id", "platform_account", ["account_id"], ["id"],
+                ondelete="SET NULL",
+            )
+        with op.batch_alter_table("content_item") as batch:
+            batch.alter_column("account_id", existing_type=sa.Integer(), nullable=False)
+            batch.create_foreign_key(
+                "fk_content_item_account_id", "platform_account", ["account_id"], ["id"],
+                ondelete="RESTRICT",
+            )
+            batch.create_unique_constraint(
+                "uq_content_item_platform_external_account",
+                ["platform", "external_id", "account_id"],
+            )
+    else:
+        op.alter_column("content_item", "account_id", existing_type=sa.Integer(), nullable=False)
+        op.create_foreign_key(
+            "fk_content_item_account_id", "content_item", "platform_account", ["account_id"], ["id"],
+            ondelete="RESTRICT",
+        )
+        op.create_unique_constraint(
+            "uq_content_item_platform_external_account",
+            "content_item",
+            ["platform", "external_id", "account_id"],
+        )
     op.create_index("ix_content_item_account_id", "content_item", ["account_id"])
-    op.create_unique_constraint(
-        "uq_content_item_platform_external_account",
-        "content_item",
-        ["platform", "external_id", "account_id"],
-    )
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("content_item") as batch:
+            batch.drop_constraint("uq_content_item_platform_external_account", type_="unique")
+            batch.drop_constraint("fk_content_item_account_id", type_="foreignkey")
+            batch.drop_column("account_id")
+        op.drop_index("ix_content_item_account_id", table_name="content_item")
+
+        with op.batch_alter_table("crawl_run") as batch:
+            batch.drop_constraint("fk_crawl_run_account_id", type_="foreignkey")
+            batch.drop_column("account_id")
+        op.drop_index("ix_crawl_run_account_id", table_name="crawl_run")
+
+        with op.batch_alter_table("crawl_task") as batch:
+            batch.drop_constraint("fk_crawl_task_account_id", type_="foreignkey")
+            batch.drop_column("account_id")
+        op.drop_index("ix_crawl_task_account_id", table_name="crawl_task")
+
+        op.drop_column("platform_account", "last_crawl_used_at")
+        op.drop_column("platform_account", "is_system")
+        return
+
     op.drop_constraint("uq_content_item_platform_external_account", "content_item", type_="unique")
     op.drop_index("ix_content_item_account_id", table_name="content_item")
     op.drop_constraint("fk_content_item_account_id", "content_item", type_="foreignkey")

@@ -480,3 +480,66 @@
 .ui-switchbar button:hover { border-color: oklch(0.5 0.02 265); color: #fff; }
 .ui-switchbar button.on { background: oklch(0.79 0.145 178); border-color: oklch(0.79 0.145 178); color: oklch(0.19 0.03 260); font-weight: 600; }
 .ui-switchbar .pgroup button.on { background: oklch(0.9 0.008 265); color: oklch(0.16 0.008 265); }
+
+/* ---------- 静态演示站窄屏适配 ----------
+   演示站会被手机直接打开；生产工作台是桌面工具，不受这里影响。
+   处理方式：侧栏从固定列变成顶部横向导航条，主区占满整宽。 */
+@media (max-width: 820px) {
+  .ui-app.demo-mode {
+    display: block;
+    border-top: 0;
+  }
+  .ui-app.demo-mode .ui-side {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    height: auto;
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 2px solid var(--ink);
+  }
+  .ui-app.demo-mode .ui-side::before { display: none; }
+  .ui-app.demo-mode .ui-brand { padding: 0 8px 0 0; flex: none; }
+  .ui-app.demo-mode .ui-brand .bt-en { display: none; }
+  .ui-app.demo-mode .ui-nav {
+    flex-direction: row;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex: 1 1 auto;
+  }
+  .ui-app.demo-mode .ui-nav-item {
+    width: auto;
+    padding: 8px 10px;
+    font-size: 13px;
+    white-space: nowrap;
+    flex: none;
+  }
+  .ui-app.demo-mode .ui-nav-item .ic { display: none; }
+  .ui-app.demo-mode .ui-side-foot {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    flex: none;
+  }
+  .ui-app.demo-mode .ui-user,
+  .ui-app.demo-mode .logout { display: none; }
+  .ui-app.demo-mode .ui-main { width: 100%; min-width: 0; }
+  .ui-app.demo-mode .ui-top {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .ui-app.demo-mode .ui-content { padding: 14px 12px; }
+  /* 表格在窄屏下横向滚动，避免把整页撑宽。 */
+  .ui-app.demo-mode .ui-panel { overflow-x: auto; }
+  .ui-app.demo-mode .ui-table { min-width: 460px; }
+  .ui-app.demo-mode .ui-table th,
+  .ui-app.demo-mode .ui-table td { padding: 8px 12px; }
+}

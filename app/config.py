@@ -13,6 +13,18 @@ class Settings(BaseSettings):
     # 启动时是否用 SQLAlchemy create_all 自动建表。开发默认 True；
     # 生产（compose）置 false，建表完全交给 Alembic（docker-entrypoint.sh）。
     auto_create_tables: bool = True
+    # 启动版本门禁（契约 I3）：版本落后是否允许自动升级到 head；false 则拒绝启动，
+    # 适合只读/演示实例（不擅自改库）。见 core/version_guard.py。
+    auto_migrate: bool = True
+    # 逃生开关：允许带"未知 revision"启动，仅供人工排障，正常部署保持 false。
+    allow_unknown_db: bool = False
+    # 一键升级（可选）：updater 边车地址，如 http://platform-updater:9200。
+    # 留空 = 未启用（默认）；配置后前端「版本与升级」才显示升级按钮。
+    updater_url: str = ""
+    # 后端调 updater 的共享密钥（仅内网传递）；为空则拒绝调用。
+    updater_token: str = ""
+    # 检查更新用的 GitHub 仓库。
+    update_repo: str = "lianying1716/platform-api"
     host: str = "0.0.0.0"
     port: int = 9100
     # 是否由后端托管前端构建产物（app/static）。

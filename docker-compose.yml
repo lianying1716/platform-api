@@ -1,14 +1,25 @@
+# 固定项目名：否则 compose 会用目录名推导，目录改名 / git worktree / updater 在
+# 容器内推导时都会不一致，导致 `docker compose exec db` 找不到服务（网页升级会失败）。
+# updater 边车必须用同一个项目名操作栈。
+name: platform-api
+
 services:
   platform-api:
-    build: .
+    # 升级 = 改 PLATFORM_VERSION 后 `docker compose pull && docker compose up -d`
+    # （同 Immich/Gitea 的镜像 tag 驱动）。本地开发想从源码构建用 override 文件。
+    image: ghcr.io/lianying1716/platform-api:${PLATFORM_VERSION:-latest}
     ports:
       - "9100:9100"
     environment:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
       PLATFORM_AUTO_CREATE_TABLES: "false"
+      PLATFORM_RUN_MIGRATIONS: "true"      # 由 api 负责迁移（契约 I2）
       PLATFORM_SERVE_FRONTEND: "true"
       PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
       PLATFORM_ACCOUNT_CHECK_INTERVAL: "15"
+      # 一键升级：仅在设置了这两个变量时才启用（默认关闭 → 前端不显示升级按钮）。
+      PLATFORM_UPDATER_URL: ${PLATFORM_UPDATER_URL:-}
+      PLATFORM_UPDATER_TOKEN: ${PLATFORM_UPDATER_TOKEN:-}
     volumes:
       - platform-data:/data        # secret.key 与本地文件；备份必须包含此卷
     depends_on:
@@ -27,11 +38,12 @@ services:
     restart: unless-stopped
 
   platform-worker:
-    build: .
+    image: ghcr.io/lianying1716/platform-api:${PLATFORM_VERSION:-latest}
     command: ["python", "-m", "app.workers.runner"]
     environment:
       PLATFORM_DATABASE_URL: postgresql+psycopg2://platform:platform@db:5432/platform
       PLATFORM_AUTO_CREATE_TABLES: "false"
+      PLATFORM_RUN_MIGRATIONS: "false"     # worker 不迁移，等 api 健康后再起（契约 I2）
       PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
     volumes:
       - platform-data:/data
@@ -41,6 +53,49 @@ services:
       platform-api:
         condition: service_healthy
     restart: unless-stopped
+
+  # 一键升级边车：持有 docker socket，故与主服务隔离，且不映射任何宿主端口。
+  # 只有设置了 PLATFORM_UPDATER_TOKEN 才真正生效（否则拒绝所有请求）。
+  # 不需要网页一键升级时，可整段删除或用 profiles 排除。
+  platform-updater:
+    # 边车用专用镜像（主镜像 + docker CLI + compose 插件）；主镜像不含 docker 客户端。
+    image: ghcr.io/lianying1716/platform-api-updater:${PLATFORM_VERSION:-latest}
+    environment:
+      PLATFORM_UPDATER_TOKEN: ${PLATFORM_UPDATER_TOKEN:-}
+      UPDATER_COMPOSE_FILE: /compose/docker-compose.yml
+      # 与栈项目名一致，保证边车能 exec/重建到正确的容器。
+      COMPOSE_PROJECT_NAME: platform-api
+      # 备份直接读挂进来的 data 卷目录（不依赖宿主卷名推导，避免 worktree/改名出错）
+      UPDATER_DATA_DIR: /data
+      UPDATER_BACKUP_DIR: /backups
+      UPDATER_ENV_FILE: /compose/.env
+      UPDATER_API_HEALTH_URL: http://platform-api:9100/api/system/version
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # updater 需要读 compose 文件来执行 pull/up；只读挂载，防止被改写。
+      - ./docker-compose.yml:/compose/docker-compose.yml:ro
+      # .env 可写挂入：升级成功后 updater 会把 PLATFORM_VERSION 写回这里（pin），
+      # 否则重启/compose up 会按默认 tag 静默回退。create_host_path:false 让
+      # .env 缺失时明确报错，而不是静默创建一个目录导致写入失败。
+      - type: bind
+        source: ./.env
+        target: /compose/.env
+        bind:
+          create_host_path: false
+      # 与 api/worker 共享 data 卷（只读），备份时直接 tar；含 secret.key。
+      - platform-data:/data:ro
+      # 备份产物持久化，回滚/排查用。
+      - platform-backups:/backups
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9200/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    profiles: ["updater"]
 
   db:
     image: postgres:17-alpine
@@ -59,3 +114,4 @@ services:
 volumes:
   platform-data:
   pg-data:
+  platform-backups:

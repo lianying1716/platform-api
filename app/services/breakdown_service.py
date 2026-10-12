@@ -277,7 +277,9 @@ def _dict_or_empty(value: object) -> dict:
 # --------------------------------------------------------------------------- 组合服务
 
 
-async def run_breakdown(db: Session, asset_id: int, *, force: bool = False) -> ViralBreakdown:
+async def run_breakdown(
+    db: Session, asset_id: int, *, force: bool = False, job_id: int | None = None
+) -> ViralBreakdown:
     """跑完整爆款拆解链路，返回并落库 `ViralBreakdown`。
 
     - 已 `done` 且 `force=False`：直接返回既有行（幂等，不重复花 token）。
@@ -311,16 +313,40 @@ async def run_breakdown(db: Session, asset_id: int, *, force: bool = False) -> V
                 f"素材 #{asset_id} 未关联内容（content_id={asset.content_id}）"
             )
 
-        from app.services.understand_service import _resolve_llm
-
-        base_url, api_key, llm_model = _resolve_llm(db)
         s = get_breakdown_settings(db)
 
         payload = _assemble_payload(db, content, asset, s["prompt"])
         system, user = breakdown.build_breakdown_prompt(payload)
-        result = await breakdown.run_llm(
-            system, user, base_url=base_url, api_key=api_key, model=llm_model
-        )
+        from app.services.model_access_service import ModelAccessService, assignment_configured
+
+        gateway = ModelAccessService()
+        use_gateway = assignment_configured(db, "text_analysis")
+        base_url, api_key, llm_model = ("", "", "")
+        if not use_gateway:
+            from app.services.understand_service import _resolve_llm
+
+            base_url, api_key, llm_model = _resolve_llm(db)
+
+        async def call_model(*, request, parse_result, **kwargs):
+            return await gateway.call_with_fallback(
+                db,
+                work_type="text_analysis",
+                operation="breakdown",
+                request=request,
+                parse_result=parse_result,
+                validate_result=kwargs.get("validate_result"),
+                asset_id=asset_id,
+                job_id=job_id,
+            )
+
+        llm_kwargs = {
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": llm_model,
+        }
+        if use_gateway:
+            llm_kwargs["call_model"] = call_model
+        result = await breakdown.run_llm(system, user, **llm_kwargs)
         parsed = result.get("data") or {}
         if not isinstance(parsed, dict):
             raise ValueError("拆解返回不是 JSON 对象")
@@ -334,6 +360,8 @@ async def run_breakdown(db: Session, asset_id: int, *, force: bool = False) -> V
         row.model = result.get("model") or llm_model
         row.prompt_version = _PROMPT_VERSION
         row.usage = result.get("usage") or {}
+        if result.get("routing"):
+            row.routing = {"text_analysis": result["routing"]}
         row.status = "done"
         row.error = ""
         db.commit()

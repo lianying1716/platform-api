@@ -3,7 +3,7 @@ import os, shutil
 from PIL import Image
 
 ROOT = "/path/to/xsai-workbench/logo-gen"
-DST = "/path/to/platform-api/web/public/brand"
+DST = "/path/to/xsai-workbench/platform-api/web/public/brand"
 os.makedirs(DST, exist_ok=True)
 
 ITEMS = [

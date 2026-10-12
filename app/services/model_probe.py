@@ -1,0 +1,400 @@
+"""模型能力探测：文本 JSON、图片真看、视频真看与手工覆盖。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import random
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime
+from io import BytesIO
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.crypto import decrypt_credential, redact_text
+from app.models import AiModel, AiProvider, ModelAssignment
+from app.modules import model_protocols
+
+logger = logging.getLogger("platform.model_probe")
+
+_PROBE_VERSION = "v1"
+_IMAGE_COLORS = {
+    "red": (220, 30, 30),
+    "blue": (30, 60, 220),
+    "green": (30, 170, 80),
+}
+
+
+def _decrypt_key(provider: AiProvider) -> str:
+    if not provider.api_key_encrypted:
+        return ""
+    return str(decrypt_credential(provider.api_key_encrypted).get("api_key") or "")
+
+
+def _choose_probe_color() -> str:
+    return random.choice(list(_IMAGE_COLORS))
+
+
+def _red_image(color: str | None = None) -> bytes:
+    """生成探测图片；默认红色，颜色可由探针运行时随机指定。"""
+
+    from PIL import Image
+
+    rgb = _IMAGE_COLORS.get(color or "red", _IMAGE_COLORS["red"])
+    image = Image.new("RGB", (16, 16), rgb)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _red_blue_video(work_dir: str | Path, *, seconds: int = 2) -> bytes:
+    """用 ffmpeg 生成前红后蓝的测试视频（2 秒，mp4）。"""
+    out = Path(work_dir) / "probe.mp4"
+    half = max(1, seconds // 2)
+    filter_expr = (
+        f"color=c=red:s=64x64:d={half}[a];"
+        f"color=c=blue:s=64x64:d={seconds - half}[b];"
+        "[a][b]concat=n=2:v=1:a=0[out]"
+    )
+    proc = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-filter_complex",
+            filter_expr,
+            "-map",
+            "[out]",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or not out.exists():
+        tail = " | ".join((proc.stderr or "").strip().splitlines()[-3:])
+        raise RuntimeError(f"ffmpeg 生成视频探针失败: {tail}")
+    return out.read_bytes()
+
+
+def _parse_json_text(text: str) -> object:
+    raw = (text or "").strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(raw[start : end + 1])
+        raise
+
+
+async def _chat(
+    provider, model: str, *, request: dict, api_key: str, timeout: float
+) -> dict:
+    built = model_protocols.chat_request(provider, model, request, api_key=api_key)
+    data = await model_protocols.send_request(built, timeout=timeout)
+    return model_protocols.parse_chat_response(provider.protocol, data)
+
+
+async def _video_chat(
+    provider,
+    model: str,
+    video_b64: str,
+    prompt: str,
+    *,
+    transport: str,
+    api_key: str,
+    timeout: float,
+) -> dict:
+    built = model_protocols.video_request(
+        provider,
+        model,
+        video_b64,
+        prompt,
+        transport=transport,
+        api_key=api_key,
+    )
+    data = await model_protocols.send_request(built, timeout=timeout)
+    # video transport 与对话协议可能不同；响应按 transport 对应协议解析。
+    response_protocol = "gemini" if transport == "gemini_inline" else "openai"
+    return model_protocols.parse_chat_response(response_protocol, data)
+
+
+def _capability(
+    *,
+    value: bool,
+    source: str,
+    revision: int,
+    detail: str,
+    extra: dict | None = None,
+) -> dict:
+    out = {
+        "value": bool(value),
+        "source": source,
+        "config_revision": revision,
+        "probe_version": _PROBE_VERSION,
+        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "detail": detail,
+    }
+    if extra:
+        out.update(extra)
+    return out
+
+
+async def _probe_json_mode(provider, model: AiModel, api_key: str, prompt: str, timeout: float) -> tuple[dict, str]:
+    """完成一次 JSON 能力探测；必要时退回 prompt-only JSON 模式。"""
+    response_format = {"type": "json_object"}
+    try:
+        result = await _chat(
+            provider,
+            model.model_key,
+            request={
+                "messages": [
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+                "response_format": response_format,
+            },
+            api_key=api_key,
+            timeout=timeout,
+        )
+        parsed = _parse_json_text(result["text"])
+        if not isinstance(parsed, dict):
+            raise model_protocols.SchemaMismatchError("探测返回不是 JSON 对象")
+        return parsed, "json_mode"
+    except model_protocols.ModelProtocolError:
+        raise
+    except Exception as first:
+        if model_protocols.classify_error(first) != "bad_request":
+            raise
+        result = await _chat(
+            provider,
+            model.model_key,
+            request={
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+            },
+            api_key=api_key,
+            timeout=timeout,
+        )
+        parsed = _parse_json_text(result["text"])
+        if not isinstance(parsed, dict):
+            raise model_protocols.SchemaMismatchError("探测返回不是 JSON 对象")
+        return parsed, "prompt_only"
+
+
+async def probe_model(
+    db: Session,
+    model_id: int,
+    *,
+    text: bool = True,
+    image: bool = True,
+    video: bool = True,
+) -> AiModel:
+    """探测模型能力并写回 ``ai_model``；单项失败不影响其他项。"""
+    model = db.get(AiModel, model_id)
+    if model is None:
+        raise ValueError(f"模型不存在: {model_id}")
+    provider = db.get(AiProvider, model.provider_id)
+    if provider is None:
+        raise ValueError(f"模型所属供应商不存在: {model.provider_id}")
+    api_key = _decrypt_key(provider)
+    if not api_key:
+        raise ValueError("供应商没有可用访问密钥，无法探测")
+
+    revision = int(provider.config_revision or 1)
+    caps = dict(model.capabilities or {})
+    statuses: list[str] = []
+
+    if text:
+        prompt = '只输出 JSON：{"ok": true, "echo": "workbench"}'
+        try:
+            parsed, mode = await _probe_json_mode(provider, model, api_key, prompt, 30)
+            ok = parsed.get("ok") is True and parsed.get("echo") == "workbench"
+            detail = "通过文本与 JSON 输出探测" if ok else "JSON 内容不符合要求"
+            caps["text"] = _capability(
+                value=ok, source="probe", revision=revision, detail=detail
+            )
+            caps["json"] = _capability(
+                value=ok,
+                source="probe",
+                revision=revision,
+                detail=f"JSON 输出{'可用' if ok else '不符合要求'}（{mode}）",
+                extra={"mode": mode},
+            )
+            statuses.append("ok" if ok else "failed")
+        except Exception as exc:  # noqa: BLE001 单项失败不能中断其他探测
+            detail = redact_text(str(exc), extra_secrets=(api_key,))[:512]
+            caps["text"] = _capability(value=False, source="probe", revision=revision, detail=detail)
+            caps["json"] = _capability(value=False, source="probe", revision=revision, detail=detail)
+            statuses.append("failed")
+
+    if image:
+        color = _choose_probe_color()
+        try:
+            image_bytes = _red_image(color)
+            import base64
+
+            data_uri = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+            result = await _chat(
+                provider,
+                model.model_key,
+                request={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": '看图后只输出 JSON：{"has_image": true|false, "color": "颜色"}。只依据图片内容。',
+                                },
+                                {"type": "image_url", "image_url": {"url": data_uri}},
+                            ],
+                        }
+                    ],
+                    "temperature": 0,
+                },
+                api_key=api_key,
+                timeout=45,
+            )
+            parsed = _parse_json_text(result["text"])
+            answer = str((parsed or {}).get("color", "")).strip().lower()
+            ok = bool((parsed or {}).get("has_image")) and answer == color
+            detail = "通过图片颜色探测" if ok else "模型未正确识别图片"
+            caps["image"] = _capability(value=ok, source="probe", revision=revision, detail=detail)
+            statuses.append("ok" if ok else "failed")
+        except Exception as exc:  # noqa: BLE001
+            caps["image"] = _capability(
+                value=False,
+                source="probe",
+                revision=revision,
+                detail=redact_text(str(exc), extra_secrets=(api_key,))[:512],
+            )
+            statuses.append("failed")
+
+    if video:
+        transport = model_protocols.normalize_transport(provider.protocol, None)
+        video_extra = {
+            "transport": transport,
+            "auth_style": model_protocols.auth_style_for_transport(transport),
+        }
+        if shutil.which("ffmpeg") is None:
+            caps["video"] = _capability(
+                value=False,
+                source="probe",
+                revision=revision,
+                detail="未安装 ffmpeg，无法生成视频探针",
+                extra=video_extra,
+            )
+            statuses.append("skipped")
+        else:
+            try:
+                import base64
+
+                with tempfile.TemporaryDirectory(prefix="model-probe-") as work_dir:
+                    video_bytes = await asyncio.to_thread(_red_blue_video, work_dir)
+                video_b64 = base64.b64encode(video_bytes).decode("ascii")
+                result = await _video_chat(
+                    provider,
+                    model.model_key,
+                    video_b64,
+                    '观看视频后只输出 JSON：{"first": "第一个颜色", "second": "第二个颜色"}。',
+                    transport=transport,
+                    api_key=api_key,
+                    timeout=300,
+                )
+                parsed = _parse_json_text(result["text"])
+                first = str((parsed or {}).get("first", "")).strip().lower()
+                second = str((parsed or {}).get("second", "")).strip().lower()
+                ok = first == "red" and second == "blue"
+                detail = "通过红蓝视频探测" if ok else "模型未正确读取视频画面"
+                caps["video"] = _capability(
+                    value=ok,
+                    source="probe",
+                    revision=revision,
+                    detail=detail,
+                    extra=video_extra,
+                )
+                statuses.append("ok" if ok else "failed")
+            except Exception as exc:  # noqa: BLE001
+                caps["video"] = _capability(
+                    value=False,
+                    source="probe",
+                    revision=revision,
+                    detail=redact_text(str(exc), extra_secrets=(api_key,))[:512],
+                    extra=video_extra,
+                )
+                statuses.append("failed")
+
+    model.capabilities = caps
+    if "ok" in statuses and ("failed" in statuses or "skipped" in statuses):
+        model.probe_status = "partial"
+    elif "ok" in statuses:
+        model.probe_status = "passed"
+    elif "skipped" in statuses and all(s == "skipped" for s in statuses):
+        model.probe_status = "skipped"
+    else:
+        model.probe_status = "failed"
+    model.probe_error = "; ".join(
+        redact_text(str((caps.get(k) or {}).get("detail", "")), extra_secrets=(api_key,))
+        for k in ("text", "json", "image", "video")
+        if (caps.get(k) or {}).get("value") is False
+    )[:2000]
+    model.probed_at = datetime.utcnow()
+    for assignment in db.scalars(
+        select(ModelAssignment).where(ModelAssignment.primary_model_id == model.id)
+    ).all():
+        assignment.legacy_pending_validation = False
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+async def set_manual_video_capability(
+    db: Session,
+    model_id: int,
+    *,
+    value: bool,
+    transport: str | None = None,
+    reason: str = "",
+) -> AiModel:
+    """用户手工确认视频能力；来源固定为 manual_override。"""
+    model = db.get(AiModel, model_id)
+    if model is None:
+        raise ValueError(f"模型不存在: {model_id}")
+    provider = db.get(AiProvider, model.provider_id)
+    if provider is None:
+        raise ValueError(f"模型所属供应商不存在: {model.provider_id}")
+    normalized = model_protocols.normalize_transport(provider.protocol, transport)
+    caps = dict(model.capabilities or {})
+    caps["video"] = _capability(
+        value=bool(value),
+        source="manual_override",
+        revision=int(provider.config_revision or 1),
+        detail=reason or ("用户手工确认支持视频" if value else "用户手工确认不支持视频"),
+        extra={
+            "transport": normalized,
+            "auth_style": model_protocols.auth_style_for_transport(normalized),
+            "reason": reason,
+        },
+    )
+    caps["manual_override"] = {"video": bool(value), "reason": reason}
+    model.capabilities = caps
+    for assignment in db.scalars(
+        select(ModelAssignment).where(ModelAssignment.primary_model_id == model.id)
+    ).all():
+        assignment.legacy_pending_validation = False
+    db.commit()
+    db.refresh(model)
+    return model

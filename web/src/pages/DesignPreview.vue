@@ -188,7 +188,7 @@
               </button>
             </div>
             <div style="display: flex; gap: 8px">
-              <button v-for="a in ['抖小云·主号', '抖小云·备用号']" :key="a"
+              <button v-for="a in ['抖音·主号', '抖音·备用号']" :key="a"
                 class="ui-chip" :class="{ on: acct === a }" @click="acct = a">{{ a }}</button>
             </div>
 
@@ -736,7 +736,7 @@ const benchmark = [
 
 /* ---------- 关注博主 ---------- */
 const plat = ref('抖音')
-const acct = ref('抖小云·主号')
+const acct = ref('抖音·主号')
 const loading = ref(false)
 const cooling = ref(false)
 const creators = reactive([

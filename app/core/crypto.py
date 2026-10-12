@@ -11,7 +11,9 @@
 import base64
 import json
 import os
+import re
 import secrets
+from collections.abc import Iterable
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -19,6 +21,19 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from app.config import settings
 
 _key: bytes | None = None
+
+_SECRET_PATTERNS = (
+    # JSON / dict 形式：{"authorization": "Bearer xxx"} / {"api_key": "xxx"}
+    re.compile(
+        r'(?i)(["\']?(?:authorization|proxy-authorization|x-api-key|api[_-]?key)["\']?\s*:\s*)'
+        r'(["\'])(.*?)(\2)'
+    ),
+    re.compile(r"(?i)(authorization\s*[:=]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)(x-api-key\s*[:=]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)(api[_-]?key\s*[:=]\s*)([^\s,;]+)"),
+    re.compile(r"\b(sk-[A-Za-z0-9_\-]{6,})\b"),
+    re.compile(r"\b(AIza[0-9A-Za-z_\-]{20,})\b"),
+)
 
 
 def _decode_key(text: str) -> bytes:
@@ -66,6 +81,31 @@ def key_is_ready() -> bool:
         return False
 
 
+def key_is_configured() -> bool:
+    """判断加密密钥是否已显式配置且可加载，**不触发自动生成兜底**。
+
+    迁移场景必须用这个而不是 ``key_is_ready()``：后者在密钥缺失时会自动生成
+    ``data/secret.key``，会用新密钥覆盖已有凭证的解密能力。
+    """
+    try:
+        if settings.credential_enc_key:
+            _decode_key(settings.credential_enc_key)
+            return True
+        if settings.credential_key_file is not None:
+            path = Path(settings.credential_key_file)
+            if not path.exists():
+                return False
+            _decode_key(path.read_text())
+            return True
+        fallback = settings.data_dir / "secret.key"
+        if not fallback.exists():
+            return False
+        _decode_key(fallback.read_text())
+        return True
+    except Exception:
+        return False
+
+
 def encrypt_credential(payload: dict) -> str:
     """dict -> base64(nonce + ciphertext)"""
     key = _load_key()
@@ -90,3 +130,23 @@ def mask(value: str, keep: int = 4) -> str:
     if len(value) <= keep * 2:
         return "*" * len(value)
     return f"{value[:keep]}{'*' * 4}{value[-keep:]}"
+
+
+def redact_text(text: str, *, extra_secrets: Iterable[str] = ()) -> str:
+    """擦除错误/日志文本中的密钥。
+
+    先替换“本次实际使用”的完整密钥（即使上游回显的格式没有 sk-/AIza 前缀），
+    再兜底匹配常见鉴权字段和 Key 形状。调用方必须把结果写库或返回。
+    """
+    out = str(text or "")
+    secrets_to_remove = [s for s in extra_secrets if isinstance(s, str) and s]
+    for secret in sorted(secrets_to_remove, key=len, reverse=True):
+        out = out.replace(secret, "[REDACTED]")
+    for pattern in _SECRET_PATTERNS:
+        if pattern.groups == 4:
+            out = pattern.sub(r"\1\2[REDACTED]\4", out)
+        elif pattern.groups >= 2:
+            out = pattern.sub(r"\1[REDACTED]", out)
+        else:
+            out = pattern.sub("[REDACTED]", out)
+    return out

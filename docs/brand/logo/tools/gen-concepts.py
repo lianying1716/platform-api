@@ -1,6 +1,6 @@
 """星采 Logo 概念稿 v4：几何边角全部锁定在 15°，轻量图标化。"""
 import math, os
-OUT = "/path/to/platform-api/docs/brand/logo/concepts"
+OUT = "/path/to/xsai-workbench/platform-api/docs/brand/logo/concepts"
 C, R = 128.0, 118.0
 
 def poly(pts):

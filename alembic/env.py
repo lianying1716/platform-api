@@ -37,15 +37,22 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    from app.core.migration_lock import migration_lock
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
-        with context.begin_transaction():
-            context.run_migrations()
+        # 契约 I2：用 DB 级 advisory lock 串行化迁移，避免多进程并发迁移互相打架。
+        # 非 PG（SQLite）自动跳过，行为不变。
+        with migration_lock(connection):
+            # advisory lock 必须在事务外获取/释放（会话级），故此处单独提交一次。
+            connection.commit()
+            context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+            with context.begin_transaction():
+                context.run_migrations()
 
 
 if context.is_offline_mode():

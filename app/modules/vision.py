@@ -31,6 +31,7 @@ import json
 import mimetypes
 import re
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -212,6 +213,7 @@ async def understand(
     max_mb: float = 15,
     timeout: float = 300,
     mime: str | None = None,
+    call_model: Callable | None = None,
 ) -> dict:
     """把视频内联给多模态模型做一次理解，返回文本与用量。
 
@@ -245,24 +247,46 @@ async def understand(
 
     mime_type = _resolve_mime(video_path, mime)
     video_b64 = base64.b64encode(raw).decode("ascii")
-    path, headers, body = build_payload(name, model, video_b64, prompt, mime=mime_type)
+    if call_model is None:
+        path, headers, body = build_payload(name, model, video_b64, prompt, mime=mime_type)
+        if name == "qwen":
+            headers = {**headers, "Authorization": f"Bearer {api_key}"}
+        else:
+            headers = {**headers, "x-goog-api-key": api_key}
+        data = await _post_json(_join_provider_url(base_url, path), headers, body, timeout)
+        text = _extract_qwen_text(data) if name == "qwen" else _extract_gemini_text(data)
+        usage = data.get("usage") if name == "qwen" else data.get("usageMetadata")
+        return {
+            "text": text,
+            "usage": usage if isinstance(usage, dict) else {},
+            "model": model,
+            "provider": name,
+        }
 
-    if name == "qwen":
-        headers = {**headers, "Authorization": f"Bearer {api_key}"}
-    else:
-        headers = {**headers, "x-goog-api-key": api_key}
+    def parse(text):
+        return parse_structured(text)
 
-    data = await _post_json(_join_provider_url(base_url, path), headers, body, timeout)
-
-    if name == "qwen":
-        text = _extract_qwen_text(data)
-    else:
-        text = _extract_gemini_text(data)
-    usage = data.get("usage") if name == "qwen" else data.get("usageMetadata")
-
+    # 网关需要 video transport；这里预解析 provider 只是兼容旧 API 入参，
+    # 实际请求构造与鉴权全部在 model_protocols/model_access_service 内完成。
+    request = {
+        "messages": [{"role": "user", "content": prompt}],
+        "video_b64": video_b64,
+        "mime": mime_type,
+        "transport": "gemini_inline" if name == "gemini" else "openai_video_url",
+        "timeout": timeout,
+    }
+    result = await call_model(
+        request=request,
+        parse_result=parse,
+        video_request=True,
+    )
+    data = result.data if hasattr(result, "data") else result
+    if not isinstance(data, dict):
+        raise ValueError("视频理解返回不是 JSON 对象")
     return {
-        "text": text,
-        "usage": usage if isinstance(usage, dict) else {},
-        "model": model,
+        "text": json.dumps(data, ensure_ascii=False),
+        "parsed": data,
+        "usage": getattr(result, "usage", {}) or {},
+        "model": getattr(result, "used_model_key", model),
         "provider": name,
     }

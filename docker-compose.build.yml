@@ -1,0 +1,18 @@
+# 本地/开发用：从当前源码构建镜像，而不是拉 GHCR 发布镜像。
+# 用法：docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#       （或直接 docker compose -f docker-compose.build.yml 需要同时带上基础文件）
+services:
+  platform-api:
+    build:
+      context: .
+      args:
+        PLATFORM_BUILD_VERSION: ${PLATFORM_BUILD_VERSION:-dev}
+        PLATFORM_BUILD_COMMIT: ${PLATFORM_BUILD_COMMIT:-unknown}
+        PLATFORM_BUILD_TIME: ${PLATFORM_BUILD_TIME:-unknown}
+  platform-worker:
+    build:
+      context: .
+      args:
+        PLATFORM_BUILD_VERSION: ${PLATFORM_BUILD_VERSION:-dev}
+        PLATFORM_BUILD_COMMIT: ${PLATFORM_BUILD_COMMIT:-unknown}
+        PLATFORM_BUILD_TIME: ${PLATFORM_BUILD_TIME:-unknown}

@@ -106,7 +106,7 @@ Element Plus 只保留行为（表格排序、弹窗焦点、表单控件），�
 - 后端：`uv run pytest tests/ -q` 全绿
 - 前端：`npm run build` 通过
 - 浏览器：Playwright 逐页点按钮、确认图表渲染、视频 Range 请求返回 206、控制台零报错
-- 全部走局域网 `127.0.0.1:9100`
+- 全部走局域网 `http://<局域网IP>:9100`
 
 ### 实测结果（Playwright，1440×900，局域网）
 

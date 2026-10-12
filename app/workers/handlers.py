@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.core import events, queue
 from app.core.storage import render_subdir, resolve_account_root, resolve_asset_dir
 from app.models import (
+    AiModel,
     AnalysisResult,
     ContentItem,
     MediaAsset,
@@ -369,7 +370,7 @@ async def handle_transcribe(db: Session, payload: dict) -> None:
         logger.exception("素材 #%s 转录后自动分析入队失败，已忽略", asset_id)
 
 
-async def handle_analyze(db: Session, payload: dict) -> None:
+async def handle_analyze(db: Session, payload: dict, job=None) -> None:
     from app.modules import analysis
 
     asset_id = payload["asset_id"]
@@ -384,10 +385,26 @@ async def handle_analyze(db: Session, payload: dict) -> None:
     db.commit()
 
     content = db.get(ContentItem, asset.content_id)
-    result = await analysis.analyze(
-        title=content.title if content else "",
-        full_text=transcript.full_text,
-    )
+    from app.services.model_access_service import ModelAccessService, assignment_configured
+
+    call_model = None
+    if assignment_configured(db, "text_analysis"):
+        async def call_model(*, request, parse_result, **kwargs):
+            return await ModelAccessService().call_with_fallback(
+                db,
+                work_type="text_analysis",
+                operation="analyze",
+                request=request,
+                parse_result=parse_result,
+                validate_result=kwargs.get("validate_result"),
+                asset_id=asset_id,
+                    job_id=kwargs.get("job_id") or (job.id if job is not None else None),
+            )
+
+    analyze_kwargs = {"title": content.title if content else "", "full_text": transcript.full_text}
+    if call_model is not None:
+        analyze_kwargs["call_model"] = call_model
+    result = await analysis.analyze(**analyze_kwargs)
 
     existing = db.query(AnalysisResult).filter(AnalysisResult.asset_id == asset_id).first()
     if existing is None:
@@ -395,8 +412,9 @@ async def handle_analyze(db: Session, payload: dict) -> None:
         db.add(existing)
     existing.summary = result["summary"]
     existing.tags = result["tags"]
-    existing.structured = result.get("structured", {})
     existing.model = result["model"]
+    if result.get("routing"):
+        existing.routing = {"text_analysis": result["routing"]}
     asset.analyze_status = "done"
     asset.error = ""
     db.commit()
@@ -525,7 +543,7 @@ async def handle_refresh_metrics(db: Session, payload: dict) -> None:
     db.commit()
 
 
-async def handle_understand_video(db: Session, payload: dict) -> None:
+async def handle_understand_video(db: Session, payload: dict, job=None) -> None:
     """高级档视频理解：判类 → 类型专属提示词 → 调 vision → 写 VideoUnderstanding。"""
     from app.services.understand_service import UnderstandInputError, run_understand
 
@@ -538,13 +556,14 @@ async def handle_understand_video(db: Session, payload: dict) -> None:
             asset_id,
             force_category=payload.get("force_category") or None,
             use_cover=payload.get("use_cover"),
+            job_id=job.id if job is not None else None,
         )
     except UnderstandInputError as exc:
         # 数据问题（素材/内容缺失）不可重试，直接置 error，避免无谓重试。
         raise queue.NonRetryableJobError(str(exc)) from exc
 
 
-async def handle_breakdown(db: Session, payload: dict) -> None:
+async def handle_breakdown(db: Session, payload: dict, job=None) -> None:
     """爆款拆解：拼装转录/L3/评论/确定性数字 → 调 LLM → 写 ViralBreakdown。"""
     from app.services.breakdown_service import BreakdownInputError, run_breakdown
 
@@ -552,10 +571,32 @@ async def handle_breakdown(db: Session, payload: dict) -> None:
     if db.get(MediaAsset, asset_id) is None:
         return
     try:
-        await run_breakdown(db, asset_id, force=bool(payload.get("force", False)))
+        kwargs = {"force": bool(payload.get("force", False))}
+        if job is not None:
+            kwargs["job_id"] = job.id
+        await run_breakdown(db, asset_id, **kwargs)
     except BreakdownInputError as exc:
         # 数据问题（素材/内容缺失）不可重试，直接置 error，避免无谓重试。
         raise queue.NonRetryableJobError(str(exc)) from exc
+
+
+async def handle_probe_model(db: Session, payload: dict, job=None) -> None:
+    """执行模型能力探测；模型被删除时安全退出，重复探测不互相覆盖。"""
+    from app.services.model_probe import probe_model
+
+    model_id = payload.get("model_id")
+    if not isinstance(model_id, int):
+        raise queue.NonRetryableJobError("probe_model 缺少 model_id")
+    if db.get(AiModel, model_id) is None:
+        return
+    spec = payload.get("probe") or {}
+    await probe_model(
+        db,
+        model_id,
+        text=bool(spec.get("text", True)),
+        image=bool(spec.get("image", True)),
+        video=bool(spec.get("video", True)),
+    )
 
 
 HANDLERS = {
@@ -568,4 +609,5 @@ HANDLERS = {
     "refresh_metrics": handle_refresh_metrics,
     "understand_video": handle_understand_video,
     "breakdown": handle_breakdown,
+    "probe_model": handle_probe_model,
 }

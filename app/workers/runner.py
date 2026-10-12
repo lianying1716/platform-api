@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import inspect
 import logging
 import signal
 
@@ -50,7 +51,20 @@ async def _run_one() -> bool:
             return True
         logger.info("处理任务 #%s %s (第 %s 次)", job.id, job.job_type, job.attempts)
         try:
-            await handler(db, job.payload)
+            # 兼容签名在分发前判断，绝不用捕获 TypeError 再执行一次：
+            # handler 内部真实的 TypeError 若被误判，会导致一次任务产生两次副作用。
+            try:
+                signature = inspect.signature(handler)
+                accepts_job = len(signature.parameters) >= 3 or any(
+                    p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+                    for p in signature.parameters.values()
+                )
+            except (TypeError, ValueError):
+                accepts_job = False
+            if accepts_job:
+                await handler(db, job.payload, job)
+            else:
+                await handler(db, job.payload)
         except queue.NonRetryableJobError as exc:
             logger.warning("任务 #%s 不可重试失败: %s", job.id, exc)
             queue.fail(db, job, str(exc), retry=False)

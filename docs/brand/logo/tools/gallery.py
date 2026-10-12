@@ -3,7 +3,7 @@ import base64, io, os
 from PIL import Image
 
 ROOT = "/path/to/xsai-workbench/logo-gen"
-OUT = "/path/to/platform-api/app/static/brand/logo-gallery.html"
+OUT = "/path/to/xsai-workbench/platform-api/app/static/brand/logo-gallery.html"
 
 # (文件, 名称, 概念说明, 评审分, 评审要点)
 ITEMS = [

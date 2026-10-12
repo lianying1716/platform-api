@@ -18,6 +18,7 @@ import base64
 import json
 import mimetypes
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -126,6 +127,7 @@ async def classify(
     model: str,
     timeout: float = 30,
     use_cover: bool = False,
+    call_model: Callable | None = None,
 ) -> dict:
     """判类 Pass 0。
 
@@ -164,12 +166,25 @@ async def classify(
         "temperature": 0.2,
         "response_format": {"type": "json_object"},
     }
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    data = await _post_json(f"{base}/chat/completions", headers, body, timeout)
+    if call_model is None:
+        base = (base_url or "").rstrip("/")
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        data = await _post_json(f"{base}/chat/completions", headers, body, timeout)
+        return _parse_classify_json(data["choices"][0]["message"]["content"], taxonomy)
 
-    raw = data["choices"][0]["message"]["content"]
-    parsed = json.loads(raw)  # 解析失败 → 抛异常，由调用方回退通用模板
+    result = await call_model(
+        request=body,
+        parse_result=lambda raw: _parse_classify_json(raw, taxonomy),
+        image_required=bool(use_cover and cover_path),
+    )
+    parsed = result.data if hasattr(result, "data") else result
+    if not isinstance(parsed, dict):
+        raise ValueError("判类返回不是 JSON 对象")
+    return parsed
 
+
+def _parse_classify_json(raw: str, taxonomy: dict) -> dict:
+    parsed = json.loads(raw)
     candidate = parsed.get("type")
     if isinstance(candidate, str) and candidate in taxonomy:
         return {

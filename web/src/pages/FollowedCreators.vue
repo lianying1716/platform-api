@@ -303,9 +303,9 @@
           <el-switch v-model="form.auto_transcribe" />
           <span class="detail">新素材下载完成后自动转录</span>
         </el-form-item>
-        <el-form-item label="自动分析">
+        <el-form-item label="自动生成速览">
           <el-switch v-model="form.auto_analyze" />
-          <span class="detail">转录后自动分析（依赖转录，未转录会先补转录）</span>
+          <span class="detail">转录后自动生成摘要 + 标签（速览）；依赖转录，未转录会先补转录</span>
         </el-form-item>
 
         <div class="form-sec">存储</div>

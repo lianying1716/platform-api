@@ -1,0 +1,21 @@
+# updater 边车镜像：主镜像 + Docker CLI + compose 插件。
+#
+# 为什么单独一个镜像：主镜像只跑 API/worker，不含 docker 客户端；而一键升级
+# 需要 `docker compose pull/up`。把 docker CLI 只在边车里提供，主服务保持最小攻击面。
+#
+# 基础镜像由参数传入（CI 传已推送的主镜像 tag；本地传本地 tag）。
+#
+# 安全：本镜像持 docker socket 时等价 root，必须配合：
+#   - 不映射任何宿主端口（仅 compose 内网）
+#   - 共享密钥 PLATFORM_UPDATER_TOKEN
+#   - 版本号白名单（应用层已实现）
+ARG BASE_IMAGE=platform-api:latest
+FROM ${BASE_IMAGE}
+
+# 从官方静态镜像拷 docker CLI 与 compose 插件（不引入 apt 源，可复现）。
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:27-cli /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
+
+# 边车不需要 entrypoint 的迁移逻辑；直接跑 updater 服务。
+ENTRYPOINT []
+CMD ["uvicorn", "app.updater.service:app", "--host", "0.0.0.0", "--port", "9200"]

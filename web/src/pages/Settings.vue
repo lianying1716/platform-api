@@ -2,7 +2,7 @@
   <div class="ui-page">
     <div class="ui-head">
       <h1>系统设置</h1>
-      <span class="sub">存储目录 · 加工分档 · 类型提示词 · 模型</span>
+      <span class="sub">存储目录 · 加工分档 · 类型提示词 · 依赖诊断</span>
     </div>
 
     <!-- 页签头用 V3 样式；el-tabs 只保留内容切换能力（导航条由 CSS 隐藏） -->
@@ -53,28 +53,21 @@
         </section>
       </el-tab-pane>
 
-      <!-- 大模型 -->
-      <el-tab-pane label="大模型" name="llm">
-        <p class="tip">内容分析使用的外部大模型 API（OpenAI 兼容接口）。</p>
-        <el-form label-width="120px" style="max-width: 560px">
-          <el-form-item label="Base URL">
-            <el-input v-model="settings.llm_base_url" placeholder="https://api.openai.com/v1" />
-          </el-form-item>
-          <el-form-item label="模型名">
-            <el-input v-model="settings.llm_model" placeholder="gpt-4o-mini" />
-          </el-form-item>
-          <el-form-item label="API Key">
-            <el-input v-model="settings.llm_api_key" type="password" show-password
-              :placeholder="settings.llm_api_key_set ? '已配置（留空不修改）' : '未配置'" />
-          </el-form-item>
-          <el-form-item label="代理 URL">
-            <el-input v-model="settings.proxy_url" placeholder="http://127.0.0.1:7890（可选）" />
-          </el-form-item>
-          <el-form-item>
-            <el-button type="primary" @click="saveSettings">保存</el-button>
-            <el-button :loading="testingLlm" @click="testLlm">测试连接</el-button>
-          </el-form-item>
-        </el-form>
+      <!-- 模型接入快捷入口：模型配置已独立成一级页面，避免两套入口并存 -->
+      <el-tab-pane label="模型接入" name="llm">
+        <section class="ui-panel">
+          <div class="ui-panel-head">
+            <div>
+              <h2>模型接入</h2>
+              <div class="tip" style="margin: 4px 0 0">导入供应商模型、检测能力，并给文字分析、封面判类、视频理解分别配置主备模型。</div>
+            </div>
+            <span class="grow" />
+            <router-link class="ui-btn primary" to="/models">打开模型接入</router-link>
+          </div>
+          <div class="ui-panel-body">
+            <p class="tip" style="margin: 0">系统会自动推荐合适模型；只有你手动改过的工作分配才会被视为人工配置。</p>
+          </div>
+        </section>
       </el-tab-pane>
 
       <!-- 评论抓取 -->
@@ -168,22 +161,12 @@
             <el-switch v-model="proc.auto_transcribe" />
             <span class="detail">全局默认：素材下载完成后自动转录；订阅里可单独覆盖</span>
           </el-form-item>
-          <el-form-item label="自动分析新素材">
+          <el-form-item label="自动生成速览">
             <el-switch v-model="proc.auto_analyze" />
-            <span class="detail">全局默认：转录后自动分析；订阅里可单独覆盖</span>
+            <span class="detail">全局默认：转录后自动生成摘要 + 标签（速览）；深度爆款拆解仍需手动触发。订阅里可单独覆盖</span>
           </el-form-item>
-          <el-form-item label="视频理解 provider">
-            <el-select v-model="proc.provider" style="width: 200px">
-              <el-option label="qwen（OpenAI 兼容）" value="qwen" />
-              <el-option label="gemini（原生）" value="gemini" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="视觉模型 vision_model">
-            <el-input v-model="proc.vision_model" placeholder="qwen3.8-flash" />
-          </el-form-item>
-          <el-form-item label="判类模型 classify_model">
-            <el-input v-model="proc.classify_model" placeholder="qwen3.8-flash" />
-          </el-form-item>
+          <el-alert type="info" :closable="false" show-icon style="margin-bottom: 14px"
+            title="视频理解使用的模型已在「模型接入 → 工作分配」中设置。" />
           <el-form-item label="类型目录 taxonomy（JSON）">
             <el-input v-model="proc.taxonomyText" type="textarea" :rows="6" spellcheck="false" />
             <span class="detail">枚举 → 中文，可增删类型</span>
@@ -231,6 +214,102 @@
             <template #default="{ row }">{{ row.detail }}</template>
           </el-table-column>
         </el-table>
+      </el-tab-pane>
+
+      <!-- 管理员 -->
+      <!-- 版本与升级 -->
+      <el-tab-pane label="版本与升级" name="version">
+        <el-descriptions :column="2" border style="max-width: 720px">
+          <el-descriptions-item label="应用版本">{{ ver.app_version || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="提交">{{ ver.git_commit || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="数据库版本">{{ ver.db_revision || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="内置迁移 head">{{ ver.db_head || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="数据库同步">
+            <el-tag :type="ver.db_in_sync ? 'success' : 'warning'" size="small" effect="dark">
+              {{ ver.db_in_sync ? '已同步' : '未同步' }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="构建时间">{{ ver.build_time || '—' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <div style="margin-top: 16px">
+          <el-button @click="checkUpdate" :loading="checkingUpdate">检查更新</el-button>
+          <el-tag v-if="update.latest" :type="update.available ? 'warning' : 'success'" size="small" style="margin-left: 12px">
+            {{ update.available ? `有新版本 ${update.latest}` : '已是最新版本' }}
+          </el-tag>
+        </div>
+
+        <el-alert
+          v-if="update.available && update.url"
+          type="warning"
+          :closable="false"
+          style="margin-top: 12px; max-width: 720px"
+          title="发现新版本"
+          :description="`最新 ${update.latest}，当前 ${update.current}。查看发布说明：${update.url}`"
+          show-icon
+        />
+
+        <div style="margin-top: 20px; max-width: 720px">
+          <el-alert
+            v-if="!upgradeStatus.enabled"
+            type="info"
+            :closable="false"
+            show-icon
+            title="网页一键升级未启用"
+            description="管理员未配置升级边车。请按 docs/upgrade-compatibility.md 用命令行升级（先 ./scripts/backup.sh，再 ./scripts/upgrade.sh <版本>）。"
+          />
+          <template v-else>
+            <el-alert
+              type="warning"
+              :closable="false"
+              show-icon
+              title="网页升级会自动备份，失败自动回滚"
+              description="升级流程：备份 → 拉取镜像 → 重建服务 → 健康校验；任一步失败会自动回滚到当前版本。过程中服务会短暂不可用。"
+            />
+            <div style="margin-top: 12px">
+              <el-input v-model="upgradeVersion" placeholder="目标版本，如 v1.3.0" style="width: 220px" />
+              <el-button
+                type="primary"
+                style="margin-left: 12px"
+                :loading="upgrading"
+                :disabled="!!upgradeJob && upgradeJob.status === 'running'"
+                @click="confirmUpgrade"
+              >一键升级</el-button>
+            </div>
+
+            <!-- 升级进度 -->
+            <div v-if="upgradeJob" style="margin-top: 16px">
+              <el-tag
+                :type="jobTagType(upgradeJob.status)"
+                size="small"
+                effect="dark"
+              >{{ jobLabel(upgradeJob.status) }}</el-tag>
+              <span style="margin-left: 8px; color: var(--el-text-color-secondary)">
+                {{ upgradeJob.from_version || '当前' }} → {{ upgradeJob.version }}
+              </span>
+              <el-steps direction="vertical" :active="jobActive(upgradeJob)" style="margin-top: 12px">
+                <el-step
+                  v-for="s in upgradeJob.steps"
+                  :key="s.step + s.at"
+                  :title="stepLabel(s.step)"
+                  :status="s.status === 'ok' ? 'success' : s.status === 'error' ? 'error' : 'process'"
+                  :description="s.detail"
+                />
+              </el-steps>
+              <el-alert
+                v-if="upgradeJob.error"
+                :type="upgradeJob.status === 'rolled_back' ? 'warning' : 'error'"
+                :closable="false"
+                show-icon
+                :title="upgradeJob.error"
+                style="margin-top: 12px"
+              />
+              <div v-if="upgradeJob.backup_path" style="margin-top: 8px; color: var(--el-text-color-secondary); font-size: 13px">
+                备份：{{ upgradeJob.backup_path }}
+              </div>
+            </div>
+          </template>
+        </div>
       </el-tab-pane>
 
       <!-- 管理员 -->
@@ -285,25 +364,34 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
-import { onMounted, reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api } from '../api'
 
 const tab = ref('storage')
 // 页签清单：与下面 el-tab-pane 的 name 一一对应
 const tabs = [
   { k: 'storage', label: '存储目录' },
-  { k: 'llm', label: '大模型' },
+  { k: 'llm', label: '模型接入' },
   { k: 'comments', label: '评论抓取' },
   { k: 'process', label: '视频理解' },
   { k: 'breakdown', label: '爆款拆解' },
   { k: 'diag', label: '依赖诊断' },
+  { k: 'version', label: '版本与升级' },
   { k: 'admin', label: '管理员' },
 ]
 const roots = ref<any[]>([])
 const checks = ref<any[]>([])
 const loadingRoots = ref(false)
 const loadingDiag = ref(false)
+// ---- 版本与升级 ----
+const ver = ref<any>({ app_version: '', git_commit: '', build_time: '', db_revision: '', db_head: '', db_in_sync: false })
+const update = ref<any>({ current: '', latest: '', available: false, url: '' })
+const upgradeStatus = ref<{ enabled: boolean; current: string }>({ enabled: false, current: '' })
+const upgradeVersion = ref('')
+const checkingUpdate = ref(false)
+const upgrading = ref(false)
+const upgradeJob = ref<any>(null)
 const storageDialog = ref(false)
 const rootForm = reactive({ name: '', path: '', is_default: false })
 const settings = reactive<any>({ llm_base_url: '', llm_model: '', llm_api_key: '', proxy_url: '', llm_api_key_set: false })
@@ -335,9 +423,6 @@ const proc = reactive<any>({
   use_cover: false,
   auto_transcribe: false,
   auto_analyze: false,
-  provider: 'qwen',
-  vision_model: 'qwen3.8-flash',
-  classify_model: 'qwen3.8-flash',
   taxonomyText: '{}',
   typePromptsText: '{}',
 })
@@ -439,6 +524,103 @@ async function loadDiag() {
   }
 }
 
+async function loadVersion() {
+  try {
+    ver.value = (await api.get('/api/system/version')).data
+    upgradeStatus.value = (await api.get('/api/system/update/status')).data
+    if (!upgradeVersion.value) upgradeVersion.value = ver.value.app_version || ''
+  } catch (e) {
+    /* 版本信息获取失败不阻断设置页其它功能 */
+  }
+}
+
+async function checkUpdate() {
+  checkingUpdate.value = true
+  try {
+    const { data } = await api.get('/api/system/update/check')
+    if (data.ok === false) {
+      ElMessage.warning(data.message || '检查更新失败')
+      return
+    }
+    update.value = data
+    if (data.available) ElMessage.success(`发现新版本 ${data.latest}`)
+    else ElMessage.success('已是最新版本')
+  } finally {
+    checkingUpdate.value = false
+  }
+}
+
+function jobLabel(status: string) {
+  return (
+    { running: '升级进行中', success: '升级成功', failed: '升级失败', rolled_back: '已自动回滚' }[status] ||
+    status
+  )
+}
+function jobTagType(status: string) {
+  return ({ running: 'warning', success: 'success', failed: 'danger', rolled_back: 'warning' } as any)[status] || 'info'
+}
+function stepLabel(step: string) {
+  return (
+    { backup: '备份', pull: '拉取镜像', recreate: '重建服务', verify: '健康校验', pin: '记录版本', rollback: '回滚' } as any
+  )[step] || step
+}
+function jobActive(job: any) {
+  return (job?.steps || []).filter((s: any) => s.status === 'ok').length
+}
+
+let pollTimer: number | null = null
+function stopPolling() {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+// 轮询升级进度。主 API 升级中会短暂不可达，此时保持上次状态、继续轮询。
+function startPolling() {
+  stopPolling()
+  pollTimer = window.setInterval(async () => {
+    try {
+      const { data } = await api.get('/api/system/upgrade/status')
+      if (data?.job) upgradeJob.value = data.job
+      const status = upgradeJob.value?.status
+      if (status && status !== 'running') {
+        stopPolling()
+        if (status === 'success') ElMessage.success('升级成功，服务已更新')
+        else if (status === 'rolled_back') ElMessage.warning('升级未成功，已自动回滚到原版本')
+        else ElMessage.error('升级失败，请查看进度详情')
+        // 升级结束后刷新版本信息
+        await loadVersion()
+      }
+    } catch {
+      /* 服务重启中，忽略，等待下次轮询 */
+    }
+  }, 2500)
+}
+
+async function confirmUpgrade() {
+  if (!upgradeVersion.value) return ElMessage.warning('请填写目标版本')
+  try {
+    await ElMessageBox.confirm(
+      `将升级到 ${upgradeVersion.value}。系统会先自动备份，然后拉取镜像并重建服务，期间服务短暂不可用；若新版本启动失败会自动回滚。是否继续？`,
+      '确认升级',
+      { type: 'warning', confirmButtonText: '开始升级', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  upgrading.value = true
+  try {
+    await api.post('/api/system/upgrade', { version: upgradeVersion.value })
+    ElMessage.info('已开始升级，下方会显示进度')
+    startPolling()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '升级失败')
+  } finally {
+    upgrading.value = false
+  }
+}
+
 async function changePwd() {
   if (pwd.new_password.length < 6) return ElMessage.warning('新密码至少 6 位')
   await api.post('/api/auth/change-password', pwd)
@@ -488,9 +670,6 @@ async function saveProcessSettings() {
     use_cover: proc.use_cover,
     auto_transcribe: proc.auto_transcribe,
     auto_analyze: proc.auto_analyze,
-    provider: proc.provider,
-    vision_model: proc.vision_model,
-    classify_model: proc.classify_model,
     taxonomy,
     type_prompts,
   })
@@ -505,7 +684,10 @@ onMounted(() => {
   loadCommentSettings()
   loadProcessSettings()
   loadBreakdownSettings()
+  loadVersion()
 })
+
+onUnmounted(stopPolling)
 </script>
 
 <style scoped>

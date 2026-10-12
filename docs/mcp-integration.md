@@ -3,6 +3,22 @@
 > 面向**第一次接触**的人。全程约 3 分钟，不需要懂代码。
 > 目标：让 AI 助手能替你「查账号状态 / 扫码登录 / 建采集任务 / 拿转录」等。
 
+## 最快路径：把提示词直接交给 Agent
+
+如果你在用 Codex / Claude Code，**不用自己敲命令**。打开平台网页 → 「AI 接入」→「MCP 接入」，
+按向导填三项，然后点 **「复制给 Agent」**，把整段提示词粘贴进对话框即可。
+
+向导会要求：
+
+| 字段 | 填什么 |
+|------|--------|
+| 平台地址 | 同一台机器填 `http://127.0.0.1:9100`；Agent 在别的机器填局域网地址，例如 `http://<局域网IP>:9100` |
+| API Key | 第 1 步在「API Key」页创建后复制的 `sk-...` |
+| platform-api 目录 | 例如 `~/platform-api` |
+
+Agent 收到提示词后会自己完成：安装 MCP 依赖 → 运行自检 → 写客户端配置 → 用 `list_accounts` 验证。
+页面下方仍保留手动配置，供 Agent 无法执行终端命令时使用。
+
 ---
 
 ## 它是怎么工作的（一句话）
@@ -35,7 +51,7 @@ Claude Code / Codex  ──(MCP 协议)──>  mcp_server（本地小进程） 
 在 `platform-api` 目录下：
 
 ```bash
-cd /path/to/platform-api
+cd ~/platform-api
 uv sync --extra mcp          # 安装 MCP SDK（必需）
 ```
 
@@ -47,7 +63,7 @@ uv sync --extra mcp          # 安装 MCP SDK（必需）
 **这一步不启动 MCP**，纯粹排错，比直接接进 Claude Code 再猜要快得多。
 
 ```bash
-cd /path/to/platform-api
+cd ~/platform-api
 PLATFORM_API_BASE=http://127.0.0.1:9100 \
 PLATFORM_API_KEY=sk-你刚复制的key \
 uv run python -m mcp_server.server --self-check
@@ -73,7 +89,7 @@ API key    : 已配置 sk-XXXXXXXX…
 - `❌ 连不上后端` → 平台没启动，或 `PLATFORM_API_BASE` 地址/端口不对。
 
 > 环境变量两个：
-> - `PLATFORM_API_BASE`：后端地址。**Claude Code / Codex 与后端不在同一台机器时**，填后端实际 IP，例如 `http://10.0.0.5:9100`。
+> - `PLATFORM_API_BASE`：后端地址。**Claude Code / Codex 与后端不在同一台机器时**，填后端实际 IP，例如 `http://<局域网IP>:9100`。
 > - `PLATFORM_API_KEY`：第 1 步复制的 `sk-...`。
 
 ---
@@ -87,8 +103,8 @@ API key    : 已配置 sk-XXXXXXXX…
 ```toml
 [mcp_servers.xsai-platform]
 command = "uv"
-args = ["run", "--project", "/path/to/platform-api", "python", "-m", "mcp_server.server"]
-cwd = "/path/to/platform-api"
+args = ["run", "--project", "~/platform-api", "python", "-m", "mcp_server.server"]
+cwd = "~/platform-api"
 
 [mcp_servers.xsai-platform.env]
 PLATFORM_API_BASE = "http://127.0.0.1:9100"
@@ -103,7 +119,7 @@ PLATFORM_API_KEY  = "sk-你复制的key"
 claude mcp add xsai-platform \
   --env PLATFORM_API_BASE=http://127.0.0.1:9100 \
   --env PLATFORM_API_KEY=sk-你复制的key \
-  -- uv run --project /path/to/platform-api python -m mcp_server.server
+  -- uv run --project ~/platform-api python -m mcp_server.server
 ```
 
 然后在 Claude Code 里输入 `/mcp` 确认连接。

@@ -19,6 +19,7 @@
 
 import json
 import re
+from typing import Callable
 
 import httpx
 
@@ -156,6 +157,7 @@ async def run_llm(
     api_key: str,
     model: str,
     timeout: float = 90,
+    call_model: Callable | None = None,
 ) -> dict:
     """调 OpenAI 兼容 `chat/completions`，返回 ``{"data", "usage", "model"}``。
 
@@ -175,9 +177,7 @@ async def run_llm(
         httpx.HTTPError: 网络 / HTTP 失败。
         ValueError: 返回内容不是合法 JSON 对象。
     """
-    base = (base_url or "").rstrip("/")
     body = {
-        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -185,9 +185,23 @@ async def run_llm(
         "temperature": 0.4,
         "response_format": {"type": "json_object"},
     }
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    data = await _post_json(f"{base}/chat/completions", headers, body, timeout)
-    raw = data["choices"][0]["message"]["content"]
-    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-    used_model = data.get("model") or model
-    return {"data": parse_structured(raw), "usage": usage, "model": used_model}
+    if call_model is None:
+        base = (base_url or "").rstrip("/")
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        request_body = {**body, "model": model}
+        data = await _post_json(f"{base}/chat/completions", headers, request_body, timeout)
+        raw = data["choices"][0]["message"]["content"]
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        used_model = data.get("model") or model
+        return {"data": parse_structured(raw), "usage": usage, "model": used_model, "routing": {}}
+
+    result = await call_model(
+        request={**body, "timeout": timeout},
+        parse_result=parse_structured,
+    )
+    return {
+        "data": result.data if hasattr(result, "data") else result,
+        "usage": getattr(result, "usage", {}) or {},
+        "model": getattr(result, "used_model_key", model),
+        "routing": result.to_routing() if hasattr(result, "to_routing") else {},
+    }

@@ -137,6 +137,7 @@ async def _classify_category(
     base_url: str,
     api_key: str,
     model: str,
+    call_model=None,
 ) -> tuple[str, float, str]:
     """判类；失败回退 other 且不抛（失败隔离）。返回 (category, confidence, reason)。"""
     try:
@@ -151,6 +152,7 @@ async def _classify_category(
             api_key=api_key,
             model=model,
             use_cover=use_cover,
+            call_model=call_model,
         )
         cat = result.get("type") or "other"
         conf = _coerce_conf(result.get("confidence"))
@@ -277,6 +279,7 @@ async def run_understand(
     *,
     force_category: str | None = None,
     use_cover: bool | None = None,
+    job_id: int | None = None,
 ) -> VideoUnderstanding:
     """跑完整高级档链路，返回并落库 `VideoUnderstanding`。
 
@@ -298,7 +301,40 @@ async def run_understand(
         if content is None:  # 数据不一致（孤儿资产）：显式报错，不靠兜底 catch 静默成 other
             raise UnderstandInputError(f"素材 #{asset_id} 未关联内容（content_id={asset.content_id}）")
         s = get_process_settings(db)
-        base_url, api_key, llm_model = _resolve_llm(db)
+        from app.services.model_access_service import ModelAccessService, assignment_configured
+
+        gateway = ModelAccessService()
+        routed: dict[str, dict] = {}
+        use_gateway = assignment_configured(db, "cover_classify") or assignment_configured(
+            db, "video_understanding"
+        )
+        base_url, api_key, llm_model = ("", "", "")
+        if not use_gateway:
+            base_url, api_key, llm_model = _resolve_llm(db)
+
+        async def call_model(*, request, parse_result, video_request=False, **kwargs):
+            stage_key = "video_understanding" if video_request else "cover_classify"
+            try:
+                result = await gateway.call_with_fallback(
+                    db,
+                    work_type=stage_key,
+                    operation="understand_video" if video_request else "classify",
+                    request=request,
+                    parse_result=parse_result,
+                    validate_result=kwargs.get("validate_result"),
+                    asset_id=asset_id,
+                    job_id=kwargs.get("job_id") or job_id,
+                    image_required=bool(kwargs.get("image_required")),
+                    video_request=video_request,
+                )
+            except Exception as exc:  # noqa: BLE001 失败也要保留 routing，供结果页解释
+                if hasattr(exc, "to_routing"):
+                    stage = exc.to_routing()
+                    if isinstance(stage, dict):
+                        routed[stage_key] = stage
+                raise
+            routed[stage_key] = result.to_routing()
+            return result
 
         transcript = _transcript_text(db, asset_id)
 
@@ -321,6 +357,7 @@ async def run_understand(
                 base_url=base_url,
                 api_key=api_key,
                 model=s.get("classify_model") or llm_model,
+                call_model=call_model if assignment_configured(db, "cover_classify") else None,
             )
         else:
             category, conf, reason = "other", 0.0, "判类已关闭，使用通用模板"
@@ -344,6 +381,7 @@ async def run_understand(
             base_url=base_url,
             api_key=api_key,
             model=s.get("vision_model") or llm_model,
+            call_model=call_model if assignment_configured(db, "video_understanding") else None,
         )
 
         parsed = vision.parse_structured(result.get("text", ""))
@@ -367,6 +405,9 @@ async def run_understand(
         existing.model = result.get("model", "") or llm_model
         existing.prompt_version = f"{_PROMPT_VERSION}:{category}"
         existing.usage = usage
+        existing.routing = {
+            key: value for key, value in routed.items() if isinstance(value, dict)
+        }
         existing.status = "done"
         existing.error = ""
 

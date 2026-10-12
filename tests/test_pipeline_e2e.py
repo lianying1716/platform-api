@@ -141,7 +141,7 @@ def test_full_pipeline_download_transcribe_analyze(session, monkeypatch):
                 "segments": [{"start": 0, "end": 2, "text": "你好"}], "full_text": "你好世界"}
 
     async def fake_analyze(title, full_text):
-        return {"summary": "这是摘要", "tags": ["科技", "教程"], "structured": {"hook": "开头"}, "model": "mock-llm"}
+        return {"summary": "这是摘要", "tags": ["科技", "教程"], "model": "mock-llm"}
 
     monkeypatch.setattr("app.modules.media_download.download", fake_download)
     monkeypatch.setattr("app.modules.transcription.transcribe", fake_transcribe)

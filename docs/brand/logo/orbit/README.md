@@ -5,7 +5,7 @@
 
 在线看（局域网）：
 
-    http://127.0.0.1:9100/brand/orbit-gallery.html
+    http://<局域网IP>:9100/brand/orbit-gallery.html
 
 ## 图形语义
 

@@ -23,6 +23,107 @@ from app.models import StorageRoot, SystemSetting
 
 router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(security.require_admin)])
 
+# 公开只读：版本信息不敏感，用于"我装的是哪版 / DB 是否同步"，无需登录。
+public_router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+@public_router.get("/version")
+def get_version(db: Session = Depends(get_db)):
+    """返回应用版本与数据库 revision（升级排障用）。"""
+    from app.core import version as version_mod
+
+    info = version_mod.load_build_info()
+    head = version_mod.db_head()
+    try:
+        db_revision = db.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    except Exception:  # noqa: BLE001 未迁移/无该表时应报告未知而非 500
+        db_revision = None
+    db_revision = db_revision or ""
+    return {
+        "app_version": info.version,
+        "git_commit": info.commit,
+        "build_time": info.build_time,
+        "db_revision": db_revision,
+        "db_head": head,
+        "db_in_sync": bool(head) and db_revision == head,
+    }
+
+
+@router.get("/update/check")
+async def check_update():
+    """检查是否有新版本（只读查询 GitHub Releases）。"""
+    from app.core import version_upgrade
+
+    current = version_upgrade.load_current_version()
+    return await version_upgrade.check_latest(current=current, repo=settings.update_repo)
+
+
+@router.get("/update/status")
+def update_status():
+    """一键升级是否可用（是否配置了 updater 边车）。"""
+    from app.core.version import load_build_info
+
+    return {
+        "enabled": bool(settings.updater_url and settings.updater_token),
+        "current": load_build_info().version,
+    }
+
+
+class UpgradeIn(BaseModel):
+    version: str
+
+
+@router.get("/upgrade/status")
+async def upgrade_status():
+    """代理 updater 的升级进度（前端轮询用）。
+
+    主 API 在升级中会被重建，期间前端可能拿到 502；前端据此提示"服务重启中"，
+    待新版本起来后继续轮询。
+    """
+    if not settings.updater_url:
+        return {"enabled": False, "busy": False, "job": None}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{settings.updater_url.rstrip('/')}/upgrade/status")
+        if resp.status_code >= 400:
+            return {"enabled": True, "busy": False, "job": None, "error": f"updater {resp.status_code}"}
+        data = resp.json()
+        data["enabled"] = True
+        return data
+    except httpx.HTTPError:
+        # 升级期间主 API 自身可能不可达；返回可解析结构让前端继续轮询
+        return {"enabled": True, "busy": True, "job": None, "restarting": True}
+
+
+@router.post("/upgrade")
+async def trigger_upgrade(body: UpgradeIn):
+    """触发一键升级（调 updater 边车）。
+
+    安全约束：仅在配置 PLATFORM_UPDATER_URL 时可用；版本号必须过白名单校验，
+    防止把任意字符串当成镜像 tag / shell 片段传给持 docker socket 的边车。
+    """
+    from app.core import version_upgrade
+
+    if not settings.updater_url:
+        raise HTTPException(status_code=409, detail="一键升级未启用（未配置 PLATFORM_UPDATER_URL）")
+    if not settings.updater_token:
+        raise HTTPException(status_code=409, detail="一键升级未启用（未配置 PLATFORM_UPDATER_TOKEN）")
+    if not version_upgrade.is_valid_version(body.version):
+        raise HTTPException(status_code=422, detail=f"非法版本号：{body.version!r}")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{settings.updater_url.rstrip('/')}/upgrade",
+                json={"version": body.version},
+                headers={"X-Updater-Token": settings.updater_token},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"连接 updater 失败：{exc}") from exc
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"updater 返回 {resp.status_code}: {resp.text[:300]}")
+    return resp.json()
+
 
 # ---------- 存储根目录 ----------
 class StorageRootIn(BaseModel):

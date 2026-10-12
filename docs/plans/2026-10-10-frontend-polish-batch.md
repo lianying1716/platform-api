@@ -3,7 +3,7 @@
 > 用户一次性提了 5 项前端需求。本文是**任务拆解 + 实施计划**，按顺序实施、逐项验收。
 > 设计依据：`impeccable` 技能（product register，界面服务任务，克制为主）；
 > 视觉底座沿用现有 V3 包豪斯令牌（`web/src/styles/tokens.css`），品牌标志用 M3。
-> 生图：本机 Qwen-Image 2.1（`http://127.0.0.1:4180/v1`，见 `qwen-image-2.1` 技能）。
+> 生图：本机 Qwen-Image 2.1（OpenAI 兼容接口 `http://<主机>:4180/v1`）。
 
 ## 0. 总原则
 

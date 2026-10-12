@@ -45,6 +45,42 @@ def test_mask():
     assert mask("abcdefghij") == "abcd****ghij"
 
 
+def test_redact_text_masks_configured_secret_and_auth_fields():
+    from app.core.crypto import redact_text
+
+    secret = "custom-secret-without-known-prefix"
+    text = (
+        f"upstream failed key={secret} Authorization: Bearer {secret} "
+        "api_key=another-secret x-api-key=third-secret AIza" + "a" * 30
+    )
+    out = redact_text(text, extra_secrets=(secret,))
+    assert secret not in out
+    assert "another-secret" not in out
+    assert "third-secret" not in out
+    assert "AIza" + "a" * 30 not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_text_masks_json_auth_fields():
+    import json
+
+    from app.core.crypto import redact_text
+
+    text = json.dumps(
+        {
+            "authorization": "Bearer legacy-secret-123",
+            "x-api-key": "anthropic-secret",
+            "api_key": "plain-secret",
+            "protocol": "openai",
+        }
+    )
+    out = redact_text(text)
+    assert "legacy-secret-123" not in out
+    assert "anthropic-secret" not in out
+    assert "plain-secret" not in out
+    assert '"protocol": "openai"' in out
+
+
 def test_bad_key_length_rejected(monkeypatch):
     import app.config as config
     import app.core.crypto as crypto

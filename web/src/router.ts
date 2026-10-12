@@ -7,9 +7,11 @@ import Crawl from './pages/Crawl.vue'
 import DesignPreview from './pages/DesignPreview.vue'
 import FollowedCreators from './pages/FollowedCreators.vue'
 import Login from './pages/Login.vue'
+import ModelAccess from './pages/ModelAccess.vue'
 import Overview from './pages/Overview.vue'
 import Pipeline from './pages/Pipeline.vue'
 import Settings from './pages/Settings.vue'
+import { DEMO_MODE } from './demo/runtime'
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -32,6 +34,7 @@ export const router = createRouter({
         { path: 'subscriptions', redirect: '/followed-creators' },
         { path: 'assets', component: Assets, meta: { title: '素材库' } },
         { path: 'pipeline', component: Pipeline, meta: { title: '处理队列' } },
+        { path: 'models', component: ModelAccess, meta: { title: '模型接入' } },
         { path: 'ai', component: AiAccess, meta: { title: 'AI 接入' } },
         { path: 'system', component: Settings, meta: { title: '系统设置' } },
       ],
@@ -41,5 +44,7 @@ export const router = createRouter({
 
 router.beforeEach((to) => {
   if (to.path === '/design-preview') return true
+  if (DEMO_MODE && to.path === '/login') return '/overview'
+  if (DEMO_MODE) return true
   if (to.path !== '/login' && !localStorage.getItem('token')) return '/login'
 })

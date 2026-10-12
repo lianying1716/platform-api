@@ -262,14 +262,21 @@ def _rows(db: Session) -> dict[str, str]:
     return {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
 
 
-def get_process_settings(db: Session) -> dict:
-    """返回门控/加工数值参数（短名 -> 值），默认兜底、类型归一。"""
-    rows = _rows(db)
+def resolve_process_settings_from_rows(rows: dict[str, str]) -> dict:
+    """从 system_setting 行映射解析加工配置；不依赖 DB / Session。
+
+    迁移层必须复用它，避免迁移时构造第二个 ORM Session 或复制一套默认值。
+    """
     out: dict = {}
     for short, key in PROCESS_KEYS.items():
         default, kind = _DEFAULTS[key]
         out[short] = _coerce(rows.get(key), default, kind)
     return out
+
+
+def get_process_settings(db: Session) -> dict:
+    """返回门控/加工数值参数（短名 -> 值），默认兜底、类型归一。"""
+    return resolve_process_settings_from_rows(_rows(db))
 
 
 def _load_json(raw: str | None, validator):

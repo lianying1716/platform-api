@@ -7,7 +7,7 @@
 ## 在线看（局域网）
 
 ```
-http://127.0.0.1:9100/brand/logo-preview.html
+http://<局域网IP>:9100/brand/logo-preview.html
 ```
 
 一页看完 6 个方案，含 64 / 32 / 16 px 缩放测试与单色反白测试。

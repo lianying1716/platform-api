@@ -301,12 +301,46 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
         "analysis": {
             "summary": analysis.summary,
             "tags": analysis.tags,
-            "structured": analysis.structured,
             "model": analysis.model,
         }
         if analysis
         else None,
     }
+
+
+@router.get("/assets/{asset_id}/model-calls")
+def get_asset_model_calls(asset_id: int, db: Session = Depends(get_db)):
+    """素材详情里的模型调用审计：按 attempt_group 展示主备尝试。"""
+    from app.models import ModelCallAttempt
+
+    if db.get(MediaAsset, asset_id) is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    rows = db.scalars(
+        select(ModelCallAttempt)
+        .where(ModelCallAttempt.asset_id == asset_id)
+        .order_by(ModelCallAttempt.id.desc())
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "attempt_group_id": row.attempt_group_id,
+            "work_type": row.work_type,
+            "operation": row.operation,
+            "role": row.role,
+            "provider_name": row.provider_name,
+            "model_id": row.model_id,
+            "model_key": row.model_key,
+            "status": row.status,
+            "error_class": row.error_class,
+            "error_message": row.error_message,
+            "http_status": row.http_status,
+            "duration_ms": row.duration_ms,
+            "usage": row.usage or {},
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        }
+        for row in rows
+    ]
 
 
 @router.get("/assets/{asset_id}/media")

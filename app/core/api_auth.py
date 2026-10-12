@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import ApiKey
+from app.core import security
 
 _PREFIX = "sk-"
 # key_id -> [时间戳]
@@ -69,5 +70,42 @@ def require_scope(*needed: str):
         key.last_used_at = datetime.utcnow()
         db.commit()
         return key
+
+    return dep
+
+
+def require_admin_or_scope(*needed: str):
+    """管理员 session 或 API Key scope 任一满足即可的依赖工厂。
+
+    注意：多个 FastAPI ``Depends`` 是 AND 关系，不能把 require_admin 与
+    require_scope 同时挂在路由上。
+    """
+
+    def dep(request: Request, db: Session = Depends(get_db)):
+        raw = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        if raw.startswith(_PREFIX):
+            key = (
+                db.query(ApiKey)
+                .filter(ApiKey.key_hash == _hash(raw), ApiKey.enabled.is_(True))
+                .first()
+            )
+            if key is None:
+                raise HTTPException(status_code=401, detail="API Key 无效或已禁用")
+            if not _check_rate(key):
+                raise HTTPException(status_code=429, detail="超出调用频率限制")
+            if needed and not any(scope in key.scopes for scope in needed):
+                raise HTTPException(status_code=403, detail=f"权限不足，需要 scope: {', '.join(needed)}")
+            from datetime import datetime
+
+            key.last_used_at = datetime.utcnow()
+            db.commit()
+            return key
+
+        # 非 sk- 的 Bearer 视为管理员 session；管理员 Cookie 只在这里兜底，
+        # 对已识别的 API Key 通道永远不构成冲突。
+        token = raw or request.cookies.get(security.SESSION_COOKIE, "")
+        if not security.token_valid(token):
+            raise HTTPException(status_code=401, detail="未登录或会话已过期")
+        return "admin"
 
     return dep

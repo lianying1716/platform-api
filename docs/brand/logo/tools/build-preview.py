@@ -1,6 +1,6 @@
 import os, base64, cairosvg
-CON = "/path/to/platform-api/docs/brand/logo/concepts"
-OUT = "/path/to/platform-api/app/static/brand/logo-preview.html"
+CON = "/path/to/xsai-workbench/platform-api/docs/brand/logo/concepts"
+OUT = "/path/to/xsai-workbench/platform-api/app/static/brand/logo-preview.html"
 ACCENT, INK, BG, BLUE = "#CC2823", "#1A1512", "#F3F0E7", "#0B58BB"
 
 concepts = [

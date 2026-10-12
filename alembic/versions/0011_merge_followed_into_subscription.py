@@ -67,7 +67,7 @@ def upgrade() -> None:
                         (:acc, :plat, 'creator', :rid, :title, :enabled,
                          false, 360, '{platform}/{creator}/{date}',
                          0, 0, 50, :only_new,
-                         'best', false, :last_sync, now())
+                         'best', false, :last_sync, CURRENT_TIMESTAMP)
                     """
                 ),
                 {
@@ -111,8 +111,8 @@ def upgrade() -> None:
                          created_at, updated_at)
                     VALUES
                         (:plat, :rid, :name, :avatar, :bio, :followers,
-                         0, :verified, :home, :last_sync, '{}'::json,
-                         now(), now())
+                         0, :verified, :home, :last_sync, :raw,
+                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """
                 ),
                 {
@@ -120,7 +120,7 @@ def upgrade() -> None:
                     "name": r["author_name"] or "", "avatar": r["avatar"] or "",
                     "bio": r["signature"] or "", "followers": r["follower_count"] or 0,
                     "verified": bool(r["verified"]), "home": r["home_url"] or "",
-                    "last_sync": r["last_synced_at"],
+                    "last_sync": r["last_synced_at"], "raw": "{}",
                 },
             )
         else:
@@ -132,9 +132,11 @@ def upgrade() -> None:
                            avatar        = COALESCE(NULLIF(avatar, ''), :avatar),
                            bio           = COALESCE(NULLIF(bio, ''), :bio),
                            homepage_url  = COALESCE(NULLIF(homepage_url, ''), :home),
-                           follower_count= GREATEST(follower_count, :followers),
+                           follower_count= CASE
+                               WHEN follower_count IS NULL OR follower_count < :followers
+                               THEN :followers ELSE follower_count END,
                            verified      = (verified OR :verified),
-                           updated_at    = now()
+                           updated_at    = CURRENT_TIMESTAMP
                      WHERE id = :pid
                     """
                 ),
@@ -147,24 +149,39 @@ def upgrade() -> None:
             )
 
     # ---- 2) 清掉历史重复行（唯一约束要求先无重复）----
+    # 分组列理论上非空；但迁移面对历史脏数据时必须保守：显式排除 NULL，
+    # 且用 EXISTS 代替 NOT IN，避免 NULL 子查询把整表行全部删掉。
     bind.execute(
         sa.text(
             """
-            DELETE FROM subscription a USING subscription b
-             WHERE a.id > b.id
-               AND a.account_id = b.account_id
-               AND a.source_type = b.source_type
-               AND a.remote_id = b.remote_id
+            DELETE FROM subscription AS doomed
+             WHERE doomed.account_id IS NOT NULL
+               AND doomed.source_type IS NOT NULL
+               AND doomed.remote_id IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM subscription AS keeper
+                    WHERE keeper.account_id = doomed.account_id
+                      AND keeper.source_type = doomed.source_type
+                      AND keeper.remote_id = doomed.remote_id
+                      AND keeper.id < doomed.id
+               )
             """
         )
     )
 
     # ---- 3) 加唯一约束 + 删旧表 ----
-    op.create_unique_constraint(
-        "uq_subscription_account_source_remote",
-        "subscription",
-        ["account_id", "source_type", "remote_id"],
-    )
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("subscription") as batch:
+            batch.create_unique_constraint(
+                "uq_subscription_account_source_remote",
+                ["account_id", "source_type", "remote_id"],
+            )
+    else:
+        op.create_unique_constraint(
+            "uq_subscription_account_source_remote",
+            "subscription",
+            ["account_id", "source_type", "remote_id"],
+        )
     op.drop_index("ix_followed_creator_platform_account", table_name="followed_creator")
     op.drop_table("followed_creator")
 
@@ -191,10 +208,14 @@ def downgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), nullable=False),
     )
     op.create_index("ix_followed_creator_platform_account", "followed_creator", ["platform", "account_id"])
-    op.drop_constraint("uq_subscription_account_source_remote", "subscription", type_="unique")
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("subscription") as batch:
+            batch.drop_constraint("uq_subscription_account_source_remote", type_="unique")
+    else:
+        op.drop_constraint("uq_subscription_account_source_remote", "subscription", type_="unique")
 
     # 把 creator 订阅还原成关注博主行
-    bind = op.get_bind()
     bind.execute(
         sa.text(
             """
@@ -206,11 +227,13 @@ def downgrade() -> None:
                    COALESCE(p.avatar, ''), COALESCE(p.homepage_url, ''),
                    COALESCE(p.bio, ''), COALESCE(p.verified, false),
                    COALESCE(p.follower_count, 0), 0,
-                   s.enabled, NOT s.only_new, s.last_sync_at, '{}'::json, now(), now()
+                   s.enabled, NOT s.only_new, s.last_sync_at, :raw,
+                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
               FROM subscription s
               LEFT JOIN creator_profile p
                 ON p.platform = s.platform AND p.author_id = s.remote_id
              WHERE s.source_type = 'creator'
             """
-        )
+        ),
+        {"raw": "{}"},
     )

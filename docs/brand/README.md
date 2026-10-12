@@ -18,7 +18,7 @@
 | 小尺寸简化版 | `logo/m3/small/stargather-m3-small.svg` |
 | 资产总览 | `logo/m3/OVERVIEW.png` |
 | 完整说明 | `logo/m3/README.md`（配色、资产清单、矢量化方法、复现命令） |
-| 在线看 | http://127.0.0.1:9100/brand/m3-OVERVIEW.png |
+| 在线看 | 部署后访问 `/brand/m3-OVERVIEW.png`（开发态走 Vite `:5173`） |
 
 ## 前端接入（`web/public/`）
 

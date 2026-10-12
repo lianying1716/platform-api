@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import sys
 from datetime import datetime, timedelta
@@ -34,10 +35,15 @@ if str(ROOT) not in sys.path:
 
 from sqlalchemy import func, inspect, select  # noqa: E402
 
+from app.core import api_auth  # noqa: E402
 from app.core.crypto import encrypt_credential  # noqa: E402
 from app.models import (  # noqa: E402
     AccountCredential,
+    AiModel,
+    AiProvider,
     AnalysisResult,
+    ApiCallLog,
+    ApiKey,
     Comment,
     CommentFetchState,
     ContentItem,
@@ -47,6 +53,8 @@ from app.models import (  # noqa: E402
     CreatorProfile,
     JobQueue,
     MediaAsset,
+    ModelAssignment,
+    ModelCallAttempt,
     PlatformAccount,
     RawPayload,
     Subscription,
@@ -89,7 +97,7 @@ def _fake_secret(tag: str) -> str:
 _ACCOUNTS = [
     {
         "platform": "douyin",
-        "suffix": "抖小云·主号",
+        "suffix": "抖音·主号",
         "status": "active",
         "external_id": "MS4wLjABAAAADEMOchef0001",
         "expires_in_days": 90,
@@ -102,7 +110,7 @@ _ACCOUNTS = [
     },
     {
         "platform": "douyin",
-        "suffix": "抖小云·备用号",
+        "suffix": "抖音·备用号",
         "status": "expired",
         "external_id": "MS4wLjABAAAADEMObackup0002",
         "expires_in_days": -3,
@@ -468,6 +476,19 @@ def _demo_sets(session) -> dict[str, set[int]]:
     asset_ids = {
         m.id for m in session.scalars(select(MediaAsset)).all() if m.content_id in content_ids
     }
+    demo_provider_ids = {
+        p.id
+        for p in session.scalars(select(AiProvider)).all()
+        if p.name in {spec["name"] for spec in _DEMO_PROVIDERS}
+    }
+    demo_model_ids = {
+        m.id
+        for m in session.scalars(select(AiModel)).all()
+        if m.provider_id in demo_provider_ids
+    }
+    demo_key_ids = {
+        k.id for k in session.scalars(select(ApiKey)).all() if k.name == "演示 Agent"
+    }
     return {
         "content_ids": content_ids,
         "account_ids": account_ids,
@@ -475,6 +496,9 @@ def _demo_sets(session) -> dict[str, set[int]]:
         "task_ids": task_ids,
         "job_ids": job_ids,
         "asset_ids": asset_ids,
+        "provider_ids": demo_provider_ids,
+        "model_ids": demo_model_ids,
+        "api_key_ids": demo_key_ids,
     }
 
 
@@ -486,7 +510,25 @@ def _purge(session) -> None:
     accs = list(d["account_ids"]) or [-1]
     subs = list(d["sub_ids"]) or [-1]
     tasks = list(d["task_ids"]) or [-1]
+    provider_ids = list(d["provider_ids"]) or [-1]
+    model_ids = list(d["model_ids"]) or [-1]
+    api_key_ids = list(d["api_key_ids"]) or [-1]
     keep = {"synchronize_session": False}
+
+    # 模型接入 / 调用审计 / AI 接入
+    session.query(ModelCallAttempt).filter(
+        (ModelCallAttempt.provider_id.in_(provider_ids))
+        | (ModelCallAttempt.model_id.in_(model_ids))
+        | (ModelCallAttempt.attempt_group_id.like("mg_demo_%"))
+    ).delete(**keep)
+    session.query(ModelAssignment).filter(
+        (ModelAssignment.primary_model_id.in_(model_ids))
+        | (ModelAssignment.fallback_model_id.in_(model_ids))
+    ).delete(**keep)
+    session.query(AiModel).filter(AiModel.provider_id.in_(provider_ids)).delete(**keep)
+    session.query(AiProvider).filter(AiProvider.id.in_(provider_ids)).delete(**keep)
+    session.query(ApiCallLog).filter(ApiCallLog.key_id.in_(api_key_ids)).delete(**keep)
+    session.query(ApiKey).filter(ApiKey.id.in_(api_key_ids)).delete(**keep)
 
     # 依赖内容 / 素材的子表（先删）
     session.query(Comment).filter(Comment.content_id.in_(cids)).delete(**keep)
@@ -542,6 +584,9 @@ def _counts(session) -> dict[str, int]:
     accs = list(d["account_ids"]) or [-1]
     subs = list(d["sub_ids"]) or [-1]
     tasks = list(d["task_ids"]) or [-1]
+    provider_ids = list(d["provider_ids"]) or [-1]
+    model_ids = list(d["model_ids"]) or [-1]
+    key_ids = list(d["api_key_ids"]) or [-1]
     return {
         "platform_account": len(d["account_ids"]),
         "account_credential": _cnt(session, AccountCredential, AccountCredential.account_id.in_(accs)),
@@ -571,6 +616,22 @@ def _counts(session) -> dict[str, int]:
         "comment": _cnt(session, Comment, Comment.content_id.in_(cids)),
         "job_queue": len(d["job_ids"]),
         "system_setting": _cnt(session, SystemSetting, SystemSetting.key == SENTINEL_KEY),
+        "ai_provider": _cnt(session, AiProvider, AiProvider.id.in_(provider_ids)),
+        "ai_model": _cnt(session, AiModel, AiModel.id.in_(model_ids)),
+        "model_assignment": _cnt(
+            session,
+            ModelAssignment,
+            (ModelAssignment.primary_model_id.in_(model_ids))
+            | (ModelAssignment.fallback_model_id.in_(model_ids)),
+        ),
+        "model_call_attempt": _cnt(
+            session,
+            ModelCallAttempt,
+            (ModelCallAttempt.provider_id.in_(provider_ids))
+            | (ModelCallAttempt.attempt_group_id.like("mg_demo_%")),
+        ),
+        "api_key": _cnt(session, ApiKey, ApiKey.id.in_(key_ids)),
+        "api_call_log": _cnt(session, ApiCallLog, ApiCallLog.key_id.in_(key_ids)),
     }
 
 
@@ -702,6 +763,12 @@ def _create_contents(session, rng, now, subs, tasks) -> list[ContentItem]:
     for task in tasks:
         owner_by_platform.setdefault(task.platform, None)
     fallback_owner = subs[0].account_id if subs else None
+    # 演示站策略（2026-10-11）：演示快照里不放"假内容"，素材/文章一律来自真实抓取
+    # （见 seed_demo_real.inject）。因此导出演示快照时设 PLATFORM_DEMO_FAKE_CONTENT=0 关掉这段。
+    # 默认仍造假内容，保证脚本自身、测试与离线前端联调可用。
+    if os.environ.get("PLATFORM_DEMO_FAKE_CONTENT") == "0":
+        session.flush()
+        return contents
     for platform, titles in _CONTENT_TITLES.items():
         authors = _AUTHORS[platform]
         for i, title in enumerate(titles):
@@ -1035,12 +1102,6 @@ def _create_processing(session, rng, now, assets, contents) -> None:
                         "中段用具体步骤推进，结尾引导互动。"
                     ),
                     tags=[content.auto_category, "短视频", "教程"],
-                    structured={
-                        "hook": "开门见山抛出结论",
-                        "key_points": ["准备材料", "关键步骤", "收尾技巧"],
-                        "cta": "点赞收藏，下期见",
-                        "audience": "对短视频创作感兴趣的普通用户",
-                    },
                     model="gpt-4o-mini",
                     prompt_version="v1",
                 )
@@ -1158,21 +1219,28 @@ def _create_jobs_logs(session, rng, now, contents, assets) -> None:
         )
     session.flush()
 
-    # 队列：queued / running / done / error 混合
+    # 队列：queued / running / done / error 混合。
+    # 无真实内容时只留"配置类"任务（订阅同步、关键词采集），不编造素材任务。
     job_specs = [
-        ("download", "queued", {"asset_hint": "pending"}),
-        ("download", "running", {"content_id": contents[0].id}),
-        ("transcribe", "queued", {"asset_id": assets[0].id}),
-        ("transcribe", "done", {"asset_id": assets[1].id}),
-        ("analyze", "queued", {"asset_id": assets[2].id}),
-        ("analyze", "done", {"asset_id": assets[3].id}),
         ("sync", "done", {"subscription_hint": "douyin"}),
         ("crawl", "running", {"task_hint": "douyin"}),
-        ("download", "error", {"content_id": contents[4].id}),
-        ("analyze", "error", {"asset_id": assets[5].id}),
-        ("download", "done", {"content_id": contents[6].id}),
         ("crawl", "queued", {"task_hint": "xhs"}),
+        ("download", "queued", {"asset_hint": "pending"}),
     ]
+    if contents and assets:
+        pick = lambda seq, i: seq[i].id if len(seq) > i else seq[0].id
+        job_specs = [
+            ("download", "running", {"content_id": pick(contents, 0)}),
+            ("transcribe", "queued", {"asset_id": pick(assets, 0)}),
+            ("transcribe", "done", {"asset_id": pick(assets, 1)}),
+            ("analyze", "queued", {"asset_id": pick(assets, 2)}),
+            ("analyze", "done", {"asset_id": pick(assets, 3)}),
+            ("sync", "done", {"subscription_hint": "douyin"}),
+            ("crawl", "running", {"task_hint": "douyin"}),
+            ("download", "error", {"content_id": pick(contents, 4)}),
+            ("download", "done", {"content_id": pick(contents, 6)}),
+            ("crawl", "queued", {"task_hint": "xhs"}),
+        ]
     jobs = []
     for i, (job_type, status, payload) in enumerate(job_specs):
         job = JobQueue(
@@ -1190,19 +1258,33 @@ def _create_jobs_logs(session, rng, now, contents, assets) -> None:
         jobs.append(job)
     session.flush()
 
-    # 结构化任务日志
+    # 结构化任务日志：按类型挑一条真实存在的 job，避免固定下标越界
+    by_type: dict[str, list] = {}
+    for j in jobs:
+        by_type.setdefault(j.job_type, []).append(j)
+
+    def _jid(job_type: str, idx: int = 0):
+        bucket = by_type.get(job_type) or []
+        return bucket[idx].id if len(bucket) > idx else (bucket[0].id if bucket else None)
+
     log_specs = [
-        ("download", "info", "开始下载视频", jobs[1].id),
-        ("download", "info", "下载完成，写入素材库", jobs[10].id),
-        ("download", "error", "下载失败：连接超时", jobs[8].id),
-        ("transcribe", "info", "转录完成，生成 6 段", jobs[3].id),
-        ("analyze", "info", "分析完成：摘要 + 标签", jobs[5].id),
-        ("analyze", "error", "分析失败：模型返回空", jobs[9].id),
-        ("sync", "info", "订阅同步完成，新增 12 条", jobs[6].id),
-        ("crawl", "info", "关键词采集进行中", jobs[7].id),
+        ("sync", "info", "订阅同步完成，新增 12 条", _jid("sync")),
+        ("crawl", "info", "关键词采集进行中", _jid("crawl")),
         ("crawl", "warn", "部分页面结构变化，已降级解析", None),
         ("sync", "error", "同步失败：Cookie 已失效", None),
     ]
+    if contents and assets:
+        log_specs = [
+            ("download", "info", "开始下载视频", _jid("download", 0)),
+            ("download", "info", "下载完成，写入素材库", _jid("download", 1)),
+            ("download", "error", "下载失败：连接超时", _jid("download", 2)),
+            ("transcribe", "info", "转录完成，生成 6 段", _jid("transcribe")),
+            ("analyze", "info", "分析完成：摘要 + 标签", _jid("analyze")),
+            ("sync", "info", "订阅同步完成，新增 12 条", _jid("sync")),
+            ("crawl", "info", "关键词采集进行中", _jid("crawl")),
+            ("crawl", "warn", "部分页面结构变化，已降级解析", None),
+            ("sync", "error", "同步失败：Cookie 已失效", None),
+        ]
     for i, (job_type, level, message, job_id) in enumerate(log_specs):
         session.add(
             TaskLog(
@@ -1213,6 +1295,204 @@ def _create_jobs_logs(session, rng, now, contents, assets) -> None:
                 detail={"demo": True, "seq": i},
                 actor="worker" if job_type != "sync" else "scheduler",
                 created_at=now - timedelta(minutes=(len(log_specs) - i) * 7),
+            )
+        )
+    session.flush()
+
+
+# ---------------------------------------------------------------------------
+# 模型接入 / 调用审计 / AI 接入演示数据
+
+_DEMO_PROVIDERS = [
+    {
+        "name": "星算AI",
+        "preset_key": "xingsuan",
+        "protocol": "openai",
+        "base_url": "https://api.xsai5.xyz/v1",
+        "models": [
+            {"key": "gpt-5.4-mini", "name": "GPT 5.4 Mini（星算）",
+             "caps": {"text": True, "json": True, "image": True, "video": False}},
+            {"key": "gemini-3.8-flash", "name": "Gemini 3.8 Flash（星算）",
+             "caps": {"text": True, "json": True, "image": True, "video": True}},
+        ],
+    },
+    {
+        "name": "深度求索",
+        "preset_key": "deepseek",
+        "protocol": "openai",
+        "base_url": "https://api.deepseek.com/v1",
+        "models": [
+            {"key": "deepseek-v4-flash", "name": "DeepSeek V4 Flash",
+             "caps": {"text": True, "json": True, "image": False, "video": False}},
+        ],
+    },
+]
+
+
+def _demo_capability(value: bool, revision: int = 1, *, transport: str | None = None) -> dict:
+    item = {
+        "value": value,
+        "source": "probe",
+        "config_revision": revision,
+        "probe_version": "v1",
+        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "detail": "演示数据：真实探测已完成" if value else "演示数据：该项探测未通过",
+    }
+    if transport:
+        item["transport"] = transport
+    return item
+
+
+def _create_model_access(session, now) -> dict[str, list]:
+    providers: list[AiProvider] = []
+    models: list[AiModel] = []
+    for spec in _DEMO_PROVIDERS:
+        provider = AiProvider(
+            name=spec["name"],
+            preset_key=spec["preset_key"],
+            protocol=spec["protocol"],
+            base_url=spec["base_url"],
+            credential_source="api_key",
+            api_key_encrypted=encrypt_credential(
+                {"api_key": f"DEMO_FAKE_{spec['preset_key'].upper()}_KEY"}
+            ),
+            config_revision=1,
+            enabled=True,
+            last_test_status="ok",
+            last_test_at=now - timedelta(hours=2),
+        )
+        session.add(provider)
+        providers.append(provider)
+        session.flush()
+        for model_spec in spec["models"]:
+            caps = {
+                key: _demo_capability(
+                    bool(value), 1,
+                    transport="gemini_inline" if key == "video" and value else None,
+                )
+                for key, value in model_spec["caps"].items()
+            }
+            model = AiModel(
+                provider_id=provider.id,
+                model_key=model_spec["key"],
+                display_name=model_spec["name"],
+                import_source="discovered",
+                enabled=True,
+                capabilities=caps,
+                probe_status="passed",
+                probe_error="",
+                probed_at=now - timedelta(hours=2),
+            )
+            session.add(model)
+            models.append(model)
+    session.flush()
+    return {"providers": providers, "models": models}
+
+
+def _create_model_assignments(session, models) -> None:
+    by_key = {m.model_key: m for m in models}
+    specs = [
+        ("text_analysis", "gpt-5.4-mini", "deepseek-v4-flash", True),
+        ("cover_classify", "gpt-5.4-mini", None, True),
+        ("video_understanding", "gemini-3.8-flash", None, False),
+    ]
+    for work_type, primary_key, fallback_key, auto in specs:
+        primary = by_key.get(primary_key)
+        fallback = by_key.get(fallback_key) if fallback_key else None
+        session.add(
+            ModelAssignment(
+                work_type=work_type,
+                primary_model_id=primary.id if primary else None,
+                fallback_model_id=fallback.id if fallback else None,
+                auto_configured=auto,
+                legacy_pending_validation=False,
+            )
+        )
+    session.flush()
+
+
+def _create_model_calls(session, rng, now, models, assets) -> None:
+    by_key = {m.model_key: m for m in models}
+    asset = assets[0] if assets else None
+    primary = by_key["gpt-5.4-mini"]
+    fallback = by_key["deepseek-v4-flash"]
+    video_model = by_key["gemini-3.8-flash"]
+    group = "mg_demo_analyze_001"
+    session.add_all([
+        ModelCallAttempt(
+            attempt_group_id=group, work_type="text_analysis", operation="analyze",
+            asset_id=asset.id if asset else None, job_id=None, role="primary",
+            provider_id=primary.provider_id, provider_name="星算AI",
+            model_id=primary.id, model_key=primary.model_key,
+            status="error", error_class="timeout",
+            error_message="ReadTimeout: 上游在 90 秒内没有返回完整响应（演示数据）",
+            http_status=504, duration_ms=90123, usage={},
+            created_at=now - timedelta(hours=3),
+            finished_at=now - timedelta(hours=3) + timedelta(seconds=90),
+        ),
+        ModelCallAttempt(
+            attempt_group_id=group, work_type="text_analysis", operation="analyze",
+            asset_id=asset.id if asset else None, job_id=None, role="fallback",
+            provider_id=fallback.provider_id, provider_name="深度求索",
+            model_id=fallback.id, model_key=fallback.model_key,
+            status="ok", error_class="", error_message="", http_status=200,
+            duration_ms=2340,
+            usage={"prompt_tokens": 820, "completion_tokens": 310, "total_tokens": 1130},
+            created_at=now - timedelta(hours=3) + timedelta(seconds=91),
+            finished_at=now - timedelta(hours=3) + timedelta(seconds=93),
+        ),
+        ModelCallAttempt(
+            attempt_group_id="mg_demo_video_001", work_type="video_understanding",
+            operation="understand_video", asset_id=asset.id if asset else None, job_id=None,
+            role="primary", provider_id=video_model.provider_id, provider_name="星算AI",
+            model_id=video_model.id, model_key=video_model.model_key,
+            status="ok", error_class="", error_message="", http_status=200,
+            duration_ms=45600,
+            usage={"prompt_tokens": 12000, "completion_tokens": 900, "total_tokens": 12900},
+            created_at=now - timedelta(hours=1),
+            finished_at=now - timedelta(hours=1) + timedelta(seconds=46),
+        ),
+        ModelCallAttempt(
+            attempt_group_id="mg_demo_running_001", work_type="cover_classify",
+            operation="classify", asset_id=asset.id if asset else None, job_id=None,
+            role="primary", provider_id=primary.provider_id, provider_name="星算AI",
+            model_id=primary.id, model_key=primary.model_key,
+            status="running", error_class="", error_message="", duration_ms=0,
+            usage={}, created_at=now - timedelta(seconds=20), finished_at=None,
+        ),
+    ])
+    session.flush()
+
+
+def _create_ai_access(session, rng, now) -> None:
+    _raw_key, key_hash, prefix = api_auth.generate_key()
+    key = ApiKey(
+        name="演示 Agent",
+        key_hash=key_hash,
+        prefix=prefix,
+        scopes=["read", "operate"],
+        rate_limit_per_min=60,
+        enabled=True,
+        last_used_at=now - timedelta(minutes=12),
+    )
+    session.add(key)
+    session.flush()
+    tools = [
+        ("model_access.list_models", "ok", 42),
+        ("skills.list_assets", "ok", 118),
+        ("skills.asset_transcript", "ok", 86),
+        ("model_access.list_calls", "ok", 37),
+        ("skills.export_assets", "error", 240),
+    ]
+    for tool, status, duration in tools:
+        session.add(
+            ApiCallLog(
+                key_id=key.id,
+                tool=tool,
+                params_summary="演示数据",
+                status=status,
+                duration_ms=duration,
+                created_at=now - timedelta(minutes=rng.randint(1, 180)),
             )
         )
     session.flush()
@@ -1234,17 +1514,16 @@ def _create(session) -> None:
     _create_processing(session, rng, now, assets, contents)
     _create_comments(session, rng, now, contents)
     _create_jobs_logs(session, rng, now, contents, assets)
+    model_rows = _create_model_access(session, now)
+    _create_model_assignments(session, model_rows["models"])
+    _create_model_calls(session, rng, now, model_rows["models"], assets)
+    _create_ai_access(session, rng, now)
     session.add(SystemSetting(key=SENTINEL_KEY, value=SENTINEL_VALUE))
     session.flush()
 
 
 def seed(session, reset: bool = False) -> dict[str, int]:
-    """幂等种入开发模拟数据，返回各表 demo 行计数。
-
-    - 已存在哨兵且 reset=False → 直接返回现有计数（不重复造数）。
-    - reset=True → 先删 demo 行（保留真实数据）再重建。
-    - 无哨兵（首次或上次异常中断）→ 先清残留 demo 行再重建。
-    """
+    """幂等种入开发模拟数据，返回各表 demo 行计数。"""
     sentinel = session.get(SystemSetting, SENTINEL_KEY)
     if reset or sentinel is None:
         _purge(session)

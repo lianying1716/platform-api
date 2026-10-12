@@ -1,0 +1,124 @@
+name: release
+
+# 打 v* tag 时：跑测试 → 构建多架构镜像 → 推 GHCR。
+# 与设计 §3.6 一致：tag 即发布事实，镜像 tag 三种粒度（v1.2.3 / v1.2 / v1）。
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  UPDATER_IMAGE: ghcr.io/${{ github.repository }}-updater
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # 迁移 / 加锁 / 升级演练测试需要真实 PostgreSQL（映射到 5433，与本地一致）。
+    # 没有这个 service，那批测试会静默 skip，CI 照样"绿"——等于没有防线。
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: platform
+          POSTGRES_PASSWORD: platform
+          POSTGRES_DB: platform
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U platform"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        run: uv sync --extra postgres --extra dev
+      - name: 确认 PostgreSQL 就绪（防止迁移测试静默 skip）
+        run: |
+          python - <<'PY'
+          import socket, sys, time
+          for _ in range(30):
+              try:
+                  s = socket.create_connection(("127.0.0.1", 5433), timeout=2)
+                  s.close()
+                  print("postgres:5433 就绪")
+                  sys.exit(0)
+              except OSError:
+                  time.sleep(2)
+          sys.exit("postgres:5433 不可达，迁移测试会静默 skip，终止")
+          PY
+      - name: 运行测试（含迁移/版本门禁专项）
+        run: uv run pytest tests/ -q
+      - name: 断言迁移/加锁/演练测试确实执行（未 skip）
+        run: |
+          uv run pytest tests/test_migration_lock.py tests/test_upgrade_rehearsal.py \
+            -q -rs -p no:cacheprovider | tee /tmp/mig.txt
+          if grep -q "skipped" /tmp/mig.txt; then
+            echo "::error::迁移相关测试被 skip，说明 PostgreSQL 未生效"; exit 1
+          fi
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 计算镜像 tag
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+      - name: 构建并推送（amd64 + arm64）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PLATFORM_BUILD_VERSION=${{ github.ref_name }}
+            PLATFORM_BUILD_COMMIT=${{ github.sha }}
+            PLATFORM_BUILD_TIME=${{ github.event.head_commit.timestamp }}
+
+      # updater 边车镜像：基于刚推送的主镜像 + docker CLI（一键升级用）。
+      # 单独构建，主镜像保持最小攻击面。
+      - name: 计算 updater 镜像 tag
+        id: meta_updater
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.UPDATER_IMAGE }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+      - name: 构建并推送 updater 边车镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.updater
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta_updater.outputs.tags }}
+          labels: ${{ steps.meta_updater.outputs.labels }}
+          build-args: |
+            # 注意：多架构构建时 base 需按平台解析，官方 action 支持 $BASE_IMAGE 占位为 linux/amd64 主镜像 tag。
+            BASE_IMAGE=${{ env.IMAGE }}:${{ github.ref_name }}

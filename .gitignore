@@ -5,11 +5,20 @@ data/
 *.db
 *.sqlite*
 .env
+!.env.example
 web/node_modules/
 web/dist/
+web/dist-demo/
 app/static/
 .DS_Store
 ._*
 
 # playwright cli artifacts
 .playwright-cli/
+
+# 本地工具/缓存
+.pytest_cache/
+.superpowers/
+
+# 演示站数据快照（由 scripts/export_demo_snapshot.py 生成，体积大且含本机路径）
+web/public/demo-data/

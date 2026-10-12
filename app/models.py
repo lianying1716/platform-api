@@ -373,7 +373,10 @@ class CrawlRun(Base):
 
 
 class AnalysisResult(Base):
-    """大模型分析结果：摘要 / 标签 / 结构化拆解。"""
+    """大模型分析结果（速览）：摘要 / 标签。
+
+    深度「为什么火 + 怎么复刻」报告在 ``ViralBreakdown``，两者职责不重叠。
+    """
 
     __tablename__ = "analysis_result"
 
@@ -381,8 +384,8 @@ class AnalysisResult(Base):
     asset_id: Mapped[int] = mapped_column(ForeignKey("media_asset.id", ondelete="CASCADE"), unique=True)
     summary: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[list] = mapped_column(JSON, default=list)
-    structured: Mapped[dict] = mapped_column(JSON, default=dict)
-    model: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(200), default="")
+    routing: Mapped[dict] = mapped_column(JSON, default=dict)
     prompt_version: Mapped[str] = mapped_column(String(32), default="v1")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -480,9 +483,10 @@ class VideoUnderstanding(Base):
     dimensions: Mapped[dict] = mapped_column(JSON, default=dict)  # 类型专属维度 → 值
     summary: Mapped[str] = mapped_column(Text, default="")
     timeline: Mapped[list] = mapped_column(JSON, default=list)
-    model: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(200), default="")
     prompt_version: Mapped[str] = mapped_column(String(32), default="")
     usage: Mapped[dict] = mapped_column(JSON, default=dict)  # 含 video_tokens
+    routing: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/doing/done/error
     error: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -512,12 +516,117 @@ class ViralBreakdown(Base):
     comment_insights: Mapped[dict] = mapped_column(JSON, default=dict)  # 评论洞察（主题/争议/提问）
     data_context: Mapped[dict] = mapped_column(JSON, default=dict)  # 确定性计算的互动上下文
     understanding_available: Mapped[bool] = mapped_column(Boolean, default=False)  # 是否复用了 L3 理解
-    model: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(200), default="")
     prompt_version: Mapped[str] = mapped_column(String(32), default="")
     usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    routing: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/doing/done/error
     error: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# ============================================================
+# P7：模型接入与按工作分配
+# ============================================================
+
+
+class AiProvider(Base):
+    """模型供应商实例。访问密钥只存 AES-GCM 密文。"""
+
+    __tablename__ = "ai_provider"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    preset_key: Mapped[str] = mapped_column(String(64), default="custom")
+    protocol: Mapped[str] = mapped_column(String(32), default="openai")  # openai/anthropic/gemini
+    base_url: Mapped[str] = mapped_column(String(512))
+    credential_source: Mapped[str] = mapped_column(String(16), default="api_key")
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    config_revision: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_test_status: Mapped[str] = mapped_column(String(16), default="")
+    last_test_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class AiModel(Base):
+    """已导入模型及其实测能力。"""
+
+    __tablename__ = "ai_model"
+    __table_args__ = (UniqueConstraint("provider_id", "model_key", name="uq_ai_model_provider_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_provider.id", ondelete="CASCADE"), index=True
+    )
+    model_key: Mapped[str] = mapped_column(String(200))
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    import_source: Mapped[str] = mapped_column(String(16), default="discovered")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    probe_status: Mapped[str] = mapped_column(String(16), default="untested")
+    probe_error: Mapped[str] = mapped_column(Text, default="")
+    probed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ModelAssignment(Base):
+    """三个固定工作槽位的主备模型。"""
+
+    __tablename__ = "model_assignment"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_type: Mapped[str] = mapped_column(String(48), unique=True)
+    primary_model_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_model.id", ondelete="SET NULL"), nullable=True
+    )
+    fallback_model_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_model.id", ondelete="SET NULL"), nullable=True
+    )
+    auto_configured: Mapped[bool] = mapped_column(Boolean, default=False)
+    legacy_pending_validation: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ModelCallAttempt(Base):
+    """每次真实模型调用一行；审计独立于业务事务。"""
+
+    __tablename__ = "model_call_attempt"
+    __table_args__ = (
+        Index("ix_model_call_attempt_group", "attempt_group_id"),
+        Index("ix_model_call_attempt_work_created", "work_type", "created_at"),
+        Index("ix_model_call_attempt_asset_created", "asset_id", "created_at"),
+        Index("ix_model_call_attempt_model_created", "model_id", "created_at"),
+        Index("ix_model_call_attempt_recovery", "status", "finished_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    attempt_group_id: Mapped[str] = mapped_column(String(64))
+    work_type: Mapped[str] = mapped_column(String(48))
+    operation: Mapped[str] = mapped_column(String(48))
+    asset_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    role: Mapped[str] = mapped_column(String(16))
+    provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_provider.id", ondelete="SET NULL"), nullable=True
+    )
+    provider_name: Mapped[str] = mapped_column(String(120), default="")
+    model_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_model.id", ondelete="SET NULL"), nullable=True
+    )
+    model_key: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    error_class: Mapped[str] = mapped_column(String(32), default="")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    request_meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # ============================================================

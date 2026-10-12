@@ -1,5 +1,5 @@
 <template>
-  <div class="ui-app">
+  <div class="ui-app" :class="{ 'demo-mode': DEMO_MODE }">
     <aside class="ui-side">
       <div class="ui-brand">
         <img class="mark" src="/logo-symbol-dark.svg" alt="星采 Stargather" width="30" height="30" />
@@ -30,6 +30,7 @@
     <div class="ui-main">
       <header class="ui-top">
         <span class="ui-crumb"><b>{{ route.meta.title }}</b></span>
+        <span v-if="DEMO_MODE" class="ui-badge acc">演示数据 · 只读展示</span>
         <div class="grow" />
         <router-link class="ui-btn sm" to="/assets">素材库</router-link>
         <router-link class="ui-btn sm" to="/system">系统设置</router-link>
@@ -44,6 +45,7 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
+import { DEMO_MODE } from '../demo/runtime'
 import '../styles/ui.css'
 
 const route = useRoute()
@@ -57,6 +59,7 @@ const menu = [
   { path: '/followed-creators', title: '关注列表', short: '★' },
   { path: '/assets', title: '素材库', short: '▤' },
   { path: '/pipeline', title: '处理队列', short: '≡' },
+  { path: '/models', title: '模型接入', short: '◈' },
   { path: '/ai', title: 'AI 接入', short: '⌘' },
   { path: '/system', title: '系统设置', short: '⚙' },
 ]

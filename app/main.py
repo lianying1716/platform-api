@@ -16,6 +16,7 @@ from app.api import (
     crawl_tasks,
     followed_creators,
     imports,
+    model_access,
     pipeline,
     skills,
     subscriptions,
@@ -25,6 +26,8 @@ from app.api import (
 from app.config import settings
 from app.core.events import subscribe
 from app.core.scheduler import start_scheduler, stop_scheduler
+from app.core.version import load_build_info
+from app.core.version_guard import check as check_version_guard
 from app.db import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -35,12 +38,24 @@ _STATIC_DIR = Path(__file__).resolve().parent / "static"
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    # 契约 I3：版本门禁在对外服务前执行；不通过则拒绝启动（fail fast）。
+    guard = check_version_guard(
+        db_url=settings.resolved_database_url,
+        auto_migrate=settings.auto_migrate,
+        allow_unknown=settings.allow_unknown_db,
+        # 生产由 Alembic 负责 schema，严格门禁；开发用 create_all，宽松只告警。
+        enforce=not settings.auto_create_tables,
+    )
+    if not guard.ok:
+        raise RuntimeError(f"版本门禁未通过（{guard.action}）：{guard.message}")
+    if guard.action != "ok":
+        logging.getLogger("platform.startup").info("版本门禁：%s", guard.message)
     start_scheduler()
     yield
     stop_scheduler()
 
 
-app = FastAPI(title="platform-api", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="platform-api", version=load_build_info().version, lifespan=lifespan)
 
 # 开发期允许 Vite dev server 跨域；生产同源部署不受影响
 app.add_middleware(
@@ -48,6 +63,7 @@ app.add_middleware(
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count"],
 )
 
 app.include_router(auth.router)
@@ -62,7 +78,9 @@ app.include_router(pipeline.router)
 app.include_router(analytics.router)
 app.include_router(ai_access.router)
 app.include_router(skills.router)
+app.include_router(model_access.router)
 app.include_router(system.router)
+app.include_router(system.public_router)
 
 
 @app.get("/api/events/stream", include_in_schema=False)

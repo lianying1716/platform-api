@@ -22,31 +22,52 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
     op.add_column(
         "platform_account",
         sa.Column("storage_root_id", sa.Integer(), nullable=True),
     )
-    op.create_foreign_key(
-        "fk_platform_account_storage_root",
-        "platform_account",
-        "storage_root",
-        ["storage_root_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("platform_account") as batch:
+            batch.create_foreign_key(
+                "fk_platform_account_storage_root",
+                "storage_root",
+                ["storage_root_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+    else:
+        op.create_foreign_key(
+            "fk_platform_account_storage_root",
+            "platform_account",
+            "storage_root",
+            ["storage_root_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
     op.add_column(
         "subscription",
         sa.Column("storage_root_id", sa.Integer(), nullable=True),
     )
-    op.create_foreign_key(
-        "fk_subscription_storage_root",
-        "subscription",
-        "storage_root",
-        ["storage_root_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("subscription") as batch:
+            batch.create_foreign_key(
+                "fk_subscription_storage_root",
+                "storage_root",
+                ["storage_root_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+    else:
+        op.create_foreign_key(
+            "fk_subscription_storage_root",
+            "subscription",
+            "storage_root",
+            ["storage_root_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
     op.add_column(
         "subscription",
         sa.Column("auto_transcribe", sa.Boolean(), nullable=False, server_default=sa.text("false")),
@@ -58,9 +79,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
     op.drop_column("subscription", "auto_analyze")
     op.drop_column("subscription", "auto_transcribe")
-    op.drop_constraint("fk_subscription_storage_root", "subscription", type_="foreignkey")
-    op.drop_column("subscription", "storage_root_id")
-    op.drop_constraint("fk_platform_account_storage_root", "platform_account", type_="foreignkey")
-    op.drop_column("platform_account", "storage_root_id")
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("subscription") as batch:
+            batch.drop_constraint("fk_subscription_storage_root", type_="foreignkey")
+            batch.drop_column("storage_root_id")
+        with op.batch_alter_table("platform_account") as batch:
+            batch.drop_constraint("fk_platform_account_storage_root", type_="foreignkey")
+            batch.drop_column("storage_root_id")
+    else:
+        op.drop_constraint("fk_subscription_storage_root", "subscription", type_="foreignkey")
+        op.drop_column("subscription", "storage_root_id")
+        op.drop_constraint("fk_platform_account_storage_root", "platform_account", type_="foreignkey")
+        op.drop_column("platform_account", "storage_root_id")

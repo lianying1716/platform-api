@@ -470,6 +470,27 @@ def test_runner_survives_task_log_failure(_engine, monkeypatch):
     db.close()
 
 
+def test_runner_does_not_retry_handler_type_error(_engine, monkeypatch):
+    """handler 内部真实 TypeError 不得被当成旧签名而二次执行（会产生双份副作用）。"""
+    import app.workers.runner as runner
+    from app.models import JobQueue
+
+    _enqueue_fake_job(_engine)
+    calls: list[int] = []
+
+    async def boom(db, payload, job):
+        calls.append(1)
+        raise TypeError("provider got unexpected positional argument")
+
+    monkeypatch.setattr(runner, "SessionLocal", _runner_sessionmaker(_engine))
+    monkeypatch.setattr(runner, "HANDLERS", {"fake": boom})
+    assert asyncio.run(runner._run_one()) is True
+    assert calls == [1]
+    db = _runner_sessionmaker(_engine)()
+    assert db.scalar(select(JobQueue)).status in ("queued", "error")
+    db.close()
+
+
 def test_in_savepoint_isolates_real_flush_error(session):
     """核心风险点：地基写入触发**真实 DB 级 flush 错误**时，savepoint 必须隔离。
 

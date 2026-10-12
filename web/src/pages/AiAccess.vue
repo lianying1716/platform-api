@@ -57,24 +57,88 @@
     <template v-else-if="tab === 'mcp'">
       <section class="ui-panel">
         <div class="ui-panel-head">
-          <h2>接进 Claude Code / Codex</h2>
-          <span class="hint">MCP 在本地跑一个小进程转发到本平台，装一次即可</span>
+          <h2>3 步接入你的 AI 助手</h2>
+          <span class="hint">不用懂代码。建好 Key，把提示词交给 Agent，它会自己装好并验证</span>
+        </div>
+        <div class="ui-panel-body quick-steps">
+          <div class="quick-step" :class="{ done: !!keys.length }">
+            <span class="qs-num">1</span>
+            <div><b>创建 API Key</b><small>{{ keys.length ? `已创建 ${keys.length} 个` : '回到「API Key」页创建' }}</small></div>
+          </div>
+          <div class="quick-step" :class="{ done: !!mcpKey.trim() }">
+            <span class="qs-num">2</span>
+            <div><b>填写平台信息</b><small>{{ mcpKey.trim() ? '信息已就绪，可以复制提示词' : '在下方向导填写 Key 与地址' }}</small></div>
+          </div>
+          <div class="quick-step">
+            <span class="qs-num">3</span>
+            <div><b>交给 Agent 执行</b><small>复制提示词，粘贴给 Codex / Claude Code</small></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="ui-panel">
+        <div class="ui-panel-head">
+          <h2>接入向导</h2>
+          <span class="hint">三项填好后，下面的提示词就是完整可执行指令</span>
+        </div>
+        <div class="ui-panel-body guide-form">
+          <label class="gfield">
+            <span>平台地址</span>
+            <el-input v-model="mcpBase" placeholder="http://10.0.0.23:9100">
+              <template #append>
+                <button class="ui-btn sm" @click="mcpBase = backendOrigin()">用当前地址</button>
+              </template>
+            </el-input>
+            <small>Agent 与平台不在同一台机器时，填局域网 / Tailscale 地址，不要填 localhost。</small>
+          </label>
+          <label class="gfield">
+            <span>API Key</span>
+            <el-input v-model="mcpKey" type="password" show-password placeholder="sk-...（创建后只显示一次）" />
+            <small>在「API Key」页创建后复制到此处。平台只存哈希，丢了只能重建。</small>
+          </label>
+          <label class="gfield">
+            <span>platform-api 目录</span>
+            <el-input v-model="mcpProjectDir" placeholder="/home/you/platform-api" />
+            <small>Agent 会在这个目录执行 <code>uv sync --extra mcp</code> 并启动 MCP。</small>
+          </label>
+        </div>
+      </section>
+
+      <section class="ui-panel prompt-panel">
+        <div class="ui-panel-head">
+          <h2>一键接入提示词</h2>
+          <span class="hint">复制整段，粘贴给 Codex / Claude Code / Cursor 里的 Agent</span>
+          <div class="grow" />
+          <button class="ui-btn primary sm" @click="copyAgentPrompt">复制给 Agent</button>
+        </div>
+        <div class="ui-panel-body">
+          <pre class="code prompt-code">{{ agentPrompt }}</pre>
+          <p class="hint" style="display:block;margin-top:10px">
+            Agent 会完成：安装 MCP → 自检 → 写客户端配置 → 用 list_accounts 验证连通。
+            提示词含完整 Key，只在本地 / 私人 Agent 会话里粘贴，不要发到公开群聊或网页。
+          </p>
+        </div>
+      </section>
+
+      <section class="ui-panel">
+        <div class="ui-panel-head">
+          <h2>或者：手动配置</h2>
+          <span class="hint">Agent 不方便执行终端命令时，用下面的配置自己贴</span>
           <div class="grow" />
           <button class="ui-btn sm" @click="copyMcp">复制 Codex 配置</button>
         </div>
         <div class="ui-panel-body">
           <ol class="steps">
-            <li>先在上方「API Key」页建一个 Key 并复制。</li>
-            <li>在服务器上装依赖：<code>cd platform-api &amp;&amp; uv sync --extra mcp</code></li>
-            <li>把下面的配置贴进对应客户端，替换 <code>sk-你的key</code>。</li>
-            <li>重启客户端，用 <code>/mcp</code> 确认能看到 <code>xsai-platform</code>。</li>
+            <li>装依赖：<code>cd {{ mcpProjectDir }} &amp;&amp; uv sync --extra mcp</code></li>
+            <li>自检：<code>PLATFORM_API_BASE={{ apiBase }} PLATFORM_API_KEY={{ mcpKeyPreview }} uv run python -m mcp_server.server --self-check</code></li>
+            <li>把下面配置贴进客户端，重启后用 <code>/mcp</code> 确认能看到 <code>xsai-platform</code>。</li>
           </ol>
           <p class="hint" style="display:block;margin:10px 0 6px">Codex · 追加到 <code>~/.codex/config.toml</code></p>
           <pre class="code">{{ mcpConfig }}</pre>
           <p class="hint" style="display:block;margin:14px 0 6px">Claude Code · 命令行执行一条</p>
           <pre class="code">{{ claudeCmd }}</pre>
           <p class="hint" style="display:block;margin:14px 0 0">
-            完整图文步骤见仓库 <code>docs/mcp-integration.md</code>；排错先跑
+            完整步骤见 <code>docs/mcp-integration.md</code>；排错先跑
             <code>uv run python -m mcp_server.server --self-check</code>。
           </p>
         </div>
@@ -192,24 +256,72 @@ const showKey = ref(false)
 const newKey = ref('')
 const form = reactive({ name: '', scopes: ['read', 'operate'], rate_limit_per_min: 60 })
 
+// MCP 接入向导：用户只填三项，其余自动生成。
+/** MCP 必须连后端而不是 Vite 页面：开发态 5173 自动换成同主机的 9100。 */
+function backendOrigin() {
+  try {
+    const url = new URL(location.origin)
+    if (url.port === '5173') url.port = '9100'
+    return url.origin
+  } catch {
+    return location.origin
+  }
+}
+
+const mcpBase = ref(backendOrigin())
+const mcpKey = ref('')
+const mcpProjectDir = ref('/home/you/platform-api')
+
+function maskKey(value: string) {
+  const key = (value || '').trim()
+  if (!key) return 'sk-你的key'
+  if (key.length <= 12) return key
+  return `${key.slice(0, 8)}…${key.slice(-4)}`
+}
+
+const mcpKeyPreview = computed(() => maskKey(mcpKey.value))
+
 // MCP 走本地 stdio 进程（不是 HTTP URL）：这里给出可直接粘贴的配置。
-const apiBase = computed(() => location.origin)
+const apiBase = computed(() => mcpBase.value.trim() || backendOrigin())
 const mcpConfig = computed(
   () => `[mcp_servers.xsai-platform]
 command = "uv"
-args = ["run", "--project", "<platform-api 绝对路径>", "python", "-m", "mcp_server.server"]
-cwd = "<platform-api 绝对路径>"
+args = ["run", "--project", "${mcpProjectDir.value}", "python", "-m", "mcp_server.server"]
+cwd = "${mcpProjectDir.value}"
 
 [mcp_servers.xsai-platform.env]
 PLATFORM_API_BASE = "${apiBase.value}"
-PLATFORM_API_KEY  = "sk-你的key"`,
+PLATFORM_API_KEY  = "${mcpKey.value.trim() || 'sk-你的key'}"`,
 )
 const claudeCmd = computed(
   () => `claude mcp add xsai-platform \\
   --env PLATFORM_API_BASE=${apiBase.value} \\
-  --env PLATFORM_API_KEY=sk-你的key \\
-  -- uv run --project <platform-api 绝对路径> python -m mcp_server.server`,
+  --env PLATFORM_API_KEY=${mcpKey.value.trim() || 'sk-你的key'} \\
+  -- uv run --project ${mcpProjectDir.value} python -m mcp_server.server`,
 )
+
+const agentPrompt = computed(() => [
+  '你是我的自动化接入助手。请把「星采 Stargather」通过 MCP 接入当前 AI 客户端，全程自己执行命令，不要让我手动改文件。',
+  '',
+  '平台信息：',
+  `- 平台 API 地址：${apiBase.value}`,
+  `- 平台 API Key：${mcpKey.value.trim() || '（请先提醒我在「AI 接入」页创建并粘贴 API Key）'}`,
+  `- platform-api 项目目录：${mcpProjectDir.value}`,
+  '',
+  '你要执行的步骤：',
+  `1. 进入项目目录并安装 MCP 依赖：cd ${mcpProjectDir.value} && uv sync --extra mcp`,
+  `2. 运行自检，确认后端连通、Key 有效、14 个工具可见：PLATFORM_API_BASE=${apiBase.value} PLATFORM_API_KEY=<上面的Key> uv run python -m mcp_server.server --self-check`,
+  '3. 自检通过后，把 MCP 配置写入当前客户端：Codex 写 ~/.codex/config.toml；Claude Code 执行下面这条 claude mcp add 命令。',
+  mcpConfig.value,
+  claudeCmd.value,
+  '4. 重启或刷新 MCP 连接，执行 /mcp，确认出现 xsai-platform。',
+  '5. 用 list_accounts 工具试调一次，并把结果告诉我。',
+  '',
+  '规则：',
+  '- 不要修改平台业务代码，只写 MCP 配置。',
+  `- 不要在聊天里输出完整 Key，需要展示时用 ${mcpKeyPreview.value} 代替。`,
+  '- 如果任何一步失败，先运行自检命令，把完整报错贴给我再停止。',
+].join('\n'))
 
 function fmt(v: string | null) {
   return v ? new Date(v.endsWith('Z') ? v : v + 'Z').toLocaleString('zh-CN', { hour12: false }) : '—'
@@ -295,6 +407,19 @@ async function copyMcp() {
   }
 }
 
+async function copyAgentPrompt() {
+  if (!mcpKey.value.trim()) {
+    ElMessage.warning('请先填写 API Key（在「API Key」页创建后复制过来）')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(agentPrompt.value)
+    ElMessage.success('已复制，粘贴给 Codex / Claude Code 即可')
+  } catch {
+    ElMessage.warning('浏览器不允许自动复制，请手动选择整段提示词')
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -335,8 +460,33 @@ onMounted(load)
 }
 .tool code { font-family: var(--font-mono); color: var(--accent); font-weight: 700; }
 .tool span { color: var(--muted); }
+
+/* 新手向导：三步概览 + 三项输入 + 可复制提示词 */
+.quick-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-3); }
+.quick-step {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: var(--sp-4); border: 1px solid var(--line-soft); background: var(--surface-2);
+}
+.quick-step.done {
+  border-color: var(--ok);
+  background: color-mix(in oklab, var(--ok) 8%, var(--surface));
+}
+.qs-num {
+  flex: none; width: 24px; height: 24px; display: grid; place-items: center;
+  background: var(--ink); color: var(--bg); font-weight: 800; font-size: var(--fs-sm);
+}
+.quick-step.done .qs-num { background: var(--ok); }
+.quick-step b { display: block; font-size: var(--fs-sm); }
+.quick-step small { display: block; margin-top: 2px; color: var(--muted); font-size: var(--fs-xs); line-height: 1.5; }
+.guide-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+.gfield { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.gfield > span { font-size: var(--fs-sm); font-weight: 700; }
+.gfield small { color: var(--muted); font-size: var(--fs-xs); line-height: 1.55; }
+.gfield code { font-family: var(--font-mono); }
+.prompt-code { max-height: 360px; border-color: var(--accent); }
 @media (max-width: 820px) {
   .tool { grid-template-columns: 1fr; gap: 4px; }
+  .quick-steps, .guide-form { grid-template-columns: 1fr; }
 }
 
 /* 确认弹层 */

@@ -1,6 +1,6 @@
 """v5：补两个"采集"语义更强的方向。"""
 import math, os
-OUT = "/path/to/platform-api/docs/brand/logo/concepts"
+OUT = "/path/to/xsai-workbench/platform-api/docs/brand/logo/concepts"
 C = 128.0
 
 def poly(pts):

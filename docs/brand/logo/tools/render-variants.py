@@ -1,7 +1,7 @@
 """把概念稿换成包豪斯配色，并渲染多种尺寸的 PNG。"""
 import os, subprocess, sys
-CON = "/path/to/platform-api/docs/brand/logo/concepts"
-REN = "/path/to/platform-api/docs/brand/logo/renders"
+CON = "/path/to/xsai-workbench/platform-api/docs/brand/logo/concepts"
+REN = "/path/to/xsai-workbench/platform-api/docs/brand/logo/renders"
 os.makedirs(REN, exist_ok=True)
 INK, ACCENT, BG = "#1A1512", "#CC2823", "#F3F0E7"
 
