@@ -156,15 +156,23 @@ def _do_pin(version: str) -> dict:
 
 
 def _do_rollback(version: str) -> dict:
-    """回滚：把镜像 tag 切回旧版本并重建。version 为旧版本号。"""
+    """回滚：把镜像 tag 切回旧版本并重建。version 为旧版本号。
+
+    回滚**不把 pull 当硬前置**：旧镜像此刻通常还在本机（升级只是换了 tag），直接
+    `up -d` 就能回来；若恰好不在再尝试拉取。否则网络一抖（实测 ghcr TLS handshake
+    timeout）就会让"已经能回滚"变成"回滚也失败"，把可自愈的升级拖成需要人工恢复。
+    """
     if not version:
         return {"ok": False, "error": "无可用旧版本号，需手动恢复备份"}
     env = dict(os.environ, PLATFORM_VERSION=version)
     services = _present_services() or list(_UPGRADABLE_SERVICES)
-    pull = _compose("pull", *services, env=env)
-    if pull.returncode != 0:
-        return {"ok": False, "error": f"回滚拉取失败：{pull.stderr[-200:]}"}
     up = _compose("up", "-d", "--no-deps", *services, env=env)
+    if up.returncode != 0:
+        # 本地没有旧镜像时才需要拉取；拉取失败再如实报错。
+        pull = _compose("pull", *services, env=env)
+        if pull.returncode != 0:
+            return {"ok": False, "error": f"回滚失败：up 失败({up.stderr[-150:]})，拉取也失败({pull.stderr[-150:]})"}
+        up = _compose("up", "-d", "--no-deps", *services, env=env)
     return {"ok": up.returncode == 0, "error": up.stderr[-200:]}
 
 

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import tempfile
 from pathlib import Path
@@ -64,16 +65,30 @@ def write_pinned_version(env_path: str | Path, version: str) -> None:
     if not content.endswith("\n"):
         content += "\n"
 
-    # 原子替换：同目录临时文件写入后 rename，避免半截 .env。
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 首选原子替换：同目录临时文件写入后 rename，避免中途崩溃留下半截 .env。
+    # 但 `.env` 在 compose 里是**单文件 bind mount**（宿主文件挂成容器内文件），
+    # rename 跨不过这个挂载点：内核/文件系统会返回 EBUSY（ZFS 上实测
+    # `Device or resource busy: '/compose/.env.xxxx.tmp' -> '/compose/.env'`）。
+    # 这种情况下退回「原地截断 + 写入」——目标就是那个挂载点本身，直接写即可。
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".env.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError as exc:
+            if exc.errno != errno.EBUSY:
+                raise
+        # 单文件 bind mount：写不进去 rename，改原地写（挂载点自身）。
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+    finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-        raise

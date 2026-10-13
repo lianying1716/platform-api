@@ -62,3 +62,35 @@ def test_rejects_invalid_version_on_write(tmp_path):
     env = tmp_path / ".env"
     with pytest.raises(ValueError):
         versionstate.write_pinned_version(env, "v1.0.0; rm -rf /")
+
+
+def test_write_falls_back_when_target_is_bind_mount(tmp_path, monkeypatch):
+    """`.env` 是单文件 bind mount 时 rename 会 EBUSY，必须退回原地写。
+
+    回归背景：在飞牛 NAS（ZFS）上实测，`os.replace(tmp, '/compose/.env')` 抛
+    `[Errno 16] Device or resource busy`——compose 把宿主 .env 以单文件方式挂进
+    updater 容器，rename 跨不过挂载点。若不兜底，网页升级会在最后一步"记录版本"
+    失败并触发回滚，用户看到升级失败。
+    """
+    import errno
+    import os as _os
+
+    env = tmp_path / ".env"
+    env.write_text("PLATFORM_VERSION=v1.0.0\nPLATFORM_PORT=9100\n", encoding="utf-8")
+
+    real_replace = _os.replace
+
+    def fake_replace(src, dst):
+        # 只对真正的目标 .env 模拟 EBUSY；清理临时文件时的 replace 不拦。
+        if str(dst).endswith(".env"):
+            raise OSError(errno.EBUSY, "Device or resource busy", str(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(versionstate.os, "replace", fake_replace)
+    versionstate.write_pinned_version(env, "v1.0.1")
+
+    assert versionstate.read_pinned_version(env) == "v1.0.1"
+    assert "PLATFORM_PORT=9100" in env.read_text(encoding="utf-8")
+    # 兜底路径也不能残留临时文件
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name != ".env"]
+    assert leftovers == [], f"残留临时文件：{leftovers}"
