@@ -71,3 +71,35 @@ def test_start_xvfb_not_used_on_windows(monkeypatch):
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.setattr(browser_qr.shutil, "which", lambda n: "/x/Xvfb")
     assert browser_qr._start_xvfb() == (None, None)
+
+
+# ---------------- 风控验证码判定：常态的 rmc-nocaptcha 不能算风控 ----------------
+class _FakeFrame:
+    def __init__(self, url):
+        self.url = url
+
+
+class _FakePage:
+    def __init__(self, urls):
+        self.frames = [_FakeFrame(u) for u in urls]
+
+
+def test_nocaptcha_sdk_iframe_is_not_a_challenge():
+    """抖音登录页常驻 rmc-nocaptcha 反欺诈 SDK，URL 含 'captcha' 但不是验证码挑战。"""
+    page = _FakePage([
+        "https://www.douyin.com/jingxuan",
+        "https://lf-rc1.yhgfb-cn-static.com/obj/rc-verifycenter/rmc-nocaptcha/1.0.0.52/index.html",
+    ])
+    assert browser_qr._has_captcha_challenge(page) is False
+
+
+def test_real_captcha_frame_is_a_challenge():
+    page = _FakePage([
+        "https://www.douyin.com/",
+        "https://verify.snssdk.com/captcha/index.html?aid=6383",
+    ])
+    assert browser_qr._has_captcha_challenge(page) is True
+
+
+def test_no_frames_no_challenge():
+    assert browser_qr._has_captcha_challenge(_FakePage([])) is False

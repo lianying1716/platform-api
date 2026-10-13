@@ -233,10 +233,32 @@ async def _close(session_id: str) -> None:
     await _stop_xvfb(sess)
 
 
+def _has_captcha_challenge(page) -> bool:
+    """页面是否真的出现风控验证码（而非常态加载的反欺诈 SDK）。
+
+    抖音登录页总会加载 ``rmc-nocaptcha`` 反欺诈 SDK iframe，其 URL 含 "captcha" 子串，
+    但它不是验证码挑战——必须排除，否则会把正常页面误判成风控。
+    """
+    for fr in page.frames:
+        url = (fr.url or "").lower()
+        if "captcha" not in url:
+            continue
+        if "nocaptcha" in url or "no-captcha" in url:
+            continue  # 常态反欺诈 SDK，不是挑战
+        return True
+    return False
+
+
 async def _qr_image_b64(page, selector: str) -> str:
     """等待二维码元素并返回 base64 PNG。
 
-    轮询等待可容忍慢加载（快手首屏较慢）；若期间出现风控验证码 iframe，抛出可读异常。
+    轮询等待可容忍慢加载（快手首屏较慢）；只有**真正等不到二维码**时才判定原因：
+    命中风控验证码 / 页面结构变化。
+
+    注意：抖音登录页**总是**加载一个 ``rmc-nocaptcha``（反欺诈 SDK）iframe，其 URL 里
+    含 "captcha" 子串但那并非验证码挑战。早期版本用 ``"captcha" in fr.url`` 在重试循环里
+    立刻抛错，会把这种常态 iframe 误判成风控（二维码其实马上就出来了），表现为"抖音扫码
+    时好时坏"。这里改为：忽略 nocaptcha，且只在最终拿不到二维码时才报风控。
     """
     el = None
     deadline = time.time() + 30
@@ -245,14 +267,13 @@ async def _qr_image_b64(page, selector: str) -> str:
             el = await page.wait_for_selector(selector, timeout=4_000)
             break
         except Exception:
-            for fr in page.frames:
-                if "captcha" in fr.url:
-                    raise BrowserQrUnavailable(
-                        "平台触发了风控验证码（当前网络/出口 IP 被标记），无法获取二维码。"
-                        "请稍后重试或改用「手动粘 Cookie」方式录入。"
-                    )
             continue
     if el is None:
+        if _has_captcha_challenge(page):
+            raise BrowserQrUnavailable(
+                "平台触发了风控验证码（当前网络/出口 IP 被标记），无法获取二维码。"
+                "请稍后重试或改用「手动粘 Cookie」方式录入。"
+            )
         raise BrowserQrUnavailable("未能在登录页找到二维码，平台页面结构可能已变化，请改用「手动粘 Cookie」。")
 
     src = str(await el.get_property("src"))
