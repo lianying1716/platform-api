@@ -42,3 +42,21 @@
 - 本次触发升级走的是 updater HTTP 接口（与网页「一键升级」按钮同一引擎）；网页按钮本身
   未点（缺 NAS 管理员密码），待补做 UI 端到端点击。
 - 升级后 `.env` 需为 `PLATFORM_VERSION=v1.0.1`（修复前遗留为 v1.0.0，已手动纠正）。
+
+## 修复后复测（v1.0.2）
+
+发布 `v1.0.2`（含上述两处修复）后复测：
+
+1. 先把 updater 边车单独重建到 `platform-api-updater:v1.0.2`（否则跑升级的仍是旧的有缺陷代码）。
+2. 触发升级 `v1.0.1 → v1.0.2`，全链路 **success**：
+   `backup ok → pull ok → recreate ok → verify ok → pin ok`。
+3. `/api/system/version` = `v1.0.2`，`db_revision=0019 == head`，`db_in_sync=true`。
+   `.env` 被正确 pin 为 `PLATFORM_VERSION=v1.0.2`（这正是修复前失败的那一步）。
+
+缺陷 1、2 均已真机确认修复。
+
+## 目录模块在 NAS 的落地
+
+`v1.0.2` 起，NAS 的 compose 增加 `PLATFORM_BROWSE_ROOTS=/data:/mnt/douyin-archive`，
+`allowed_roots()` 返回 `['/data', '/mnt/douyin-archive']`，即网页「选择目录」可浏览到
+已挂载的抖音素材库。`/api/system/fs/roots` 未登录返回 401（鉴权边界正确）。
