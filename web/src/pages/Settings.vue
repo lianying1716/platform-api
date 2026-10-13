@@ -233,7 +233,7 @@
         </el-descriptions>
 
         <div style="margin-top: 16px">
-          <el-button @click="checkUpdate" :loading="checkingUpdate">检查更新</el-button>
+          <el-button :loading="checkingUpdate" @click="checkUpdate">检查更新</el-button>
           <el-tag v-if="update.latest" :type="update.available ? 'warning' : 'success'" size="small" style="margin-left: 12px">
             {{ update.available ? `有新版本 ${update.latest}` : '已是最新版本' }}
           </el-tag>
@@ -267,14 +267,22 @@
               description="升级流程：备份 → 拉取镜像 → 重建服务 → 健康校验；任一步失败会自动回滚到当前版本。过程中服务会短暂不可用。"
             />
             <div style="margin-top: 12px">
-              <el-input v-model="upgradeVersion" placeholder="目标版本，如 v1.3.0" style="width: 220px" />
-              <el-button
-                type="primary"
-                style="margin-left: 12px"
-                :loading="upgrading"
-                :disabled="!!upgradeJob && upgradeJob.status === 'running'"
-                @click="confirmUpgrade"
-              >一键升级</el-button>
+              <template v-if="upgradeTarget">
+                <el-button
+                  type="primary"
+                  :loading="upgrading"
+                  :disabled="upgradeRunning"
+                  @click="confirmUpgrade"
+                >升级到 {{ upgradeTarget }}</el-button>
+                <span class="upgrade-hint">
+                  当前 {{ update.current || ver.app_version }}，将升级到 {{ upgradeTarget }}
+                </span>
+              </template>
+              <template v-else>
+                <el-button type="primary" :loading="checkingUpdate" @click="checkUpdate">检查更新</el-button>
+                <span v-if="update.latest" class="upgrade-hint">当前已是最新版本，无需升级</span>
+                <span v-else class="upgrade-hint">点「检查更新」查询是否有新版本</span>
+              </template>
             </div>
 
             <!-- 升级进度 -->
@@ -448,10 +456,13 @@ const loadingDiag = ref(false)
 const ver = ref<any>({ app_version: '', git_commit: '', build_time: '', db_revision: '', db_head: '', db_in_sync: false })
 const update = ref<any>({ current: '', latest: '', available: false, url: '' })
 const upgradeStatus = ref<{ enabled: boolean; current: string }>({ enabled: false, current: '' })
-const upgradeVersion = ref('')
 const checkingUpdate = ref(false)
 const upgrading = ref(false)
 const upgradeJob = ref<any>(null)
+// 升级目标 = 检查更新发现的最新版；用户从不手填版本号。
+const upgradeTarget = computed(() => (update.value.available ? update.value.latest : ''))
+// 一次升级正在跑（点击后到轮询结束前），期间禁止重复触发。
+const upgradeRunning = computed(() => upgrading.value || upgradeJob.value?.status === 'running')
 const storageDialog = ref(false)
 const rootForm = reactive({ name: '', path: '', is_default: false })
 
@@ -678,7 +689,6 @@ async function loadVersion() {
   try {
     ver.value = (await api.get('/api/system/version')).data
     upgradeStatus.value = (await api.get('/api/system/update/status')).data
-    if (!upgradeVersion.value) upgradeVersion.value = ver.value.app_version || ''
   } catch (e) {
     /* 版本信息获取失败不阻断设置页其它功能 */
   }
@@ -749,10 +759,11 @@ function startPolling() {
 }
 
 async function confirmUpgrade() {
-  if (!upgradeVersion.value) return ElMessage.warning('请填写目标版本')
+  const target = upgradeTarget.value
+  if (!target) return ElMessage.warning('没有可升级的新版本，请先点「检查更新」')
   try {
     await ElMessageBox.confirm(
-      `将升级到 ${upgradeVersion.value}。系统会先自动备份，然后拉取镜像并重建服务，期间服务短暂不可用；若新版本启动失败会自动回滚。是否继续？`,
+      `将升级到 ${target}。系统会先自动备份，然后拉取镜像并重建服务，期间服务短暂不可用；若新版本启动失败会自动回滚。是否继续？`,
       '确认升级',
       { type: 'warning', confirmButtonText: '开始升级', cancelButtonText: '取消' },
     )
@@ -761,7 +772,7 @@ async function confirmUpgrade() {
   }
   upgrading.value = true
   try {
-    await api.post('/api/system/upgrade', { version: upgradeVersion.value })
+    await api.post('/api/system/upgrade', { version: target })
     ElMessage.info('已开始升级，下方会显示进度')
     startPolling()
   } catch (e: any) {
@@ -845,6 +856,7 @@ onUnmounted(stopPolling)
 .bar .grow { margin-left: auto; }
 .path-row { display: flex; gap: 8px; }
 .path-row :deep(.el-input) { flex: 1; }
+.upgrade-hint { margin-left: 12px; color: var(--muted); font-size: var(--fs-sm); }
 .mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
 .ellip { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .muted { color: var(--muted); }
