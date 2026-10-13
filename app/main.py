@@ -90,22 +90,49 @@ async def events_stream():
     return StreamingResponse(subscribe(), media_type="text/event-stream")
 
 
-# 前端托管（仅正式包）：由 PLATFORM_SERVE_FRONTEND 控制，开发默认关闭。
-# 这样开发时后端只提供 /api，前端走 Vite dev server，不会误托管 app/static 里的旧构建产物。
-if settings.serve_frontend:
-    if not _STATIC_DIR.is_dir():
+def mount_frontend(target_app: FastAPI, static_dir: Path) -> None:
+    """挂载正式前端产物（仅 PLATFORM_SERVE_FRONTEND=true 时调用）并设置缓存策略。
+
+    - index.html / SPA 回退：**no-cache**，每次回源校验。否则浏览器会用启发式缓存把
+      index.html 缓存住，升级后页面仍引用旧的 hashed bundle，用户看到旧界面——本平台
+      实测踩过：升级到新版后前端仍显示"手填版本号"的旧升级交互。
+    - /assets 下带 hash 的资源：immutable 长缓存（文件名含 hash，内容一变名字就变）。
+    """
+    if not static_dir.is_dir():
         raise RuntimeError(
             "PLATFORM_SERVE_FRONTEND=true 但未找到前端构建产物 app/static/；"
             "请先构建正式包（./dev.sh web 或 cd web && npm run build:release）或关闭该开关。"
         )
-    app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    class _HashedStatic(StaticFiles):
+        """带内容哈希的 /assets 资源：可长缓存（immutable）。"""
+
+        def file_response(self, *args, **kwargs):  # type: ignore[override]
+            resp = super().file_response(*args, **kwargs)
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return resp
+
+    target_app.mount("/assets", _HashedStatic(directory=static_dir / "assets"), name="assets")
+
+    def _index_response() -> FileResponse:
+        resp = FileResponse(static_dir / "index.html")
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+    @target_app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):
-        candidate = _STATIC_DIR / full_path
+        candidate = static_dir / full_path
         if full_path and candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(_STATIC_DIR / "index.html")
+            resp = FileResponse(candidate)
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
+        return _index_response()
+
+
+# 前端托管（仅正式包）：由 PLATFORM_SERVE_FRONTEND 控制，开发默认关闭。
+# 这样开发时后端只提供 /api，前端走 Vite dev server，不会误托管 app/static 里的旧构建产物。
+if settings.serve_frontend:
+    mount_frontend(app, _STATIC_DIR)
 else:
     @app.get("/", include_in_schema=False)
     def dev_index():
