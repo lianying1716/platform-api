@@ -16,6 +16,7 @@ import base64
 import os
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -165,9 +166,14 @@ def _extra_credential(platform: str) -> dict:
 def _start_xvfb() -> tuple[subprocess.Popen | None, str | None]:
     """无 DISPLAY 时起一个进程内 Xvfb，返回 (进程, display)。
 
-    已有 DISPLAY 或 Xvfb 不可用则返回 (None, None)（后者由启动 Chromium 时暴露为可读错误）。
+    Xvfb 只在 **Linux** 有意义：macOS / Windows 由系统窗口服务提供显示，有头模式可直接
+    启动，不需要也不会用到 Xvfb（macOS 上即便装了 Xvfb 也不该走这条路）。所以非 Linux
+    平台直接返回 (None, None)，由调用方按"平台自带显示"处理。
+    已有 DISPLAY 或 Xvfb 不可用也返回 (None, None)。
     """
     if os.environ.get("DISPLAY"):
+        return None, None
+    if sys.platform != "linux":
         return None, None
     exe = shutil.which("Xvfb")
     if not exe:
@@ -268,9 +274,9 @@ async def browser_qr_start(platform: str) -> QrStart:
     xvfb_proc = None
     launch_env = None
     if needs_display:
-        if os.environ.get("DISPLAY"):
-            launch_env = None  # 环境已有显示，直接用
-        else:
+        # macOS / Windows 自带窗口服务，有头模式可直接启动，不依赖 DISPLAY / Xvfb。
+        # 只有 Linux 在无 DISPLAY 时才需要临时起一个 Xvfb。
+        if sys.platform == "linux" and not os.environ.get("DISPLAY"):
             xvfb_proc, display = _start_xvfb()
             if xvfb_proc is None or not display:
                 raise BrowserQrUnavailable(

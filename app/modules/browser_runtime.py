@@ -12,7 +12,10 @@
 """
 
 import logging
+import os
 import shutil
+import sys
+from pathlib import Path
 
 logger = logging.getLogger("platform.browser_runtime")
 
@@ -30,19 +33,25 @@ def chromium_installed() -> bool:
     """检测 Playwright 的 chromium 二进制是否已下载。"""
     if not playwright_installed():
         return False
-    try:
-        from playwright._impl._driver import compute_driver_executable  # noqa: F401
-    except Exception:
-        pass
-    # Playwright 默认把浏览器装到 ~/.cache/ms-playwright 或 PLAYWRIGHT_BROWSERS_PATH
-    import os
-    from pathlib import Path
-
-    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or str(Path.home() / ".cache" / "ms-playwright")
-    p = Path(base)
-    if not p.is_dir():
-        return False
-    return any(p.glob("chromium-*"))
+    # 候选目录：显式环境变量优先；否则按平台取 Playwright 的真实默认位置。
+    # 关键：macOS 上不是 ~/.cache，而是 ~/Library/Caches/ms-playwright —— 只查
+    # ~/.cache 会在 mac 上恒判为"缺 Chromium"，导致诊断误报、扫码被拦。
+    env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if env:
+        candidates = [Path(env)]
+    else:
+        home = Path.home()
+        candidates = [home / ".cache" / "ms-playwright"]
+        if sys.platform == "darwin":
+            candidates.insert(0, home / "Library" / "Caches" / "ms-playwright")
+        elif sys.platform == "win32":
+            local = os.environ.get("LOCALAPPDATA")
+            if local:
+                candidates.insert(0, Path(local) / "ms-playwright")
+    for p in candidates:
+        if p.is_dir() and any(p.glob("chromium-*")):
+            return True
+    return False
 
 
 async def health() -> dict:
