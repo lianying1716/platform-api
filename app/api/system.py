@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core import security, storage
+from app.core import fs_browse, security, storage
 from app.core.process_settings import (
     _valid_dimension_list as _valid_common_dimensions,
     _valid_taxonomy,
@@ -153,7 +153,10 @@ def create_storage_root(body: StorageRootIn, db: Session = Depends(get_db)):
     db.add(root)
     db.commit()
     db.refresh(root)
-    return {"id": root.id}
+    # 回带可用性供前端软提示：路径对 backend/worker 进程是否真实可写。
+    # 不阻塞保存——非 Windows 主机配置 Windows 路径仍合法（只是"存了待校验"）。
+    ok, detail = storage.probe_root(root.path)
+    return {"id": root.id, "available": ok, "detail": detail}
 
 
 @router.delete("/storage-roots/{root_id}")
@@ -164,6 +167,28 @@ def delete_storage_root(root_id: int, db: Session = Depends(get_db)):
     db.delete(root)
     db.commit()
     return {"ok": True}
+
+
+# ---------- 目录浏览（存储根可视化选择；只读） ----------
+@router.get("/fs/roots")
+def list_fs_roots():
+    """允许浏览的根清单（白名单）。前端「选择目录」用它做根快捷入口。
+
+    只读接口，仅管理员可调；真正的落盘红线不受影响（仍走 storage_root + relative_path）。
+    """
+    return {"roots": fs_browse.allowed_roots()}
+
+
+@router.get("/fs/list")
+def list_fs_dir(path: str = ""):
+    """列出某目录下的子目录（仅目录，不含文件）。越界/不存在返回 400。
+
+    path 为空时回第一个存在的白名单根。前端据此画面包屑 + 目录列表。
+    """
+    try:
+        return fs_browse.list_dir(path)
+    except fs_browse.BrowseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------- 通用设置（大模型/代理等，存 system_setting 键值） ----------

@@ -20,8 +20,18 @@ services:
       # 一键升级：仅在设置了这两个变量时才启用（默认关闭 → 前端不显示升级按钮）。
       PLATFORM_UPDATER_URL: ${PLATFORM_UPDATER_URL:-}
       PLATFORM_UPDATER_TOKEN: ${PLATFORM_UPDATER_TOKEN:-}
+      # 存储目录可视化选择：允许在网页「选择目录」里浏览的白名单根（`:` 分隔）。
+      # 留空 = 容器内安全默认（只放行 /data）。要让用户选到宿主目录，先把宿主目录
+      # bind mount 进来（见下面 volumes 注释），再把容器内的挂载点列在这里。
+      PLATFORM_BROWSE_ROOTS: ${PLATFORM_BROWSE_ROOTS:-}
     volumes:
       - platform-data:/data        # secret.key 与本地文件；备份必须包含此卷
+      # 例：把宿主候选目录挂进容器，供「存储目录」可视化选择（宿主机路径:容器内路径）。
+      #   宿主 NAS  /volume1/xsai  →  容器 /mnt/nas
+      #   宿主 本地 /srv/xsai      →  容器 /mnt/local
+      # 再把 PLATFORM_BROWSE_ROOTS=/data:/mnt/nas:/mnt/local 打开即可。
+      # - ${STORAGE_NAS:-./data/nas}:/mnt/nas
+      # - ${STORAGE_LOCAL:-./data/local}:/mnt/local
     depends_on:
       db:
         condition: service_healthy
@@ -47,6 +57,10 @@ services:
       PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
     volumes:
       - platform-data:/data
+      # 注意：worker 是真正落盘素材的进程，宿主候选目录也必须挂进 worker，
+      # 且用**同一容器内路径**，否则列表里选得到、下载却写不进去。
+      # - ${STORAGE_NAS:-./data/nas}:/mnt/nas
+      # - ${STORAGE_LOCAL:-./data/local}:/mnt/local
     depends_on:
       db:
         condition: service_healthy

@@ -349,7 +349,10 @@
           <el-input v-model="rootForm.name" placeholder="例如：本机素材 / NAS" />
         </el-form-item>
         <el-form-item label="路径">
-          <el-input v-model="rootForm.path" placeholder="/mnt/nas/xsai-content" />
+          <div class="path-row">
+            <el-input v-model="rootForm.path" placeholder="/mnt/nas/xsai-content" />
+            <button type="button" class="ui-btn sm" @click="openPicker">浏览…</button>
+          </div>
         </el-form-item>
         <el-form-item label="设为默认">
           <el-switch v-model="rootForm.is_default" />
@@ -360,12 +363,69 @@
         <el-button type="primary" @click="createRoot">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 目录浏览器：读取 backend/worker 进程可见的目录树（只读白名单），点选回填路径 -->
+    <el-dialog v-model="pickerDialog" title="选择目录" width="580px" destroy-on-close append-to-body>
+      <div class="picker">
+        <div class="picker-roots">
+          <span class="picker-label">根目录</span>
+          <button
+            v-for="r in fsRoots"
+            :key="r.path"
+            type="button"
+            class="ui-btn sm"
+            :class="{ on: browseRoot === r.path }"
+            :disabled="!r.exists"
+            :title="r.path + (r.exists ? '' : '（不可用）')"
+            @click="loadDir(r.path)"
+          >
+            {{ rootLabel(r) }}
+          </button>
+          <span v-if="!fsRoots.length" class="picker-label">无可用根目录</span>
+        </div>
+        <div class="picker-crumbs">
+          <button type="button" class="ui-btn sm ghost" :disabled="!browseParent" @click="loadDir(browseParent!)">
+            ↑ 上一级
+          </button>
+          <span class="crumbs mono">
+            <template v-for="(c, i) in crumbs" :key="c.path">
+              <span v-if="i && !crumbs[i - 1].path.endsWith(browseSep)" class="sep">{{ browseSep }}</span>
+              <a @click="loadDir(c.path)">{{ c.label }}</a>
+            </template>
+          </span>
+        </div>
+        <div class="picker-list" v-loading="loadingDir">
+          <div v-if="!loadingDir && !browseEntries.length" class="picker-empty">此目录下没有子目录</div>
+          <button
+            v-for="e in browseEntries"
+            :key="e.path"
+            type="button"
+            class="picker-item"
+            @click="loadDir(e.path)"
+          >
+            <span class="pick-name">{{ e.name }}</span>
+            <span class="grow" />
+            <span v-if="!e.writable" class="ui-badge warn">只读</span>
+          </button>
+        </div>
+        <div class="picker-manual">
+          <el-input v-model="browseManual" placeholder="也可直接输入路径，如 /mnt/nas/xsai-content" size="small" />
+          <button type="button" class="ui-btn sm" @click="loadDir(browseManual)">前往</button>
+        </div>
+      </div>
+      <template #footer>
+        <span class="picker-picked mono" :title="browsePath">{{ browsePath || '未选择目录' }}</span>
+        <span class="grow" />
+        <el-button @click="pickerDialog = false">取消</el-button>
+        <el-button type="primary" :disabled="!browsePath" @click="chooseDir">选用此目录</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api } from '../api'
 
 const tab = ref('storage')
@@ -394,6 +454,96 @@ const upgrading = ref(false)
 const upgradeJob = ref<any>(null)
 const storageDialog = ref(false)
 const rootForm = reactive({ name: '', path: '', is_default: false })
+
+// ---- 目录浏览器（只读白名单，读取 backend/worker 进程可见的目录树）----
+const pickerDialog = ref(false)
+const fsRoots = ref<any[]>([])
+const browseRoot = ref('')
+const browsePath = ref('')
+const browseParent = ref<string | null>(null)
+const browseSep = ref('/')
+const browseEntries = ref<any[]>([])
+const browseManual = ref('')
+const loadingDir = ref(false)
+
+// 面包屑：从根到当前路径逐级切分（Windows 保留盘符前缀）。
+const crumbs = computed(() => {
+  const p = browsePath.value || ''
+  if (!p) return []
+  const sep = browseSep.value || '/'
+  const out: { label: string; path: string }[] = []
+  if (/^[A-Za-z]:[\\/]/.test(p)) {
+    const drive = p.slice(0, 2) + sep
+    out.push({ label: p.slice(0, 2), path: drive })
+    let acc = drive
+    for (const seg of p.slice(3).split(/[\\/]+/).filter(Boolean)) {
+      acc = acc.endsWith(sep) ? acc + seg : acc + sep + seg
+      out.push({ label: seg, path: acc })
+    }
+    return out
+  }
+  out.push({ label: sep, path: sep })
+  let acc = ''
+  for (const seg of p.split(/[\\/]+/).filter(Boolean)) {
+    acc = acc + sep + seg
+    out.push({ label: seg, path: acc })
+  }
+  return out
+})
+
+function rootLabel(r: any) {
+  return r.path === '/' ? '根 /' : r.path
+}
+
+async function loadFsRoots() {
+  const { data } = await api.get('/api/system/fs/roots')
+  fsRoots.value = data.roots || []
+}
+
+async function loadDir(path: string) {
+  loadingDir.value = true
+  try {
+    const { data } = await api.get('/api/system/fs/list', { params: { path } })
+    browsePath.value = data.path
+    browseParent.value = data.parent || null
+    browseSep.value = data.sep || '/'
+    browseEntries.value = data.entries || []
+    browseManual.value = data.path
+    // 高亮当前所属根（用于根快捷入口的激活态）
+    const sep = data.sep || '/'
+    const hit = (data.roots || []).find(
+      (r: any) => data.path === r.path || data.path.startsWith(r.path === '/' ? '/' : r.path + sep),
+    )
+    if (hit) browseRoot.value = hit.path
+  } catch (e: any) {
+    // 400（越界/不存在）由 api 拦截器统一提示；这里保持当前目录不变
+  } finally {
+    loadingDir.value = false
+  }
+}
+
+async function openPicker() {
+  pickerDialog.value = true
+  browseManual.value = rootForm.path || ''
+  await loadFsRoots()
+  // 优先打开当前已填路径；不在白名单（例如非本机风格的路径）时回第一个可用根。
+  if (rootForm.path) await loadDir(rootForm.path)
+  if (!browsePath.value) {
+    const first = fsRoots.value.find((r) => r.exists) || fsRoots.value[0]
+    await loadDir(first ? first.path : '')
+  }
+}
+
+function chooseDir() {
+  if (!browsePath.value) return
+  rootForm.path = browsePath.value
+  if (!rootForm.name.trim()) {
+    const seg = browsePath.value.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || browsePath.value
+    rootForm.name = seg
+  }
+  pickerDialog.value = false
+}
+
 const settings = reactive<any>({ llm_base_url: '', llm_model: '', llm_api_key: '', proxy_url: '', llm_api_key_set: false })
 const pwd = reactive({ old_password: '', new_password: '' })
 const commentSettings = reactive({
@@ -693,9 +843,36 @@ onUnmounted(stopPolling)
 <style scoped>
 .bar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .bar .grow { margin-left: auto; }
+.path-row { display: flex; gap: 8px; }
+.path-row :deep(.el-input) { flex: 1; }
 .mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
 .ellip { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .muted { color: var(--muted); }
+
+/* 目录浏览器 */
+.picker { display: flex; flex-direction: column; gap: 10px; }
+.picker-roots { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.picker-roots .ui-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.picker-label { color: var(--muted); font-size: var(--fs-sm); }
+.picker-crumbs { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.picker-crumbs .crumbs { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.picker-crumbs .crumbs a { cursor: pointer; color: var(--ink-2); }
+.picker-crumbs .crumbs a:hover { color: var(--accent); text-decoration: underline; }
+.picker-crumbs .sep { margin: 0 2px; }
+.picker-list { border: 1px solid var(--line-soft); border-radius: var(--radius); max-height: 300px; min-height: 120px; overflow-y: auto; }
+.picker-item {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: transparent; border: 0; border-bottom: 1px solid var(--line-soft);
+  font: inherit; color: var(--ink-2); text-align: left; cursor: pointer;
+}
+.picker-item:last-child { border-bottom: 0; }
+.picker-item:hover { background: color-mix(in oklab, var(--accent) 6%, transparent); }
+.picker-item .grow { margin-left: auto; }
+.picker-item .pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-empty { padding: 28px 12px; text-align: center; color: var(--muted); }
+.picker-manual { display: flex; gap: 8px; }
+.picker-manual :deep(.el-input) { flex: 1; }
+.picker-picked { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 
 /* 隐藏 el-tabs 自带的导航条，只保留内容切换能力 */
 .tabs-body :deep(.el-tabs__header) { display: none; }
