@@ -28,6 +28,9 @@ def test_probe_text_image_video_success(monkeypatch, session, tmp_path):
     monkeypatch.setattr(model_probe, "_red_image", lambda _color=None: b"PNG")
     monkeypatch.setattr(model_probe, "_choose_probe_color", lambda: "red")
     monkeypatch.setattr(model_probe, "_red_blue_video", lambda *_a, **_k: b"MP4")
+    # 视频探测以 shutil.which("ffmpeg") 为门：无 ffmpeg 的机器上会走"跳过"分支而非探测。
+    # 这里断言的是"探测成功"路径，故强制 ffmpeg 可用，避免依赖 CI 是否装了 ffmpeg。
+    monkeypatch.setattr(model_probe.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
 
     async def fake_chat(*args, **kwargs):
         body = kwargs["request"]

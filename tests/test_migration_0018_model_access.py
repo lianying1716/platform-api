@@ -130,12 +130,15 @@ def test_migration_0018_full_legacy_config_migrates_and_removes_plaintext(tmp_pa
 
 
 def test_migration_0018_missing_key_does_not_take_over(tmp_path, monkeypatch):
+    """残缺旧配置：有 Base URL 与模型名、无有效访问密钥。
+
+    设计 §7 步骤 7：允许升级新表结构，但不建立任何 assignment、不写完成标记。
+    加密子系统必须就绪（步骤 0.1）——由 autouse 夹具提供显式密钥，这里不再清空，
+    否则结果会随 `data/secret.key` 是否存在而漂移（CI 无该文件时会被门禁拦下）。
+    """
     url = _sqlite_url(tmp_path)
     cfg = _cfg(url)
     command.upgrade(cfg, "0017")
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "credential_enc_key", "")
     engine = create_engine(url)
     with engine.begin() as conn:
         for key, value in {
