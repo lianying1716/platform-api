@@ -146,6 +146,13 @@
       <div class="qr-box">
         <img v-if="qrImage" :src="`data:image/png;base64,${qrImage}`" alt="二维码" class="qr-img" />
         <p class="qr-status" :class="qrStatus">{{ qrMessage }}</p>
+        <p
+          v-if="qrStatus === 'pending' || qrStatus === 'scanned'"
+          class="qr-countdown"
+          :class="{ warn: qrRemaining <= 60 }"
+        >
+          二维码有效期剩余 <b>{{ countdownText }}</b>
+        </p>
         <p v-if="qrStatus === 'expired' || qrStatus === 'error'" class="qr-hint">
           二维码已失效，点下方按钮重新获取
         </p>
@@ -184,6 +191,36 @@ const qrMessage = ref('')
 const qrStatus = ref('pending')
 let pollTimer: number | undefined
 let pollErrors = 0
+// 二维码倒计时：后端 qr_session_ttl（默认 300s）为准，前端只负责展示。
+const qrRemaining = ref(0)
+let countdownTimer: number | undefined
+
+const countdownText = computed(() => {
+  const s = Math.max(0, qrRemaining.value)
+  const m = Math.floor(s / 60)
+  const sec = s % 60
+  return `${m}:${String(sec).padStart(2, '0')}`
+})
+
+function stopCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = undefined
+  }
+}
+
+function startCountdown(seconds: number) {
+  stopCountdown()
+  qrRemaining.value = Math.max(0, Math.floor(seconds || 0))
+  countdownTimer = window.setInterval(() => {
+    if (qrRemaining.value > 0) {
+      qrRemaining.value -= 1
+    } else {
+      // 到点即停：本地先反映失效，服务端轮询结果以同样语义收口。
+      stopCountdown()
+    }
+  }, 1000)
+}
 
 const form = reactive<{ platform: string; display_name: string; credential: Record<string, string> }>({
   platform: 'bilibili',
@@ -280,6 +317,7 @@ async function startQr() {
     qrStatus.value = 'pending'
     qrDialog.value = true
     pollErrors = 0
+    startCountdown(data.expires_in)
     pollTimer = window.setInterval(() => poll(data.session_id), 3000)
   } finally {
     submitting.value = false
@@ -301,6 +339,7 @@ async function poll(sessionId: string) {
     } else if (data.status === 'expired' || data.status === 'error') {
       stopPolling()
       if (data.status === 'expired') {
+        qrRemaining.value = 0
         ElMessage.warning('二维码已超时，请重新获取')
       }
     }
@@ -319,6 +358,7 @@ function stopPolling() {
     clearInterval(pollTimer)
     pollTimer = undefined
   }
+  stopCountdown()
 }
 
 async function check(row: Account) {
@@ -519,6 +559,23 @@ onUnmounted(stopPolling)
 .qr-status.scanned {
   color: var(--warn);
   font-weight: 700;
+}
+
+.qr-countdown {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 2px 0 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.qr-countdown b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.qr-countdown.warn,
+.qr-countdown.warn b {
+  color: var(--danger);
 }
 
 .qr-hint {
