@@ -269,6 +269,8 @@
 </template>
 
 <script setup lang="ts">
+// 显式组件名：Layout 的 keep-alive include 按组件名匹配，切页返回时保留本页数据。
+defineOptions({ name: 'OverviewPage' })
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'

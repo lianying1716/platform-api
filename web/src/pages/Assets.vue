@@ -466,8 +466,10 @@
 </template>
 
 <script setup lang="ts">
+// 显式组件名：Layout 的 keep-alive include 按组件名匹配，切页返回时保留本页数据。
+defineOptions({ name: 'AssetsPage' })
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import PlatformMark from '../components/PlatformMark.vue'
 import { api } from '../api'
@@ -848,15 +850,16 @@ function fmtTime(v: string | null) {
   return new Date(v.endsWith('Z') ? v : v + 'Z').toLocaleString('zh-CN', { hour12: false })
 }
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  // silent：keep-alive 复用时的后台刷新，不显示遮罩，先展示缓存内容再默默更新。
+  if (!silent) loading.value = true
   try {
     const { data } = await api.get('/api/assets', {
       params: { ...filters, limit: 200 },
     })
     assets.value = data
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -921,15 +924,52 @@ async function exportSel(format: string) {
   URL.revokeObjectURL(url)
 }
 
-onMounted(() => {
+// 读取路由 query 里的筛选（从总览跳转过来时带 platform / account_id）。
+// 抽成函数：首屏与 keep-alive 复用（onActivated）都要用；否则组件被缓存后
+// 再次带 query 进入，老实例不会重新读参数，筛选会失灵。
+// 用「路由签名」而非本地 filters 判断是否需要重查——页内手动改的筛选不该被当成路由变化。
+let appliedQueryKey = ''
+function routeQueryKey() {
+  return `${route.query.platform || ''}|${route.query.account_id || ''}`
+}
+function applyRouteQuery() {
   const qPlatform = String(route.query.platform || '')
   const qAccount = Number(route.query.account_id || 0)
   if (qPlatform) filters.platform = qPlatform
   if (qAccount) filters.account_id = qAccount
+}
+
+onMounted(() => {
+  applyRouteQuery()
+  appliedQueryKey = routeQueryKey()
   loadAccounts()
   loadTaxonomy()
   load()
 })
+
+let firstActivate = true
+onActivated(() => {
+  // onActivated 首次挂载也会触发；首屏由 onMounted 负责，跳过首次避免重复请求。
+  if (firstActivate) {
+    firstActivate = false
+    return
+  }
+  // 复用缓存实例时**不重新拉取**：保留已加载内容，切页返回零加载、零跳变。
+  // 只有从总览带筛选条件跳转进来（路由 query 变了）才按新条件重查。
+  if (routeQueryKey() !== appliedQueryKey) {
+    appliedQueryKey = routeQueryKey()
+    applyRouteQuery()
+    load(true)
+  }
+})
+
+onDeactivated(() => {
+  // 离开页面即停轮询、关详情抽屉，避免后台空转与"返回后仍停在旧详情"的割裂感。
+  stopProcPoll()
+  stopBdPoll()
+  drawer.value = false
+})
+
 onUnmounted(() => {
   stopProcPoll()
   stopBdPoll()

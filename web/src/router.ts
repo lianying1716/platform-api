@@ -25,14 +25,14 @@ export const router = createRouter({
       children: [
         { path: '', redirect: '/overview' },
         // 总览已合并原「数据看板」
-        { path: 'overview', component: Overview, meta: { title: '总览' } },
+        { path: 'overview', component: Overview, meta: { title: '总览', keepAlive: true } },
         { path: 'analytics', redirect: '/overview' },
         { path: 'accounts', component: Accounts, meta: { title: '账号中心' } },
         { path: 'crawl', component: Crawl, meta: { title: '关键词采集' } },
         // 关注列表已合并原「订阅同步」
         { path: 'followed-creators', component: FollowedCreators, meta: { title: '关注列表' } },
         { path: 'subscriptions', redirect: '/followed-creators' },
-        { path: 'assets', component: Assets, meta: { title: '素材库' } },
+        { path: 'assets', component: Assets, meta: { title: '素材库', keepAlive: true } },
         { path: 'pipeline', component: Pipeline, meta: { title: '处理队列' } },
         { path: 'models', component: ModelAccess, meta: { title: '模型接入' } },
         { path: 'ai', component: AiAccess, meta: { title: 'AI 接入' } },

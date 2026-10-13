@@ -36,13 +36,23 @@
         <router-link class="ui-btn sm" to="/system">系统设置</router-link>
       </header>
       <main class="ui-content">
-        <router-view />
+        <!--
+          对标记了 meta.keepAlive 的页面做缓存：切页返回时复用组件实例（数据保留），
+          不再每次 onMounted 重新拉全量——总览/素材库这种重数据页尤其明显。
+          需即时性的页面（处理队列有 5s 轮询）不缓存。
+        -->
+        <router-view v-slot="{ Component }">
+          <keep-alive :include="keepAliveNames">
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
       </main>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { DEMO_MODE } from '../demo/runtime'
@@ -50,6 +60,18 @@ import '../styles/ui.css'
 
 const route = useRoute()
 const router = useRouter()
+
+// keep-alive 的 include 用组件名匹配；只缓存显式声明 meta.keepAlive 的页面。
+// 注意：router.getRoutes() 返回的是**扁平化**后的路由（子路由 path 已拼成完整路径），
+// 不能再走 .children，否则 include 恒为空、keep-alive 形同虚设。
+const keepAliveNames = computed(
+  () =>
+    router
+      .getRoutes()
+      .filter((r) => r.meta?.keepAlive)
+      .map((r) => (r.components?.default as any)?.name)
+      .filter(Boolean) as string[],
+)
 
 // 导航顺序与信息架构同步：总览（合并数据看板）、关注列表（合并订阅同步）
 const menu = [
