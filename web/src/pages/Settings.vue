@@ -232,13 +232,6 @@
           <el-descriptions-item label="构建时间">{{ ver.build_time || '—' }}</el-descriptions-item>
         </el-descriptions>
 
-        <div style="margin-top: 16px">
-          <el-button :loading="checkingUpdate" @click="checkUpdate">检查更新</el-button>
-          <el-tag v-if="update.latest" :type="update.available ? 'warning' : 'success'" size="small" style="margin-left: 12px">
-            {{ update.available ? `有新版本 ${update.latest}` : '已是最新版本' }}
-          </el-tag>
-        </div>
-
         <el-alert
           v-if="update.available && update.url"
           type="warning"
@@ -267,22 +260,21 @@
               description="升级流程：备份 → 拉取镜像 → 重建服务 → 健康校验；任一步失败会自动回滚到当前版本。过程中服务会短暂不可用。"
             />
             <div style="margin-top: 12px">
-              <template v-if="upgradeTarget">
-                <el-button
-                  type="primary"
-                  :loading="upgrading"
-                  :disabled="upgradeRunning"
-                  @click="confirmUpgrade"
-                >升级到 {{ upgradeTarget }}</el-button>
-                <span class="upgrade-hint">
-                  当前 {{ update.current || ver.app_version }}，将升级到 {{ upgradeTarget }}
-                </span>
-              </template>
-              <template v-else>
-                <el-button type="primary" :loading="checkingUpdate" @click="checkUpdate">检查更新</el-button>
-                <span v-if="update.latest" class="upgrade-hint">当前已是最新版本，无需升级</span>
-                <span v-else class="upgrade-hint">点「检查更新」查询是否有新版本</span>
-              </template>
+              <el-button
+                v-if="upgradeTarget"
+                type="primary"
+                :loading="upgrading"
+                :disabled="upgradeRunning"
+                @click="confirmUpgrade"
+              >升级到 {{ upgradeTarget }}</el-button>
+              <el-button v-else type="primary" :loading="checkingUpdate" @click="checkUpdate">检查更新</el-button>
+              <el-tag
+                v-if="update.latest"
+                :type="update.available ? 'warning' : 'success'"
+                size="small"
+                style="margin-left: 12px"
+              >{{ update.available ? `有新版本 ${update.latest}` : '已是最新版本' }}</el-tag>
+              <span v-if="upgradeTarget" class="upgrade-hint">当前 {{ update.current || ver.app_version }}</span>
             </div>
 
             <!-- 升级进度 -->
