@@ -237,6 +237,24 @@ def _as_int(value) -> int:
         return 0
 
 
+def follower_count_of(profile) -> int:
+    """读博主粉丝数：列值优先，列为 0 时回退原始快照里的 ``follower_count``。
+
+    历史数据里有一批行在适配器还没解析粉丝数时落库（列写 0），但 ``raw`` 快照
+    一直带着真实数字。这里做读取兜底，让这些行不必等下一次刷新就能显示；
+    下次刷新会按适配器的新解析把列值写正，兜底自然失效。
+    """
+    if profile is None:
+        return 0
+    count = _as_int(getattr(profile, "follower_count", 0))
+    if count:
+        return count
+    raw = getattr(profile, "raw", None)
+    if isinstance(raw, dict):
+        return _as_int(raw.get("follower_count"))
+    return 0
+
+
 def _jsonable(value):
     """把任意对象归一为可 JSON 序列化的结构（不可序列化的值退化为字符串）。"""
     try:

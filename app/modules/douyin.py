@@ -31,6 +31,15 @@ def _ts_to_iso(value) -> str | None:
     except (TypeError, ValueError, OSError):
         return None
 
+
+def _int_or_zero(value) -> int:
+    """把平台返回的数字/数字字符串归一为 int；缺失或非法一律 0。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 _HOST = "https://www.douyin.com"
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 
@@ -671,10 +680,11 @@ class DouyinAdapter:
         return out[:limit]
 
     async def list_followings(self, credential: dict, limit: int = 200) -> list[dict]:
-        """关注的博主**富列表**（供「关注博主」页）：真头像/昵称/签名/认证/主页。
+        """关注的博主**富列表**（供「关注博主」页）：真头像/昵称/签名/认证/主页/粉丝数。
 
         列表：``/aweme/v1/web/user/following/list`` 分页（offset/count）。
-        粉丝/获赞：需逐用户 ``profile/other``（要 a_bogus 签名），留 0，由「刷新」时单独补齐。
+        关注列表响应里每个用户**自带** ``follower_count``（实测 189/200 有值），
+        直接取用；缺失才留 0，由上层补全兜底。
         字段缺失跳过；**认证失效/风控抛可读异常**（便于上层进入冷却）。
         """
         sec_user_id = (credential.get("sec_user_id") or "").strip()
@@ -713,7 +723,8 @@ class DouyinAdapter:
                             "home_url": f"https://www.douyin.com/user/{suid}",
                             "signature": f.get("signature", ""),
                             "verified": bool(f.get("enterprise_verify_reason")),
-                            "follower_count": 0,  # best-effort，由刷新补齐
+                            # 关注列表响应自带粉丝数，直接落库（缺失才为 0）。
+                            "follower_count": _int_or_zero(f.get("follower_count")),
                             "like_count": 0,
                             "raw": f,
                         }

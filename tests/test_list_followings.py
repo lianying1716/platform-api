@@ -152,6 +152,7 @@ async def test_douyin_list_followings_rich(monkeypatch):
                 "sec_uid": "SEC1", "nickname": "老饭骨",
                 "signature": "国宴大师",
                 "enterprise_verify_reason": "官方认证",
+                "follower_count": 4928841,
                 "avatar_larger": {"url_list": ["https://p3.douyinpic.com/av1.jpeg"]},
             },
             {
@@ -171,8 +172,9 @@ async def test_douyin_list_followings_rich(monkeypatch):
     assert c0["signature"] == "国宴大师"
     assert c0["verified"] is True
     assert c0["home_url"] == "https://www.douyin.com/user/SEC1"
-    # 无签名时粉丝/获赞留 0（best-effort，不阻塞）
-    assert c0["follower_count"] == 0
+    # 关注列表响应自带 follower_count，直接取用（缺失才为 0）
+    assert c0["follower_count"] == 4928841
+    assert out[1]["follower_count"] == 0
     assert c0["like_count"] == 0
 
 

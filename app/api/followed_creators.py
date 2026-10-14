@@ -31,7 +31,7 @@ from app.core.crypto import decrypt_credential
 from app.db import get_db
 from app.models import CreatorProfile, PlatformAccount, Subscription
 from app.modules import get_adapter
-from app.services.foundation import upsert_creator
+from app.services.foundation import follower_count_of, upsert_creator
 from app.services.sync_service import run_subscription_sync
 
 router = APIRouter(
@@ -73,7 +73,8 @@ def _out(sub: Subscription, profile: CreatorProfile | None) -> dict:
         "home_url": profile.homepage_url if profile else "",
         "signature": profile.bio if profile else "",
         "verified": bool(profile.verified) if profile else False,
-        "follower_count": profile.follower_count if profile else 0,
+        # 列值为 0 时回退原始快照：历史行不必等下次刷新就能显示真实粉丝数。
+        "follower_count": follower_count_of(profile),
         "like_count": 0,
         # 关系状态：全部来自 subscription（唯一真相）
         "sync_enabled": sub.enabled,

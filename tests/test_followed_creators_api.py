@@ -100,6 +100,62 @@ def test_refresh_reflects_updated_avatar_and_keeps_flags(client, session, monkey
     assert sub.enabled is True and sub.only_new is False   # 开关保留
 
 
+def test_refresh_persists_follower_count_for_douyin(client, session, monkeypatch):
+    """抖音关注列表自带粉丝数：刷新必须落进 creator_profile 并由接口返回。
+
+    回归：此前抖音适配器把 follower_count 写死 0，且抖音没有 fetch_follower_count，
+    补全逻辑直接跳过，导致关注列表整页粉丝数永远显示「—」。
+    """
+    from app.modules.douyin import DouyinAdapter
+
+    acc = _account(session, platform="douyin")
+    monkeypatch.setattr(
+        DouyinAdapter,
+        "list_followings",
+        _fake_followings(
+            [
+                _author("SEC1", "姜胡说", follower_count=4928841,
+                        home_url="https://www.douyin.com/user/SEC1"),
+                _author("SEC2", "无粉丝数据", follower_count=0,
+                        home_url="https://www.douyin.com/user/SEC2"),
+            ]
+        ),
+    )
+
+    r = client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
+    assert r.status_code == 200, r.text
+
+    p = session.query(CreatorProfile).filter_by(platform="douyin", author_id="SEC1").one()
+    assert p.follower_count == 4928841
+
+    rows = {c["author_id"]: c for c in client.get("/api/followed-creators?platform=douyin").json()}
+    assert rows["SEC1"]["follower_count"] == 4928841
+    assert rows["SEC2"]["follower_count"] == 0
+
+
+def test_follower_count_falls_back_to_raw_snapshot(client, session):
+    """历史行（列写 0、raw 快照有值）读取时要回退 raw，不必等下次刷新。"""
+    from app.models import Subscription
+
+    acc = _account(session, platform="douyin")
+    session.add(
+        Subscription(
+            account_id=acc.id, platform="douyin", source_type="creator",
+            remote_id="SEC9", title="旧数据博主", enabled=True,
+        )
+    )
+    session.add(
+        CreatorProfile(
+            platform="douyin", author_id="SEC9", author_name="旧数据博主",
+            follower_count=0, raw={"follower_count": 12345, "nickname": "旧数据博主"},
+        )
+    )
+    session.commit()
+
+    rows = client.get("/api/followed-creators?platform=douyin").json()
+    assert rows[0]["follower_count"] == 12345
+
+
 def test_toggle_writes_subscription_only(client, session, monkeypatch):
     from app.modules.bilibili import BilibiliAdapter
 

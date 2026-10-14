@@ -26,6 +26,7 @@ from app.models import (
     StorageRoot,
     VideoUnderstanding,
 )
+from app.services.foundation import follower_count_of
 
 router = APIRouter(prefix="/api", tags=["analytics"], dependencies=[Depends(security.require_admin)])
 
@@ -354,7 +355,7 @@ def analytics_creators(db: Session = Depends(get_db), limit: int = 20, account_i
                 "platform": plat,
                 "content_count": cnt,
                 "avatar": p.avatar if p else "",
-                "follower_count": p.follower_count if p else 0,
+                "follower_count": follower_count_of(p),
                 "verified": p.verified if p else False,
                 "profile_id": p.id if p else None,
             }

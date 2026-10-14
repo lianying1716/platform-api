@@ -309,6 +309,54 @@ def test_sync_persists_creator_and_raw(session, monkeypatch):
     assert raw is not None and raw.source == "subscription"
 
 
+def test_sync_content_extra_does_not_clobber_creator_raw(session, monkeypatch):
+    """内容级 extra（抖音播放地址）绝不能写进 creator_profile.raw。
+
+    回归：此前 raw 用 `item["author_raw"] or item["extra"]` 取值，同步视频时会把
+    下载地址当作作者快照覆盖真实资料，粉丝数随之丢失（NAS 上归藏/Xuan子即如此）。
+    """
+    from app.models import CreatorProfile
+    from app.services import sync_service
+
+    sub = _seed_subscription(session)
+    session.add(
+        CreatorProfile(
+            platform="bilibili", author_id="up1", author_name="UP主",
+            follower_count=12345, raw={"follower_count": 12345},
+        )
+    )
+    session.commit()
+
+    async def fake_fetch(self, credential, source_type, remote_id, limit):
+        return [
+            {
+                "external_id": "BV2",
+                "content_type": "video",
+                "title": "视频",
+                "author_id": "up1",
+                "author_name": "UP主",
+                "url": "u",
+                "metrics": {"play": 1},
+                "extra": {"download_url": "https://example.com/play.mp4"},
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.modules.bilibili.BilibiliAdapter.fetch_source", fake_fetch, raising=False
+    )
+    run = asyncio.run(sync_service.run_subscription_sync(session, sub))
+    assert run.status == "success"
+
+    session.expire_all()
+    p = session.scalar(
+        select(CreatorProfile).where(
+            CreatorProfile.platform == "bilibili", CreatorProfile.author_id == "up1"
+        )
+    )
+    assert "download_url" not in (p.raw or {})
+    assert p.raw.get("follower_count") == 12345
+
+
 def test_crawl_survives_foundation_failure(session, monkeypatch):
     """I1：地基 helper 抛异常不得翻转采集成功态，也不得丢掉已入库内容。"""
     from app.models import ContentItem, CrawlTask

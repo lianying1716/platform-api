@@ -194,7 +194,10 @@ def _persist_foundation(
             following_count=item.get("following_count", 0),
             verified=item.get("verified", False),
             homepage_url=item.get("homepage_url", ""),
-            raw=item.get("author_raw") or item.get("extra") or {},
+            # 只认 author_raw（作者级快照）。绝不用 item["extra"] 兜底：那是**内容级**
+            # 附加数据（如抖音播放地址、小红书 xsec_token），写进 creator_profile.raw
+            # 会把真实作者资料（含粉丝数）覆盖成下载链接。
+            raw=item.get("author_raw") or {},
         )
         foundation.record_raw(
             db, platform, source, item.get("external_id", ""), item, content_id=content.id
