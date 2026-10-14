@@ -51,8 +51,41 @@ async def lifespan(_: FastAPI):
     if guard.action != "ok":
         logging.getLogger("platform.startup").info("版本门禁：%s", guard.message)
     start_scheduler()
+    _prewarm_storage_index()
     yield
     stop_scheduler()
+
+
+def _prewarm_storage_index() -> None:
+    """后台预热存储根文件索引。
+
+    总览/素材列表要按 storage_root + relative_path 统计体积，而首次整树遍历在
+    NAS 大库（71k+ 文件、245G）上冷启动可达一分钟以上，用户会看到总览长时间转圈。
+    启动时用一个后台线程先把索引建好，接口只读内存缓存。
+    """
+    import threading
+
+    def _run() -> None:
+        from sqlalchemy import select
+
+        from app.core import storage
+        from app.db import SessionLocal
+        from app.models import StorageRoot
+
+        db = SessionLocal()
+        try:
+            for root in db.scalars(select(StorageRoot)).all():
+                try:
+                    storage.cached_root_file_sizes(root.path)
+                    storage.cached_dir_size(root.path)
+                except Exception:  # noqa: BLE001 预热失败不影响启动
+                    logging.getLogger("platform.startup").warning(
+                        "存储索引预热失败：%s", root.path, exc_info=True
+                    )
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, name="storage-index-prewarm", daemon=True).start()
 
 
 app = FastAPI(title="platform-api", version=load_build_info().version, lifespan=lifespan)

@@ -217,18 +217,20 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
         or 0
     )
 
-    # 存储占用：按素材累加本地文件体积（文件不存在计 0）
+    # 存储占用：按素材累加本地文件体积。
+    # 逐素材 stat 是 O(素材数) 次系统调用（我们库里有 9k+ 归档素材），会把总览拖到
+    # 十几秒；改成每个存储根只遍历一次目录再查表（见 storage.sizes_for_assets）。
     from app.core import storage
 
-    used_bytes = 0
-    storage_by_platform: dict[str, int] = {}
-    for asset, content in db.execute(
+    asset_rows = db.execute(
         select(MediaAsset, ContentItem).join(ContentItem, MediaAsset.content_id == ContentItem.id)
         .where(*asset_filter)
-    ).all():
-        size = storage.file_size(storage.resolve_asset_file(db, asset)) if asset.video_file else 0
-        if not size and asset.relative_path:
-            size = storage.dir_size(storage.resolve_asset_dir(db, asset))
+    ).all()
+    size_map = storage.sizes_for_assets(db, [a for a, _c in asset_rows])
+    used_bytes = 0
+    storage_by_platform: dict[str, int] = {}
+    for asset, content in asset_rows:
+        size = size_map.get(asset.id, 0)
         used_bytes += size
         key = content.platform or "unknown"
         storage_by_platform[key] = storage_by_platform.get(key, 0) + size
@@ -245,7 +247,9 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
                 "is_default": r.is_default,
                 "available": ok,
                 "detail": detail,
-                "used_bytes": storage.dir_size(r.path) if ok else 0,
+                # 根目录总量直接用文件索引求和（同一次遍历的产物），既不额外走盘，
+                # 也不会像 dir_size 那样在文件数超上限时被截断。
+                "used_bytes": sum(storage.cached_root_file_sizes(r.path).values()) if ok else 0,
             }
         )
 

@@ -6,7 +6,7 @@ Windows 盘符与 UNC。外部 API 不得提交绝对输出路径。
 
 import re
 from datetime import datetime
-from pathlib import PurePath, PureWindowsPath
+from pathlib import Path, PurePath, PureWindowsPath
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -186,3 +186,189 @@ def resolve_asset_file(db: Session, asset: "MediaAsset") -> str:
     if not directory:
         return ""
     return os.path.join(directory, asset.video_file)
+
+
+def root_file_sizes(path: str, *, max_files: int = 200_000) -> dict[str, int]:
+    """一次遍历返回 {相对路径(POSIX) -> 文件字节数}。
+
+    素材列表/总览要按 storage_root + relative_path 统计体积，但逐个素材 stat 是
+    O(素材数) 次 syscall，且素材可能上万条（我们导入了 9k+ 归档素材），单次请求会
+    拖到十几秒甚至更久。这里改成「每个存储根遍历一次目录、缓存到内存」，之后按
+    相对路径查表即 O(1)。原生的 per-asset 路径只作为兜底。
+    """
+    import os
+
+    out: dict[str, int] = {}
+    if not path or not os.path.isdir(path):
+        return out
+    seen = 0
+    base = os.path.normpath(path)
+    for root, _dirs, files in os.walk(base):
+        rel_dir = os.path.relpath(root, base)
+        rel_dir = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
+        for name in files:
+            try:
+                out[f"{rel_dir}/{name}" if rel_dir else name] = os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+            seen += 1
+            if seen >= max_files:
+                return out
+    return out
+
+
+def sizes_for_assets(db: Session, assets) -> dict[int, int]:
+    """批量算素材体积：每个存储根只遍历一次目录，避免逐素材 stat。
+
+    返回 {asset_id: size_bytes}。找不到文件的素材记 0（与旧行为一致）。
+    """
+    import os
+
+    from app.models import MediaAsset  # 局部导入，避免循环依赖
+
+    assets = list(assets)
+    if not assets:
+        return {}
+    # 1) 收集用到的存储根（asset.storage_root_id，缺省回退默认根）
+    default_root = get_default_root(db)
+    root_ids = {a.storage_root_id for a in assets if a.storage_root_id is not None}
+    roots: dict[int, str] = {}
+    for rid in root_ids:
+        r = db.get(StorageRoot, rid)
+        if r is not None:
+            roots[rid] = r.path
+    cache: dict[str | None, dict[str, int]] = {}
+    result: dict[int, int] = {}
+    for a in assets:
+        rid = a.storage_root_id
+        rpath = roots.get(rid) if rid is not None else None
+        if rpath is None:
+            rpath = default_root.path if default_root is not None else None
+        if rpath is None:
+            result[a.id] = 0
+            continue
+        if rpath not in cache:
+            cache[rpath] = cached_root_file_sizes(rpath)
+        files = cache[rpath]
+        rel = (a.relative_path or "").strip("/")
+        size = 0
+        if a.video_file:
+            size = files.get(f"{rel}/{a.video_file}" if rel else a.video_file, 0)
+        if not size and rel:
+            # 视频缺失/文件名对不上时，退回该素材目录内已缓存文件求和（不再二次遍历磁盘）
+            prefix = f"{rel}/"
+            size = sum(v for k, v in files.items() if k.startswith(prefix))
+        result[a.id] = size
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 存储根体积：整树 stat 在 NAS 大库上要数秒，做成进程级后台刷新缓存。
+# ---------------------------------------------------------------------------
+_dir_size_cache: dict[str, tuple[float, int]] = {}
+_DIR_SIZE_TTL = 300.0  # 秒
+
+
+def cached_dir_size(path: str, *, ttl: float = _DIR_SIZE_TTL) -> int:
+    """返回目录体积；命中缓存直接返回，miss 时后台线程刷新、本次先给旧值（无则 0）。
+
+    这样单次请求永远不会被整树遍历阻塞（原先每次总览请求都同步 dir_size，
+    246G 的库能卡到十几秒）。
+    """
+    import threading
+    import time
+
+    now = time.time()
+    hit = _dir_size_cache.get(path)
+    if hit is not None and now - hit[0] < ttl:
+        return hit[1]
+
+    def _refresh() -> None:
+        try:
+            _dir_size_cache[path] = (time.time(), dir_size(path))
+        except Exception:  # noqa: BLE001 后台刷新失败不影响接口
+            _dir_size_cache[path] = (time.time(), hit[1] if hit else 0)
+
+    threading.Thread(target=_refresh, name="dir-size-refresh", daemon=True).start()
+    return hit[1] if hit else 0
+
+
+# 存储根文件索引缓存：整树遍历 71k 文件约 2-4s，总览每次请求都走一遍太久。
+_file_index_cache: dict[str, tuple[float, dict[str, int]]] = {}
+_FILE_INDEX_TTL = 300.0
+
+
+def cached_root_file_sizes(path: str, *, ttl: float = _FILE_INDEX_TTL) -> dict[str, int]:
+    """带缓存的文件索引（相对路径 -> 字节数）。
+
+    内存里保留最近一次遍历结果；过期后由后台线程刷新，本次先返回旧值，
+    保证 compute 侧永远不会被整树遍历阻塞。首次调用会同步遍历一次。
+    """
+    import threading
+    import time
+
+    now = time.time()
+    hit = _file_index_cache.get(path)
+    if hit is not None and now - hit[0] < ttl:
+        return hit[1]
+
+    if hit is None:
+        # 冷启动先读磁盘索引（上次进程落盘的），避免重启后再整树遍历一次。
+        disk = _load_index_from_disk(path)
+        if disk is not None:
+            _file_index_cache[path] = (time.time(), disk)
+            hit = _file_index_cache[path]
+
+    def _refresh() -> None:
+        try:
+            idx = root_file_sizes(path)
+            _file_index_cache[path] = (time.time(), idx)
+            _save_index_to_disk(path, idx)
+        except Exception:  # noqa: BLE001 后台刷新失败保留旧值
+            pass
+
+    if hit is None:
+        # 连磁盘缓存都没有：同步建一次，否则体积会全 0（导入/首次部署时才会走到）
+        idx = root_file_sizes(path)
+        _file_index_cache[path] = (time.time(), idx)
+        _save_index_to_disk(path, idx)
+        return idx
+
+    # 有（内存或磁盘）旧索引：后台刷新，本次先返回旧值
+    threading.Thread(target=_refresh, name="file-index-refresh", daemon=True).start()
+    return hit[1]
+
+
+def _index_cache_path(path: str) -> Path:
+    import hashlib
+
+    from app.config import settings
+
+    digest = hashlib.sha1(path.encode("utf-8")).hexdigest()[:16]
+    return Path(settings.data_dir) / "storage_index" / f"{digest}.json"
+
+
+def _load_index_from_disk(path: str) -> dict[str, int] | None:
+    import json
+
+    try:
+        f = _index_cache_path(path)
+        if not f.is_file():
+            return None
+        raw = json.loads(f.read_text("utf-8"))
+        return {str(k): int(v) for k, v in raw.items()}
+    except (OSError, ValueError):
+        return None
+
+
+def _save_index_to_disk(path: str, index: dict[str, int]) -> None:
+    import json
+
+    try:
+        f = _index_cache_path(path)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(index), "utf-8")
+        tmp.replace(f)
+    except OSError:
+        pass

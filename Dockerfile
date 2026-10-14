@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock ./
 COPY app/ app/
+# 运维/迁移脚本（如 import_douyin_archive.py：把抖小云历史素材就地导入平台库）
+COPY scripts/ scripts/
 RUN uv pip install --system ".[postgres]" && uv pip install --system playwright && playwright install --with-deps chromium
 COPY alembic.ini ./
 COPY alembic/ alembic/
