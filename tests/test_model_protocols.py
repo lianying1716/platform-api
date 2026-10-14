@@ -120,6 +120,9 @@ def test_list_models_request_and_parser_by_protocol():
     openai = model_protocols.list_models_request(_provider(), api_key="k")
     assert openai.url == "https://api.example.com/v1/models"
     assert openai.headers["Authorization"] == "Bearer k"
+    # 模型清单是读取型接口，必须 GET：OpenAI 兼容网关只把 /models 注册在 GET 上，
+    # 用 POST 会被路由层判 404（用户侧表现为"不论接哪家供应商都 404"）。
+    assert openai.method == "GET"
     assert model_protocols.parse_models("openai", {"data": [{"id": "a"}]}) == ["a"]
 
     anthropic = model_protocols.list_models_request(
@@ -127,6 +130,7 @@ def test_list_models_request_and_parser_by_protocol():
     )
     assert anthropic.url == "https://api.anthropic.com/v1/models"
     assert anthropic.headers["x-api-key"] == "k"
+    assert anthropic.method == "GET"
     assert model_protocols.parse_models("anthropic", {"data": [{"id": "b"}]}) == ["b"]
 
     gemini = model_protocols.list_models_request(
@@ -136,9 +140,47 @@ def test_list_models_request_and_parser_by_protocol():
         api_key="k",
     )
     assert gemini.url == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert gemini.method == "GET"
     assert model_protocols.parse_models(
         "gemini", {"models": [{"name": "models/c"}]}
     ) == ["c"]
+
+
+def test_send_request_uses_get_for_model_listing_and_post_for_chat(monkeypatch):
+    """回归：模型清单必须以 GET 发出，对话仍为 POST。
+
+    真实网关（OpenAI / Moonshot / OpenRouter / 星算AI）只在 GET 上提供 /models，
+    用 POST 一律 404。这里从 transport 层钉住方法，避免只改 request 构建器却
+    在 send_request 里被无条件 POST 覆盖。
+    """
+    import asyncio
+
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "a"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(model_protocols.httpx, "AsyncClient", client_factory)
+
+    listing = model_protocols.list_models_request(_provider(), api_key="k")
+    listed = asyncio.run(model_protocols.send_request(listing, timeout=5))
+    assert listed == {"data": [{"id": "a"}]}
+
+    chat = model_protocols.chat_request(
+        _provider(), "gpt-x", {"messages": [{"role": "user", "content": "hi"}]}, api_key="k"
+    )
+    asyncio.run(model_protocols.send_request(chat, timeout=5))
+
+    assert seen == [("GET", "/v1/models"), ("POST", "/v1/chat/completions")]
 
 
 def test_classify_error_http_and_network():

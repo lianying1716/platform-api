@@ -53,6 +53,8 @@ class ProtocolRequest:
     url: str
     headers: dict[str, str] = field(default_factory=dict)
     body: dict[str, Any] = field(default_factory=dict)
+    # 模型清单等读取型接口是 GET；对话/视频是 POST。默认 POST，保持既有调用点语义不变。
+    method: str = "POST"
 
 
 def _protocol(provider) -> str:
@@ -289,24 +291,32 @@ def video_request(
 
 
 def list_models_request(provider, *, api_key: str) -> ProtocolRequest:
-    """构建供应商模型清单请求。"""
+    """构建供应商模型清单请求。
+
+    三家协议都是读取型接口，必须用 GET：OpenAI 兼容网关（OpenAI、DeepSeek、
+    Moonshot、OpenRouter、星算AI 等）只把 ``/models`` 注册在 GET 上，用 POST 会被
+    路由层直接判 404；Anthropic ``/v1/models`` 与 Gemini ``/v1beta/models`` 同理。
+    """
     protocol = _protocol(provider)
     if protocol == "openai":
         return ProtocolRequest(
             _openai_url(provider.base_url, "/models"),
             {"Authorization": f"Bearer {api_key}"} if api_key else {},
             {},
+            method="GET",
         )
     if protocol == "anthropic":
         return ProtocolRequest(
             _anthropic_url(provider.base_url, "/v1/models"),
             {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
             {},
+            method="GET",
         )
     return ProtocolRequest(
         _gemini_url(provider.base_url, "/v1beta/models"),
         {"x-goog-api-key": api_key},
         {},
+        method="GET",
     )
 
 
@@ -400,9 +410,16 @@ def http_status_of(exc: BaseException) -> int | None:
 
 
 async def send_request(request: ProtocolRequest, *, timeout: float) -> dict:
-    """发送一次 JSON 请求并返回响应 JSON；非 2xx 抛 ``httpx.HTTPStatusError``。"""
+    """发送一次请求并返回响应 JSON；非 2xx 抛 ``httpx.HTTPStatusError``。
+
+    GET（模型清单）不带请求体；POST（对话/视频）发送 JSON body。
+    """
+    method = (request.method or "POST").upper()
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(request.url, headers=request.headers, json=request.body)
+        if method == "GET":
+            response = await client.get(request.url, headers=request.headers)
+        else:
+            response = await client.post(request.url, headers=request.headers, json=request.body)
         response.raise_for_status()
         try:
             data = response.json()
