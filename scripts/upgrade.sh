@@ -14,7 +14,7 @@ cd "$ROOT"
 TARGET="${1:-}"
 [ -n "$TARGET" ] || { echo "用法: $0 <目标版本如 v1.3.0>" >&2; exit 1; }
 
-echo "==> 升级目标：$TARGET（当前 $(git describe --tags --always 2>/dev/null || echo unknown)）"
+echo "==> 升级目标：${TARGET}（当前 $(git describe --tags --always 2>/dev/null || echo unknown)）"
 
 # ---- 强制备份：没有成功备份就不进入升级 ----
 echo "==> [0/3] 强制备份"

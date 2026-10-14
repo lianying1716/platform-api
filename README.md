@@ -106,7 +106,35 @@ docker compose up -d          # 起 api + worker + postgres，首次自动迁移
 - 网页一键升级（可选）：见 [`.env.example`](.env.example) 的 `PLATFORM_UPDATER_*` 与 [`docs/upgrade-compatibility.md`](docs/upgrade-compatibility.md)
 - 升级 / 备份 / 回滚：`./scripts/backup.sh` → `./scripts/upgrade.sh v1.4.0` → 需要时 `./scripts/restore.sh`
 
-### 方式 B · 源码运行（开发 / 单机）
+### 方式 B · 无 Docker 一键安装（macOS / Linux 裸机）
+
+**不想装 Docker（尤其 macOS）就用这个**：不需要 Docker，也不需要 PostgreSQL——用
+[`uv`](https://docs.astral.sh/uv/) 装依赖、SQLite 存数据、构建前端正式包后以生产模式起服务。
+
+```bash
+git clone https://github.com/lianying1716/platform-api.git
+cd platform-api
+./scripts/install-local.sh
+```
+
+脚本会：装依赖 → 生成凭证加密密钥（`data/secret.key`，**请备份**）→ 构建前端 →
+迁移数据库 → 起服务，最后打印访问地址。默认 `http://127.0.0.1:9100`，首次访问设置管理员密码。
+
+- 只要后端接口、不要网页：`SKIP_WEB_BUILD=1 ./scripts/install-local.sh`（此模式需先有
+  `app/static/` 产物；没有 Node 时也可让后端只提供 `/api`）
+- 局域网访问：`PLATFORM_HOST=0.0.0.0 ./scripts/install-local.sh`
+- 想用 PostgreSQL：`./scripts/install-local.sh --postgres 'postgresql+psycopg2://u:p@host:5432/db'`
+- 只装不启动：`--no-start`
+- 下载 / 转录 / 同步需要 worker，另开一个终端：
+  ```bash
+  set -a; . ./.env.local-install; set +a; uv run python -m app.workers.runner
+  ```
+- 装 Playwright 扫码能力（抖音/小红书）：脚本默认已带 `--extra browser`；跳过用 `SKIP_BROWSER=1`
+
+> 无 Docker 安装的数据都在 `data/`（SQLite + 密钥 + 素材）。备份整个目录即可；
+> `secret.key` 丢失 = 所有已存账号凭证作废。生产规模较大时建议改用方式 A 的 PostgreSQL。
+
+### 方式 C · 源码运行（开发 / 单机）
 
 需要 **Python ≥ 3.11**、[`uv`](https://docs.astral.sh/uv/)、Node 22+，以及一个 PostgreSQL。
 
@@ -141,25 +169,30 @@ uv sync --extra mcp                                             # 接入 Claude 
 > **开发 / 正式包隔离**：开发默认 `PLATFORM_SERVE_FRONTEND=false`，后端只提供 `/api`，
 > 前端走 Vite `:5173`。只有明确要出正式包时才 `./dev.sh web`（会覆盖 `app/static/`）。
 
-### 方式 C · 交给 AI Agent 自动部署（复制即用）
+### 方式 D · 交给 AI Agent 自动部署（复制即用）
 
 把下面整段复制给你的编码 Agent（Codex / Claude Code / Cursor）：
 
 ```text
 请在这台机器上部署「星采 Stargather」：
 
-1. 检查并安装依赖：git、Docker 与 Docker Compose v2（或 Python≥3.11 + uv + Node 22）。
+1. 先看这台机器有没有 Docker：
+   - 有（Linux/NAS）：走 Docker，git clone 后 `cp .env.example .env`、
+     生成 PLATFORM_CREDENTIAL_ENC_KEY、`docker compose up -d`。
+   - 没有（典型是 macOS）：**不要试图装 Docker**，直接用仓库自带的无 Docker 安装脚本。
 2. git clone https://github.com/lianying1716/platform-api.git 到当前目录。
-3. cd platform-api && cp .env.example .env
-4. 生成凭证加密密钥并写入 .env 的 PLATFORM_CREDENTIAL_ENC_KEY：
-   python3 -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"
-   把生成的密钥另行备份到一个安全位置，并告诉我它保存在哪（丢了所有已存凭证作废）。
-5. 用 Docker Compose 启动：docker compose up -d
-6. 等待健康检查通过，然后 curl http://127.0.0.1:9100/api/system/version 确认版本。
-7. 打开 http://127.0.0.1:9100 ，提示我设置管理员密码。
-8. 把「访问地址 + 设置管理员密码的步骤 + 加密密钥备份位置」汇总告诉我。
+3. cd platform-api
+4. 没有 Docker 时直接跑：`./scripts/install-local.sh`
+   （它用 uv + SQLite 装好并启动，自动生成密钥到 data/secret.key，最后打印访问地址）
+   有 Docker 时：`cp .env.example .env` → 生成密钥写进 PLATFORM_CREDENTIAL_ENC_KEY
+   （`python3 -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"`）
+   → `docker compose up -d`
+5. 等就绪后 `curl http://127.0.0.1:9100/api/system/version` 确认版本（应看到 db_in_sync=true）。
+6. 打开 http://127.0.0.1:9100 ，提示我设置管理员密码。
+7. 把「访问地址 + 用的哪种方式（Docker / 无 Docker）+ 加密密钥位置 + 设置密码步骤」汇总告诉我。
 
 要求：不要改动 .env.example 与 docker-compose.yml 里的安全默认值；
+密钥（data/secret.key 或 .env 里的 PLATFORM_CREDENTIAL_ENC_KEY）务必让我另行备份，丢了凭证作废；
 不要把我填入的任何 Key / Cookie 写进 git 或日志；完成后把执行过的命令列给我。
 ```
 
@@ -204,7 +237,8 @@ uv sync --extra mcp                                             # 接入 Claude 
 | 场景 | 推荐方式 | 说明 |
 |---|---|---|
 | 生产 / 长期运行 | Docker Compose | 见方式 A；`api` 迁移、`worker` 消费队列、`db` 存数据 |
-| 本地开发 | 源码 + Vite | 见方式 B；后端 `:9100`、前端 `:5173` |
+| macOS / 无 Docker 自用 | 一键安装脚本 | 见方式 B；`./scripts/install-local.sh`，SQLite 零依赖 |
+| 本地开发 | 源码 + Vite | 见方式 C；后端 `:9100`、前端 `:5173` |
 | 单机 / 内网自用 | 源码 + systemd | 模板见 [`deploy/systemd/`](deploy/systemd/) |
 | 只想给人看界面 | 静态演示站 | `npm run build:demo` → `web/dist-demo`，nginx 样例 [`deploy/nginx/demo.conf`](deploy/nginx/demo.conf) |
 

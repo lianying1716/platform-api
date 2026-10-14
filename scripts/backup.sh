@@ -30,7 +30,7 @@ trap 'rm -rf "$WORK"' EXIT
 # data 卷名默认按 compose 项目名推导（= 目录名），可用 DATA_VOLUME 覆盖。
 DATA_VOLUME="${DATA_VOLUME:-$(basename "$ROOT")_platform-data}"
 if ! docker volume inspect "$DATA_VOLUME" >/dev/null 2>&1; then
-  echo "!! 找不到数据卷 $DATA_VOLUME（可用 DATA_VOLUME=xxx 指定）。" >&2
+  echo "!! 找不到数据卷 ${DATA_VOLUME}（可用 DATA_VOLUME=xxx 指定）。" >&2
   echo "   查询：docker volume ls | grep platform" >&2
   exit 1
 fi
