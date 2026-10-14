@@ -263,7 +263,7 @@ media_asset / transcript / analysis_result / video_understanding
   `UNIQUE(platform, external_id, account_id)`。内容本身带账号所有权，账号筛选不再依赖 join。
   历史迁移若出现无法可靠归属的旧行，不放开 schema 约束，而是为每个平台创建一个
   `is_system=true` 的隐藏“历史占位账号”承接；新写入仍必须使用真实账号。
-- 同一账号内：不同订阅（收藏夹 / 关注博主 / 合集 / like）收到同一视频时，`content_item` 仍只一条；
+- 同一账号内：不同订阅（收藏夹 / 关注博主 / 合集）收到同一视频时，`content_item` 仍只一条；
   新建 `content_source(content_id, subscription_id NULL, source_kind, source_ref,
   first_seen_at, last_seen_at, active)` 记录全部来源，订阅粒度唯一。
 - 跨账号：A、B 各有一条 `content_item`，各自 `media_asset`、转录、分析、加工和下载，

@@ -18,7 +18,7 @@
       </p>
 
       <ul class="brand-points">
-        <li><span class="pt-n">01</span><span class="pt-t">多平台自动归集<em>收藏、点赞、关注一处看全</em></span></li>
+        <li><span class="pt-n">01</span><span class="pt-t">多平台自动归集<em>收藏、关注一处看全</em></span></li>
         <li><span class="pt-n">02</span><span class="pt-t">下载即转文字<em>本地转写，可搜索、可引用</em></span></li>
         <li><span class="pt-n">03</span><span class="pt-t">AI 判类与拆解<em>看懂为什么火，怎么复用</em></span></li>
       </ul>
