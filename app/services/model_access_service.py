@@ -148,10 +148,14 @@ def _redact_secrets(text: str, *, secret: str = "") -> str:
 
 
 def capabilities_of(model: AiModel, provider: AiProvider | None = None) -> dict:
-    """按 config_revision 判定能力是否有效；stale/缺版本一律视为不可用。"""
+    """按 config_revision 与生效协议判定能力是否有效；stale/缺版本一律视为不可用。
+
+    协议也是能力的前提：模型级协议被改动后，旧探测结论不再成立，必须重新检测。
+    """
     if model is None or provider is None:
         return {}
     revision = int(provider.config_revision or 1)
+    protocol = model_protocols.resolve_protocol(model, provider)
     raw = model.capabilities if isinstance(model.capabilities, dict) else {}
     out: dict[str, dict] = {}
     for name, value in raw.items():
@@ -160,11 +164,17 @@ def capabilities_of(model: AiModel, provider: AiProvider | None = None) -> dict:
         item = dict(value)
         source = str(item.get("source") or "")
         same_revision = int(item.get("config_revision") or 0) == revision
-        if source not in ("probe", "manual_override") or not same_revision:
+        # 旧记录可能没写 protocol：缺省视为与当前协议一致，避免升级即全量失效。
+        same_protocol = str(item.get("protocol") or protocol) == protocol
+        if source not in ("probe", "manual_override") or not (same_revision and same_protocol):
             item["value"] = False
             item["source"] = "stale" if source in ("probe", "manual_override") else source
             if source in ("probe", "manual_override"):
-                item["detail"] = "供应商连接配置已变更，需重新检测"
+                item["detail"] = (
+                    "模型协议已变更，需重新检测"
+                    if same_revision and not same_protocol
+                    else "供应商连接配置已变更，需重新检测"
+                )
         out[name] = item
     return out
 
@@ -422,6 +432,8 @@ class ModelAccessService:
         api_key = ""
         if provider.api_key_encrypted:
             api_key = str(decrypt_credential(provider.api_key_encrypted).get("api_key") or "")
+        # 生效协议：模型级覆盖优先，未设置则继承供应商。
+        effective_protocol = model_protocols.resolve_protocol(model, provider)
         if video_request:
             built = model_protocols.video_request(
                 provider,
@@ -429,17 +441,20 @@ class ModelAccessService:
                 request["video_b64"],
                 request["messages"][-1]["content"],
                 transport=request.get("transport")
-                or model_protocols.normalize_transport(provider.protocol, None),
+                or model_protocols.normalize_transport(effective_protocol, None),
                 api_key=api_key,
                 mime=request.get("mime") or "video/mp4",
+                protocol=effective_protocol,
             )
         else:
-            built = model_protocols.chat_request(provider, model.model_key, request, api_key=api_key)
+            built = model_protocols.chat_request(
+                provider, model.model_key, request, api_key=api_key, protocol=effective_protocol
+            )
         raw = await model_protocols.send_request(built, timeout=float(request.get("timeout", 90)))
         response_protocol = (
             "gemini"
             if video_request and (request.get("transport") or "") == "gemini_inline"
-            else provider.protocol
+            else effective_protocol
         )
         parsed_response = model_protocols.parse_chat_response(response_protocol, raw)
         candidate = parse_result(parsed_response["text"])
@@ -474,7 +489,10 @@ class ModelAccessService:
                 model_id=model.id,
                 model_key=model.model_key,
                 status="running",
-                request_meta={"protocol": provider.protocol, "role": role},
+                request_meta={
+                    "protocol": model_protocols.resolve_protocol(model, provider),
+                    "role": role,
+                },
             )
             session.add(row)
             session.commit()

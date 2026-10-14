@@ -100,11 +100,14 @@ def _parse_json_text(text: str) -> object:
 
 
 async def _chat(
-    provider, model: str, *, request: dict, api_key: str, timeout: float
+    provider, model: str, *, request: dict, api_key: str, timeout: float, protocol: str | None = None
 ) -> dict:
-    built = model_protocols.chat_request(provider, model, request, api_key=api_key)
+    effective = protocol or model_protocols.resolve_protocol(None, provider)
+    built = model_protocols.chat_request(
+        provider, model, request, api_key=api_key, protocol=effective
+    )
     data = await model_protocols.send_request(built, timeout=timeout)
-    return model_protocols.parse_chat_response(provider.protocol, data)
+    return model_protocols.parse_chat_response(effective, data)
 
 
 async def _video_chat(
@@ -116,6 +119,7 @@ async def _video_chat(
     transport: str,
     api_key: str,
     timeout: float,
+    protocol: str | None = None,
 ) -> dict:
     built = model_protocols.video_request(
         provider,
@@ -124,6 +128,7 @@ async def _video_chat(
         prompt,
         transport=transport,
         api_key=api_key,
+        protocol=protocol,
     )
     data = await model_protocols.send_request(built, timeout=timeout)
     # video transport 与对话协议可能不同；响应按 transport 对应协议解析。
@@ -136,6 +141,7 @@ def _capability(
     value: bool,
     source: str,
     revision: int,
+    protocol: str,
     detail: str,
     extra: dict | None = None,
 ) -> dict:
@@ -143,6 +149,8 @@ def _capability(
         "value": bool(value),
         "source": source,
         "config_revision": revision,
+        # 生效协议也写进能力记录：协议变了旧结论即失效（capabilities_of 比对）。
+        "protocol": protocol,
         "probe_version": _PROBE_VERSION,
         "checked_at": datetime.utcnow().isoformat() + "Z",
         "detail": detail,
@@ -152,8 +160,16 @@ def _capability(
     return out
 
 
-async def _probe_json_mode(provider, model: AiModel, api_key: str, prompt: str, timeout: float) -> tuple[dict, str]:
-    """完成一次 JSON 能力探测；必要时退回 prompt-only JSON 模式。"""
+async def _probe_json_mode_with(
+    provider,
+    model: AiModel,
+    api_key: str,
+    prompt: str,
+    timeout: float,
+    *,
+    protocol: str,
+) -> tuple[dict, str]:
+    """按指定协议完成一次 JSON 能力探测；必要时退回 prompt-only JSON 模式。"""
     response_format = {"type": "json_object"}
     try:
         result = await _chat(
@@ -168,6 +184,7 @@ async def _probe_json_mode(provider, model: AiModel, api_key: str, prompt: str, 
             },
             api_key=api_key,
             timeout=timeout,
+            protocol=protocol,
         )
         parsed = _parse_json_text(result["text"])
         if not isinstance(parsed, dict):
@@ -187,11 +204,73 @@ async def _probe_json_mode(provider, model: AiModel, api_key: str, prompt: str, 
             },
             api_key=api_key,
             timeout=timeout,
+            protocol=protocol,
         )
         parsed = _parse_json_text(result["text"])
         if not isinstance(parsed, dict):
             raise model_protocols.SchemaMismatchError("探测返回不是 JSON 对象")
         return parsed, "prompt_only"
+
+
+_PROBE_CANDIDATE_ORDER = ("openai", "anthropic", "gemini")
+
+
+def _protocol_candidates(current: str) -> list[str]:
+    """候选协议顺序：先试当前生效协议，再试其余两族（去重，保持稳定顺序）。"""
+    ordered = [current] + [p for p in _PROBE_CANDIDATE_ORDER if p != current]
+    seen: list[str] = []
+    for name in ordered:
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
+async def _detect_protocol(
+    provider, model: AiModel, api_key: str, *, text: bool, timeout: float
+) -> tuple[str, str, dict | None, str]:
+    """判定并可能固化模型协议。
+
+    返回 ``(生效协议, 说明, 文本探测结果, 探测模式)``；文本探测结果用于复用，
+    避免判定协议与记录「文字/JSON」能力各打一次上游：
+    - ``manual``：用户已指定，直接用，不试其他；
+    - 自动：按候选顺序实测，第一个能从文本探测拿到合格 JSON 的胜出并固化为 ``auto``；
+      若胜出者恰好是继承协议，则保持 ``inherit``（跟随供应商，不 pin）；
+    - 全部失败：保持继承协议（能力在后续子探测里照常记为失败）。
+    """
+    inherited = model_protocols.resolve_protocol(None, provider)
+    source = str(getattr(model, "protocol_source", "") or "inherit")
+
+    if source == "manual" and getattr(model, "protocol", None):
+        manual = model_protocols.validate_protocol(model.protocol)
+        return manual, "用户指定协议", None, ""
+
+    if not text:
+        # 未做文本探测（例如只测视频）时无法判定，沿用继承协议。
+        return inherited, "未做文本探测，沿用供应商协议", None, ""
+
+    prompt = '只输出 JSON：{"ok": true, "echo": "workbench"}'
+    last_error = ""
+    for candidate in _protocol_candidates(inherited):
+        try:
+            parsed, mode = await _probe_json_mode_with(
+                provider, model, api_key, prompt, timeout, protocol=candidate
+            )
+        except Exception as exc:  # noqa: BLE001 试错协议：一个失败就换下一个
+            last_error = redact_text(str(exc), extra_secrets=(api_key,))[:200]
+            continue
+        if parsed.get("ok") is True and parsed.get("echo") == "workbench":
+            if candidate == inherited:
+                # 继承协议即可用：不 pin，跟随供应商后续变化。
+                model.protocol = None
+                model.protocol_source = "inherit"
+                return candidate, "沿用供应商协议", parsed, mode
+            model.protocol = candidate
+            model.protocol_source = "auto"
+            return candidate, f"自动判定为 {candidate}", parsed, mode
+
+    if last_error:
+        logger.info("协议自动判定未成功，沿用供应商协议 %s：%s", inherited, last_error)
+    return inherited, "未能自动判定，沿用供应商协议", None, ""
 
 
 async def probe_model(
@@ -202,7 +281,12 @@ async def probe_model(
     image: bool = True,
     video: bool = True,
 ) -> AiModel:
-    """探测模型能力并写回 ``ai_model``；单项失败不影响其他项。"""
+    """探测模型能力并写回 ``ai_model``；单项失败不影响其他项。
+
+    协议默认自动判定：手动的（``protocol_source=manual``）直接用；否则按候选顺序
+    实测挑第一个能返回合格 JSON 的协议并固化（``auto``）。探测得出的协议一致用于
+    图片/视频子探测，避免「文本通了、看图却按另一个协议发」。
+    """
     model = db.get(AiModel, model_id)
     if model is None:
         raise ValueError(f"模型不存在: {model_id}")
@@ -216,29 +300,58 @@ async def probe_model(
     revision = int(provider.config_revision or 1)
     caps = dict(model.capabilities or {})
     statuses: list[str] = []
+    # 先定协议：文本探测既产出能力，也用来判定协议。
+    effective_protocol, protocol_detail, text_probe, text_mode = await _detect_protocol(
+        provider, model, api_key, text=text, timeout=30
+    )
+    cap_extra = {"protocol_detail": protocol_detail}
 
     if text:
-        prompt = '只输出 JSON：{"ok": true, "echo": "workbench"}'
-        try:
-            parsed, mode = await _probe_json_mode(provider, model, api_key, prompt, 30)
-            ok = parsed.get("ok") is True and parsed.get("echo") == "workbench"
-            detail = "通过文本与 JSON 输出探测" if ok else "JSON 内容不符合要求"
+        if text_probe is not None:
+            # 协议判定阶段已经打过一次文本探测，直接复用，不重复计费。
+            ok = True
+            detail = f"通过文本与 JSON 输出探测（{protocol_detail}）"
             caps["text"] = _capability(
-                value=ok, source="probe", revision=revision, detail=detail
+                value=True, source="probe", revision=revision,
+                protocol=effective_protocol, detail=detail, extra=cap_extra,
             )
             caps["json"] = _capability(
-                value=ok,
-                source="probe",
-                revision=revision,
-                detail=f"JSON 输出{'可用' if ok else '不符合要求'}（{mode}）",
-                extra={"mode": mode},
+                value=True, source="probe", revision=revision,
+                protocol=effective_protocol,
+                detail=f"JSON 输出可用（{text_mode}）",
+                extra={"mode": text_mode, **cap_extra},
             )
-            statuses.append("ok" if ok else "failed")
-        except Exception as exc:  # noqa: BLE001 单项失败不能中断其他探测
-            detail = redact_text(str(exc), extra_secrets=(api_key,))[:512]
-            caps["text"] = _capability(value=False, source="probe", revision=revision, detail=detail)
-            caps["json"] = _capability(value=False, source="probe", revision=revision, detail=detail)
-            statuses.append("failed")
+            statuses.append("ok")
+        else:
+            prompt = '只输出 JSON：{"ok": true, "echo": "workbench"}'
+            try:
+                parsed, mode = await _probe_json_mode_with(
+                    provider, model, api_key, prompt, 30, protocol=effective_protocol
+                )
+                ok = parsed.get("ok") is True and parsed.get("echo") == "workbench"
+                detail = "通过文本与 JSON 输出探测" if ok else "JSON 内容不符合要求"
+                caps["text"] = _capability(
+                    value=ok, source="probe", revision=revision,
+                    protocol=effective_protocol, detail=detail, extra=cap_extra,
+                )
+                caps["json"] = _capability(
+                    value=ok, source="probe", revision=revision,
+                    protocol=effective_protocol,
+                    detail=f"JSON 输出{'可用' if ok else '不符合要求'}（{mode}）",
+                    extra={"mode": mode, **cap_extra},
+                )
+                statuses.append("ok" if ok else "failed")
+            except Exception as exc:  # noqa: BLE001 单项失败不能中断其他探测
+                detail = redact_text(str(exc), extra_secrets=(api_key,))[:512]
+                caps["text"] = _capability(
+                    value=False, source="probe", revision=revision,
+                    protocol=effective_protocol, detail=detail,
+                )
+                caps["json"] = _capability(
+                    value=False, source="probe", revision=revision,
+                    protocol=effective_protocol, detail=detail,
+                )
+                statuses.append("failed")
 
     if image:
         color = _choose_probe_color()
@@ -267,33 +380,40 @@ async def probe_model(
                 },
                 api_key=api_key,
                 timeout=45,
+                protocol=effective_protocol,
             )
             parsed = _parse_json_text(result["text"])
             answer = str((parsed or {}).get("color", "")).strip().lower()
             ok = bool((parsed or {}).get("has_image")) and answer == color
             detail = "通过图片颜色探测" if ok else "模型未正确识别图片"
-            caps["image"] = _capability(value=ok, source="probe", revision=revision, detail=detail)
+            caps["image"] = _capability(
+                value=ok, source="probe", revision=revision,
+                protocol=effective_protocol, detail=detail, extra=cap_extra,
+            )
             statuses.append("ok" if ok else "failed")
         except Exception as exc:  # noqa: BLE001
             caps["image"] = _capability(
                 value=False,
                 source="probe",
                 revision=revision,
+                protocol=effective_protocol,
                 detail=redact_text(str(exc), extra_secrets=(api_key,))[:512],
             )
             statuses.append("failed")
 
     if video:
-        transport = model_protocols.normalize_transport(provider.protocol, None)
+        transport = model_protocols.normalize_transport(effective_protocol, None)
         video_extra = {
             "transport": transport,
             "auth_style": model_protocols.auth_style_for_transport(transport),
+            **cap_extra,
         }
         if shutil.which("ffmpeg") is None:
             caps["video"] = _capability(
                 value=False,
                 source="probe",
                 revision=revision,
+                protocol=effective_protocol,
                 detail="未安装 ffmpeg，无法生成视频探针",
                 extra=video_extra,
             )
@@ -313,6 +433,7 @@ async def probe_model(
                     transport=transport,
                     api_key=api_key,
                     timeout=300,
+                    protocol=effective_protocol,
                 )
                 parsed = _parse_json_text(result["text"])
                 first = str((parsed or {}).get("first", "")).strip().lower()
@@ -323,6 +444,7 @@ async def probe_model(
                     value=ok,
                     source="probe",
                     revision=revision,
+                    protocol=effective_protocol,
                     detail=detail,
                     extra=video_extra,
                 )
@@ -332,6 +454,7 @@ async def probe_model(
                     value=False,
                     source="probe",
                     revision=revision,
+                    protocol=effective_protocol,
                     detail=redact_text(str(exc), extra_secrets=(api_key,))[:512],
                     extra=video_extra,
                 )
@@ -376,12 +499,14 @@ async def set_manual_video_capability(
     provider = db.get(AiProvider, model.provider_id)
     if provider is None:
         raise ValueError(f"模型所属供应商不存在: {model.provider_id}")
-    normalized = model_protocols.normalize_transport(provider.protocol, transport)
+    effective_protocol = model_protocols.resolve_protocol(model, provider)
+    normalized = model_protocols.normalize_transport(effective_protocol, transport)
     caps = dict(model.capabilities or {})
     caps["video"] = _capability(
         value=bool(value),
         source="manual_override",
         revision=int(provider.config_revision or 1),
+        protocol=effective_protocol,
         detail=reason or ("用户手工确认支持视频" if value else "用户手工确认不支持视频"),
         extra={
             "transport": normalized,

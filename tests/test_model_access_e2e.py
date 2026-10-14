@@ -31,7 +31,9 @@ def test_model_access_e2e_encrypted_fallback_and_audit(tmp_path, monkeypatch):
     monkeypatch.setattr("app.config.settings.credential_enc_key", base64.b64encode(os.urandom(32)).decode())
     monkeypatch.setattr("app.config.settings.credential_key_file", None)
     crypto._key = None
-    command.upgrade(_cfg(db_url), "0018")
+    # 升到 head：ORM 已带 0019/0020/0021 的列（含 ai_model.protocol），
+    # 只升到 0018 会因缺列失败。本用例关心的是加密与主备切换，与迁移无关。
+    command.upgrade(_cfg(db_url), "head")
 
     engine = create_engine(db_url)
     Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

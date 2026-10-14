@@ -71,6 +71,10 @@ class ModelImportBody(BaseModel):
 class ModelPatch(BaseModel):
     display_name: str | None = None
     enabled: bool | None = None
+    # 模型级协议覆盖：null 表示恢复「跟随供应商」；指定值时写 protocol_source=manual。
+    # 传 "inherit" 时清空覆盖、回到继承（等价于 protocol=null）。
+    protocol: str | None = None
+    protocol_source: str | None = None
 
 
 class ManualCapabilityBody(BaseModel):
@@ -131,11 +135,16 @@ def _model_payload(db: Session, row: AiModel) -> dict:
             | (ModelAssignment.fallback_model_id == row.id)
         )
     ).all()
+    effective = model_protocols.resolve_protocol(row, provider) if provider else ""
     return {
         "id": row.id,
         "provider_id": row.provider_id,
         "provider_name": provider.name if provider else "",
         "provider_protocol": provider.protocol if provider else "",
+        # 生效协议（模型级覆盖优先）与来源；protocol_override 为 null 表示跟随供应商。
+        "protocol": effective,
+        "protocol_source": row.protocol_source or "inherit",
+        "protocol_override": row.protocol,
         "provider_base_url": provider.base_url if provider else "",
         "provider_enabled": bool(provider.enabled) if provider else False,
         "model_key": row.model_key,
@@ -442,6 +451,21 @@ def patch_model(
         row.display_name = body.display_name.strip()
     if body.enabled is not None:
         row.enabled = body.enabled
+    if body.protocol is not None or body.protocol_source is not None:
+        # 恢复继承：protocol="inherit" 或显式 null。
+        if body.protocol_source == "inherit" or body.protocol == "inherit":
+            row.protocol = None
+            row.protocol_source = "inherit"
+        elif body.protocol is not None:
+            try:
+                row.protocol = model_protocols.validate_protocol(body.protocol)
+            except model_protocols.ModelProtocolError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            # 用户显式指定即视为 manual：后续自动检测不再覆盖。
+            row.protocol_source = body.protocol_source or "manual"
+        # 协议变化会让既有能力结论失效；capabilities_of() 会按协议比对判 stale，
+        # 这里只把探测状态复位，提示用户重新检测。
+        row.probe_status = "untested"
     db.commit()
     _api_log(db, actor, "model_access.patch_model", "ok", started)
     return _model_payload(db, row)

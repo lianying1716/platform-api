@@ -57,11 +57,31 @@ class ProtocolRequest:
     method: str = "POST"
 
 
-def _protocol(provider) -> str:
-    name = str(getattr(provider, "protocol", "") or "").strip().lower()
+def _normalize_protocol_name(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def resolve_protocol(model, provider) -> str:
+    """生效协议：模型级覆盖优先，未设置则继承供应商。
+
+    `model.protocol` 为 None 表示「跟随供应商」（存量数据与新导入模型的默认）。
+    这样网关同时提供多协议时可按模型各自落定，而不用把协议钉在供应商上。
+    """
+    override = _normalize_protocol_name(getattr(model, "protocol", None))
+    inherited = _normalize_protocol_name(getattr(provider, "protocol", None))
+    return override or inherited
+
+
+def validate_protocol(value: object) -> str:
+    """校验并归一协议名；非法值抛 ``ModelProtocolError``。"""
+    name = _normalize_protocol_name(value)
     if name not in _PROTOCOLS:
         raise ModelProtocolError(f"不支持的模型协议: {name!r}", error_class="bad_request")
     return name
+
+
+def _protocol(provider) -> str:
+    return validate_protocol(getattr(provider, "protocol", ""))
 
 
 def normalize_transport(protocol: str | None, transport: str | None) -> str:
@@ -174,9 +194,15 @@ def _gemini_parts(content: object) -> list[dict]:
     return parts
 
 
-def chat_request(provider, model: str, request: dict, *, api_key: str) -> ProtocolRequest:
-    """构建一次对话请求；request 使用统一的 OpenAI 风格 messages。"""
-    protocol = _protocol(provider)
+def chat_request(
+    provider, model: str, request: dict, *, api_key: str, protocol: str | None = None
+) -> ProtocolRequest:
+    """构建一次对话请求；request 使用统一的 OpenAI 风格 messages。
+
+    ``protocol`` 显式传入时优先（调用方用 ``resolve_protocol(model, provider)`` 取模型级
+    协议）；不传则回退供应商协议，保持既有调用点语义。
+    """
+    protocol = validate_protocol(protocol) if protocol else _protocol(provider)
     body = dict(request or {})
     messages = body.pop("messages", [])
     body["model"] = model
@@ -244,9 +270,11 @@ def video_request(
     transport: str,
     api_key: str,
     mime: str = "video/mp4",
+    protocol: str | None = None,
 ) -> ProtocolRequest:
     """按视频 transport 构建请求；鉴权只由 transport 决定。"""
-    name = normalize_transport(getattr(provider, "protocol", None), transport)
+    effective = protocol or getattr(provider, "protocol", None)
+    name = normalize_transport(effective, transport)
     if name == "gemini_inline":
         body = {
             "contents": [

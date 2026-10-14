@@ -13,6 +13,7 @@ import psycopg2
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 
@@ -25,6 +26,11 @@ def _cfg(db_url: str) -> Config:
     cfg.set_main_option("script_location", str(root / "alembic"))
     cfg.set_main_option("sqlalchemy.url", db_url)
     return cfg
+
+
+def _head() -> str:
+    """从迁移脚本目录推导当前 head，避免每加一版迁移就要改断言。"""
+    return ScriptDirectory.from_config(_cfg("sqlite://")).get_current_head()
 
 
 @pytest.fixture()
@@ -82,7 +88,7 @@ def test_full_upgrade_preserves_account_data(temp_pg):
         row = conn.execute(
             text("SELECT display_name, external_id FROM platform_account WHERE id = 1")
         ).one()
-    assert rev == "0020", "升级后应停在 head"
+    assert rev == _head(), "升级后应停在 head"
     assert row[0] == "演练账号" and row[1] == "RID-1", "已有账号数据必须保留"
 
 
@@ -93,7 +99,7 @@ def test_upgrade_is_idempotent(temp_pg):
     command.upgrade(cfg, "head")  # 第二次应为空操作
     with create_engine(temp_pg).connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == "0020"
+    assert rev == _head()
 
 
 def test_version_guard_reports_synced_after_upgrade(temp_pg):
@@ -116,4 +122,4 @@ def test_version_guard_auto_migrates_behind_db(temp_pg):
     assert result.action == "migrated"
     with create_engine(temp_pg).connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == "0020"
+    assert rev == _head()

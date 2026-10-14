@@ -252,3 +252,89 @@ def test_calls_list_redacts_legacy_error_and_request_meta_on_read(client, sessio
     row = client.get("/api/model-access/calls").json()[0]
     assert "legacy-secret-123" not in row["error_message"]
     assert "legacy-secret-123" not in json.dumps(row["request_meta"])
+
+
+def test_model_payload_exposes_effective_protocol(client, session):
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai",
+        base_url="https://api.example.com/v1", api_key_encrypted="cipher",
+    )
+    session.add(provider)
+    session.flush()
+    model = AiModel(provider_id=provider.id, model_key="m", capabilities={})
+    session.add(model)
+    session.commit()
+
+    row = client.get("/api/model-access/models").json()[0]
+    assert row["protocol"] == "openai"          # 继承供应商
+    assert row["protocol_source"] == "inherit"
+    assert row["protocol_override"] is None
+    assert row["provider_protocol"] == "openai"
+
+
+def test_patch_model_protocol_sets_manual_and_frees_inherit(client, session):
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai",
+        base_url="https://api.example.com/v1", api_key_encrypted="cipher",
+    )
+    session.add(provider)
+    session.flush()
+    model = AiModel(provider_id=provider.id, model_key="m", capabilities={})
+    session.add(model)
+    session.commit()
+
+    patched = client.patch(f"/api/model-access/models/{model.id}", json={"protocol": "gemini"})
+    assert patched.status_code == 200
+    assert patched.json()["protocol"] == "gemini"
+    assert patched.json()["protocol_source"] == "manual"
+
+    restored = client.patch(f"/api/model-access/models/{model.id}", json={"protocol_source": "inherit"})
+    assert restored.status_code == 200
+    assert restored.json()["protocol"] == "openai"       # 回到继承
+    assert restored.json()["protocol_override"] is None
+
+
+def test_patch_model_protocol_rejects_unknown(client, session):
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai",
+        base_url="https://api.example.com/v1", api_key_encrypted="cipher",
+    )
+    session.add(provider)
+    session.flush()
+    model = AiModel(provider_id=provider.id, model_key="m", capabilities={})
+    session.add(model)
+    session.commit()
+
+    bad = client.patch(f"/api/model-access/models/{model.id}", json={"protocol": "bogus"})
+    assert bad.status_code == 422
+
+
+def test_changing_model_protocol_marks_capabilities_stale(client, session):
+    from app.services.model_access_service import capabilities_of
+
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai",
+        base_url="https://api.example.com/v1", api_key_encrypted="cipher",
+        enabled=True, config_revision=1,
+    )
+    session.add(provider)
+    session.flush()
+    model = AiModel(
+        provider_id=provider.id, model_key="m",
+        capabilities={
+            "text": {"value": True, "source": "probe", "config_revision": 1, "protocol": "openai"},
+        },
+    )
+    session.add(model)
+    session.commit()
+
+    # 同一协议下能力有效
+    assert capabilities_of(model, provider)["text"]["value"] is True
+
+    resp = client.patch(f"/api/model-access/models/{model.id}", json={"protocol": "gemini"})
+    assert resp.status_code == 200
+    session.refresh(model)
+    caps = capabilities_of(model, provider)
+    assert caps["text"]["value"] is False
+    assert caps["text"]["source"] == "stale"
+    assert "协议" in caps["text"]["detail"]

@@ -86,7 +86,26 @@
               <tr v-if="expanded.has(row.id)" class="detail-row">
                 <td colspan="6">
                   <div class="model-detail">
-                    <div><b>协议</b>{{ row.provider_protocol || '—' }}</div>
+                    <div>
+                      <b>协议</b>
+                      <span>{{ row.protocol || '—' }}</span>
+                      <span class="dim">（{{ protocolSourceLabel(row) }}）</span>
+                    </div>
+                    <div class="protocol-pick">
+                      <label>协议设置</label>
+                      <el-select
+                        :model-value="row.protocol_override || 'inherit'"
+                        size="small"
+                        style="width: 200px"
+                        @change="(v: string) => setModelProtocol(row, v)"
+                      >
+                        <el-option label="跟随供应商（默认）" value="inherit" />
+                        <el-option label="OpenAI 兼容" value="openai" />
+                        <el-option label="Anthropic 原生" value="anthropic" />
+                        <el-option label="Gemini 原生" value="gemini" />
+                      </el-select>
+                      <span class="dim">选择后需重新检测</span>
+                    </div>
                     <div><b>Base URL</b>{{ row.provider_base_url || '—' }}</div>
                     <div><b>检测结果</b>{{ row.probe_error || '暂无错误' }}</div>
                     <div><b>最近检测</b>{{ fmt(row.probed_at) }}</div>
@@ -248,7 +267,7 @@
         <el-input v-model="provider.base_url" placeholder="https://api.example.com/v1" />
         <el-collapse v-if="providerPreset === 'custom'">
           <el-collapse-item title="高级选项">
-            <label>协议</label>
+            <label>默认协议（供应商默认，模型未单独设置时生效）</label>
             <el-select v-model="provider.protocol" style="width: 100%">
               <el-option label="OpenAI 兼容" value="openai" />
               <el-option label="Anthropic 原生" value="anthropic" />
@@ -294,7 +313,7 @@
         <el-input v-model="providerForm.name" />
         <label>Base URL</label>
         <el-input v-model="providerForm.base_url" />
-        <label>协议</label>
+        <label>默认协议（供应商默认，模型未单独设置时生效）</label>
         <el-select v-model="providerForm.protocol" style="width: 100%">
           <el-option label="OpenAI 兼容" value="openai" />
           <el-option label="Anthropic 原生" value="anthropic" />
@@ -441,6 +460,22 @@ function staleMessage(row: any) {
     if (caps[key]?.source === 'stale') return caps[key].detail || '供应商连接配置已变更，需重新检测'
   }
   return ''
+}
+
+function protocolSourceLabel(row: any) {
+  const source = row.protocol_source || 'inherit'
+  if (source === 'manual') return '手动指定'
+  if (source === 'auto') return '自动检测'
+  return `跟随供应商 ${row.provider_protocol || ''}`.trim()
+}
+
+async function setModelProtocol(row: any, value: string) {
+  try {
+    await api.patch(`/api/model-access/models/${row.id}`, value === 'inherit'
+      ? { protocol_source: 'inherit' }
+      : { protocol: value })
+    await loadAll({ syncDrafts: false })
+  } catch { /* axios 已提示 */ }
 }
 
 function canManuallyMarkVideo(row: any) {
@@ -891,6 +926,8 @@ onBeforeUnmount(() => window.clearTimeout(probePollTimer))
 .detail-row td { background: var(--surface-2); }
 .model-detail { display: flex; gap: 28px; flex-wrap: wrap; font-size: var(--fs-sm); color: var(--muted); }
 .model-detail b { color: var(--ink-2); margin-right: 8px; }
+.protocol-pick { display: flex; align-items: center; gap: 8px; }
+.protocol-pick label { color: var(--ink-2); }
 .call-detail { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 24px; font-size: var(--fs-sm); color: var(--muted); }
 .call-detail > div { min-width: 0; }
 .call-detail b { display: block; color: var(--ink-2); margin-bottom: 2px; }

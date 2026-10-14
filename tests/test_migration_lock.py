@@ -10,6 +10,7 @@ import psycopg2
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from app.core.migration_lock import LOCK_KEY, migration_lock
@@ -24,6 +25,11 @@ def _cfg(db_url: str) -> Config:
     cfg.set_main_option("script_location", str(root / "alembic"))
     cfg.set_main_option("sqlalchemy.url", db_url)
     return cfg
+
+
+def _head() -> str:
+    """从迁移脚本目录推导当前 head，避免每加一版迁移就要改断言。"""
+    return ScriptDirectory.from_config(_cfg("sqlite://")).get_current_head()
 
 
 @pytest.fixture()
@@ -50,7 +56,7 @@ def test_sqlite_migration_not_blocked(tmp_path):
     command.upgrade(_cfg(url), "head")  # 不抛异常即通过
     with create_engine(url).connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == "0020"
+    assert rev == _head()
 
 
 def test_pg_full_migration_succeeds(temp_pg):
@@ -58,7 +64,7 @@ def test_pg_full_migration_succeeds(temp_pg):
     command.upgrade(_cfg(temp_pg), "head")
     with create_engine(temp_pg).connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == "0020"
+    assert rev == _head()
 
 
 def test_pg_lock_serializes_second_holder(temp_pg):

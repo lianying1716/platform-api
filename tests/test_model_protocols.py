@@ -2,6 +2,7 @@
 
 import httpx
 import pytest
+from types import SimpleNamespace
 
 from app.models import AiProvider
 from app.modules import model_protocols
@@ -204,3 +205,28 @@ def test_normalize_transport_and_auth_style():
     assert model_protocols.auth_style_for_transport("openai_video_url") == "bearer"
     with pytest.raises(ValueError):
         model_protocols.normalize_transport("openai", "bogus")
+
+
+def test_resolve_protocol_prefers_model_override_then_provider():
+    provider = _provider(protocol="openai", base_url="https://gateway.example.com/v1")
+    model = SimpleNamespace(protocol=None)
+    assert model_protocols.resolve_protocol(model, provider) == "openai"
+    model.protocol = "gemini"
+    assert model_protocols.resolve_protocol(model, provider) == "gemini"
+    model.protocol = "  Anthropic  "
+    assert model_protocols.resolve_protocol(model, provider) == "anthropic"
+
+
+def test_chat_request_honors_explicit_protocol_override():
+    """同一供应商下，模型级协议覆盖能改变端点与鉴权（多协议网关场景）。"""
+    provider = _provider(protocol="openai", base_url="https://gateway.example.com/v1")
+    req = model_protocols.chat_request(
+        provider,
+        "gemini-x",
+        {"messages": [{"role": "user", "content": "hi"}]},
+        api_key="goog",
+        protocol="gemini",
+    )
+    assert req.url == "https://gateway.example.com/v1beta/models/gemini-x:generateContent"
+    assert req.headers["x-goog-api-key"] == "goog"
+    assert "Authorization" not in req.headers

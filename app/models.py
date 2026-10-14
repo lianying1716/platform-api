@@ -567,6 +567,10 @@ class AiModel(Base):
     model_key: Mapped[str] = mapped_column(String(200))
     display_name: Mapped[str] = mapped_column(String(200), default="")
     import_source: Mapped[str] = mapped_column(String(16), default="discovered")
+    # 模型级协议覆盖：NULL = 继承供应商协议。protocol_source 记录来源
+    # （inherit 未判定 / auto 后端实测判定 / manual 用户指定，manual 不被自动覆盖）。
+    protocol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    protocol_source: Mapped[str] = mapped_column(String(16), default="inherit")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
     probe_status: Mapped[str] = mapped_column(String(16), default="untested")
