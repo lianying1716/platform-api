@@ -169,6 +169,10 @@ async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=f"暂不支持拉取 {account.platform} 的关注列表")
     if account.is_system or account.status == "deleted":
         raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用")
+    if not bool(account.sync_enabled):
+        from app.services.account_state import SILENT_MESSAGE
+
+        raise HTTPException(status_code=409, detail=SILENT_MESSAGE)
     if account.credential is None:
         raise HTTPException(status_code=400, detail="账号未录入凭证，请先在账号中心登录")
 

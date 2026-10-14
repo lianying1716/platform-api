@@ -37,6 +37,7 @@ def _pick_crawl_account(db: Session, platform: str, requested_id: int | None = N
                 PlatformAccount.platform == platform,
                 PlatformAccount.status == "active",
                 PlatformAccount.is_system.is_(False),
+                PlatformAccount.sync_enabled.is_(True),  # 沉默期账号不参与采集
             )
         )
     candidates = db.scalars(
@@ -44,6 +45,7 @@ def _pick_crawl_account(db: Session, platform: str, requested_id: int | None = N
             PlatformAccount.platform == platform,
             PlatformAccount.status == "active",
             PlatformAccount.is_system.is_(False),
+            PlatformAccount.sync_enabled.is_(True),  # 沉默期账号不参与采集
         )
     ).all()
     if not candidates:

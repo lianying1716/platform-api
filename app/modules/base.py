@@ -32,6 +32,9 @@ class QrPoll:
     credential: dict | None = None  # success 时返回凭证明文 JSON
     external_id: str = ""
     display_name: str = ""
+    # 平台自带的二维码会过期（抖音约 60s）并由登录页自动换新；轮询遇到这种自然过期时，
+    # 若能从页面抓到新码就随本轮结果回传，前端直接换图继续扫——避免用户稍慢就扫到死码。
+    qr_image_b64: str | None = None
 
 
 class PlatformAdapter(Protocol):

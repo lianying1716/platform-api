@@ -153,6 +153,7 @@ def list_assets(
     download_status: str | None = None,
     transcribe_status: str | None = None,
     source_kind: str | None = None,
+    sort: str = "latest",
     limit: int = 50,
     offset: int = 0,
 ):
@@ -173,7 +174,25 @@ def list_assets(
         stmt = stmt.where(MediaAsset.download_status == download_status)
     if transcribe_status:
         stmt = stmt.where(MediaAsset.transcribe_status == transcribe_status)
-    stmt = stmt.order_by(MediaAsset.id.desc()).limit(min(limit, 200)).offset(offset)
+    # 排序（全部倒序）：默认「最新」（本地入库顺序），另可选发布时间 / 同步时间 / 点赞数。
+    if sort == "published_at":
+        stmt = stmt.order_by(ContentItem.published_at.desc().nullslast(), MediaAsset.id.desc())
+    elif sort == "synced_at":
+        stmt = stmt.order_by(MediaAsset.updated_at.desc(), MediaAsset.id.desc())
+    elif sort == "like_count":
+        # 点赞数取该内容最新一条指标快照（每条内容存多行趋势），用相关子查询。
+        latest_like = (
+            select(ContentMetricSnapshot.like)
+            .where(ContentMetricSnapshot.content_id == ContentItem.id)
+            .order_by(ContentMetricSnapshot.captured_at.desc())
+            .limit(1)
+            .correlate(ContentItem)
+            .scalar_subquery()
+        )
+        stmt = stmt.order_by(latest_like.desc().nullslast(), MediaAsset.id.desc())
+    else:  # latest：本次入库顺序（默认）
+        stmt = stmt.order_by(MediaAsset.id.desc())
+    stmt = stmt.limit(min(limit, 200)).offset(offset)
     rows = db.execute(stmt).all()
 
     # 作者头像/主页：统一走 creator_profile（关注博主资料也写在这里，只此一处）
@@ -211,7 +230,14 @@ def list_assets(
                 "author_id": content.author_id,
                 "author_avatar": meta.get("avatar", ""),
                 "author_home_url": meta.get("home_url", ""),
-                "cover_url": content.cover_url,
+                # 归档导入的素材没有 CDN cover_url，只有本地封面缓存；老前端
+                # （v1.0.2 及以前）只看 cover_url 是否非空来决定渲不渲染 <img>，
+                # 所以这里给个非空哨兵值让它照样渲染（真实地址由 /cover 代理按
+                # asset_id 拼，与 cover_url 内容无关）。
+                "cover_url": content.cover_url
+                or (f"/api/assets/{asset.id}/cover" if _has_cached_cover(asset.id) else ""),
+                # 新前端直接看这个：CDN 地址或本地缓存任一存在即为 true。
+                "has_cover": bool(content.cover_url) or _has_cached_cover(asset.id),
                 "url": content.url,
                 "published_at": content.published_at.isoformat() if content.published_at else None,
                 # 同步时间＝本地入库时间（含落盘），与「发布时间」区分
@@ -373,6 +399,18 @@ def _cover_cache_dir():
     return path
 
 
+def _has_cached_cover(asset_id: int) -> bool:
+    """本地封面缓存是否存在（只查 meta，不读图片）。
+
+    归档导入的素材没有 CDN cover_url，封面只在本地缓存里；前端要据此决定是否渲染
+    <img>，否则会把有封面的素材也画成占位符。
+    """
+    try:
+        return (_cover_cache_dir() / f"{asset_id}.json").exists()
+    except OSError:
+        return False
+
+
 def _read_cached_cover(asset_id: int) -> tuple[str, bytes] | None:
     meta = _cover_cache_dir() / f"{asset_id}.json"
     if not meta.exists():
@@ -412,6 +450,15 @@ async def proxy_cover(asset_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="素材不存在")
     content = db.get(ContentItem, asset.content_id)
     url = (content.cover_url if content else "") or ""
+    # 本地缓存优先：导入的归档素材没有 CDN cover_url，但有本地海报缓存。
+    cached = _read_cached_cover(asset_id)
+    if cached is not None:
+        ctype, body = cached
+        return StreamingResponse(
+            iter([body]),
+            media_type=ctype,
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
     if not url:
         raise HTTPException(status_code=404, detail="该素材没有封面")
     platform = content.platform if content else ""
@@ -426,14 +473,6 @@ async def proxy_cover(asset_id: int, db: Session = Depends(get_db)):
     # 说明：封面 CDN **不带 Cookie**（公开图片地址），不构成"账号被封"的风险，
     # 因此不走 API 限速桶（否则 5 秒/张会把素材页拖垮）。真正的风险是"每次翻页都
     # 重打一遍 CDN" —— 用本地缓存解决：每张封面只在首次请求时取一次。
-    cached = _read_cached_cover(asset_id)
-    if cached is not None:
-        ctype, body = cached
-        return StreamingResponse(
-            iter([body]),
-            media_type=ctype,
-            headers={"Cache-Control": "private, max-age=86400"},
-        )
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             resp = await client.get(url, headers=headers)
@@ -739,3 +778,20 @@ def export_assets(body: ExportRequest, db: Session = Depends(get_db)):
         )
     md = "\n\n---\n\n".join(parts)
     return JSONResponse(content={"format": "md", "content": md})
+
+
+# ---------- 归档博主头像（本地缓存，来自抖小云 .actors） ----------
+@router.get("/archive/avatar/{name}")
+def archive_avatar(name: str):
+    """服务索引阶段从 .actors 复制出的博主头像；name 已做安全化，限制在本目录内。"""
+    from pathlib import Path as _Path
+
+    from app.config import settings
+    from fastapi.responses import FileResponse
+
+    safe = _Path(name).name
+    base = _Path(settings.data_dir) / "archive_avatars"
+    path = base / safe
+    if not path.is_file() or base not in path.resolve().parents:
+        raise HTTPException(status_code=404, detail="头像不存在")
+    return FileResponse(str(path), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})

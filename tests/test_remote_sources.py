@@ -332,12 +332,13 @@ async def test_douyin_lists_series(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_douyin_like_source_virtual_item(monkeypatch):
-    """点赞列表无独立列表接口，返回虚拟项。"""
+async def test_douyin_like_source_removed(monkeypatch):
+    """点赞同步已整条删除：list_sources 支持的类型里不再有 like，返回空。"""
     from app.modules import douyin
 
     out = await douyin.DouyinAdapter().list_sources({"cookie": "ck", "sec_user_id": "SEC"}, "like")
-    assert out == [{"remote_id": "SEC", "title": "我点赞的作品"}]
+    assert out == []
+    assert "like" not in douyin.DouyinAdapter.singleton_sync_sources
 
 
 @pytest.mark.asyncio

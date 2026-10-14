@@ -126,3 +126,67 @@ async def test_poll_falls_back_to_sid_tt_when_no_identity(monkeypatch):
     r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
     assert r.status == "success"
     assert r.external_id == "stable_sid"
+
+
+class _Elt:
+    def __init__(self, src):
+        self._src = src
+    async def get_property(self, name):
+        return self._src
+
+
+class _RefreshPage:
+    """带 query_selector 的假页面：模拟抖音登录页自动换新二维码。"""
+    def __init__(self, src, ls=None, url="https://www.douyin.com/jingxuan"):
+        self._src = src
+        self._ls = ls or {}
+        self.url = url
+    async def query_selector(self, sel):
+        return _Elt(self._src)
+    async def evaluate(self, script, *_args):
+        if _args:
+            return None
+        return dict(self._ls)
+
+
+@pytest.mark.asyncio
+async def test_poll_refreshes_qr_when_platform_reports_expired(monkeypatch):
+    """平台二维码自然过期(约60s)时，若页面已换新码，应回传新图并保持 pending，而不是判死。"""
+    sid = "s5"
+    closed = []
+    async def _close(s):
+        closed.append(s)
+    monkeypatch.setattr(browser_qr, "_close", _close)
+    # 会话里记着旧码指纹；页面此刻已经换成新码
+    monkeypatch.setitem(browser_qr._live, sid, {
+        "page": _RefreshPage("data:image/png;base64,NEWCODE"),
+        "context": FakeContext([]),
+        "created": time.time(), "browser": None, "pw": None, "xvfb": None,
+        "state": {"qr_status": "expired", "qr_hash": "OLDDIGEST"},
+    })
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "pending", r
+    assert r.qr_image_b64 == "NEWCODE", "应把页面上的新二维码回传给前端换图"
+    assert closed == [], "自然过期不该销毁会话"
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_pending_between_expiry_and_refresh(monkeypatch):
+    """平台报过期但页面还没换出新码(1~2s 窗口)：保持 pending 再等一轮，不判死。"""
+    sid = "s6"
+    closed = []
+    async def _close(s):
+        closed.append(s)
+    monkeypatch.setattr(browser_qr, "_close", _close)
+    import hashlib as _h
+    same = "SAMECODE"
+    monkeypatch.setitem(browser_qr._live, sid, {
+        "page": _RefreshPage(f"data:image/png;base64,{same}"),  # 还是同一张旧码
+        "context": FakeContext([]),
+        "created": time.time(), "browser": None, "pw": None, "xvfb": None,
+        "state": {"qr_status": "expired", "qr_hash": _h.md5(same.encode()).hexdigest()},
+    })
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "pending", r
+    assert r.qr_image_b64 is None, "同一张旧码不该再回传，避免把死码发回前端"
+    assert closed == [], "换码窗口内不该销毁会话"

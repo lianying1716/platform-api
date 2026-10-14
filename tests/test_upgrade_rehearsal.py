@@ -82,7 +82,7 @@ def test_full_upgrade_preserves_account_data(temp_pg):
         row = conn.execute(
             text("SELECT display_name, external_id FROM platform_account WHERE id = 1")
         ).one()
-    assert rev == "0019", "升级后应停在 head"
+    assert rev == "0020", "升级后应停在 head"
     assert row[0] == "演练账号" and row[1] == "RID-1", "已有账号数据必须保留"
 
 
@@ -93,7 +93,7 @@ def test_upgrade_is_idempotent(temp_pg):
     command.upgrade(cfg, "head")  # 第二次应为空操作
     with create_engine(temp_pg).connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == "0019"
+    assert rev == "0020"
 
 
 def test_version_guard_reports_synced_after_upgrade(temp_pg):
@@ -116,4 +116,4 @@ def test_version_guard_auto_migrates_behind_db(temp_pg):
     assert result.action == "migrated"
     with create_engine(temp_pg).connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == "0019"
+    assert rev == "0020"

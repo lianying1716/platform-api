@@ -74,10 +74,16 @@ def test_breakdown_settings_defaults(session):
     from app.core.breakdown_settings import DEFAULT_BREAKDOWN_PROMPT, get_breakdown_settings
 
     s = get_breakdown_settings(session)
-    assert set(s) == {"prompt", "viral_multiple"}
+    # 基础两项 + 自动爆款阀门的默认键都要在
+    assert {"prompt", "viral_multiple"} <= set(s)
+    assert {"min_play", "min_like", "min_engagement_rate", "publish_within_days",
+            "match_rule", "auto_transcribe", "auto_understand", "auto_breakdown"} <= set(s)
     assert isinstance(s["prompt"], str) and s["prompt"].strip()
     assert s["prompt"] == DEFAULT_BREAKDOWN_PROMPT
     assert isinstance(s["viral_multiple"], float) and s["viral_multiple"] > 1.0
+    # 默认不自动拆解（耗资源），命中规则默认任一
+    assert s["auto_breakdown"] is False
+    assert s["match_rule"] == "any"
 
 
 def test_breakdown_settings_override(session):

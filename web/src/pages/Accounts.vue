@@ -26,11 +26,31 @@
               <span class="ui-dot" :class="statusTone(row.status)" />
               {{ statusText(row.status) }}
             </span>
+            <span v-if="!row.sync_enabled" class="ui-badge warn">沉默期</span>
           </div>
           <div class="acc-name">{{ row.display_name || row.external_id || '未命名账号' }}</div>
           <p class="acc-id" :title="row.external_id">
             {{ row.platform_label }} · ID {{ row.external_id ? row.external_id.slice(-8) : '待识别' }}
           </p>
+          <!-- 同步总开关：关闭 = 沉默期，该账号所有同步/采集/体检一律禁止 -->
+          <div class="acc-sync" :class="{ off: !row.sync_enabled }">
+            <div class="acc-sync-text">
+              <span class="acc-sync-title">同步</span>
+              <span class="acc-sync-sub">
+                {{ row.sync_enabled ? '已开启 · 按配置正常同步' : '沉默期 · 该账号所有同步/调用已禁止' }}
+              </span>
+            </div>
+            <div class="grow" />
+            <button
+              class="ui-switch"
+              :class="{ on: row.sync_enabled }"
+              :disabled="togglingSync === row.id"
+              :aria-label="row.sync_enabled ? '关闭该账号同步（进入沉默期）' : '开启该账号同步'"
+              @click="toggleSync(row)"
+            >
+              <i />
+            </button>
+          </div>
           <dl class="acc-meta">
             <div><dt>到期</dt><dd>{{ fmt(row.expires_at) }}</dd></div>
             <div><dt>上次体检</dt><dd>{{ fmt(row.last_checked_at) }}</dd></div>
@@ -180,6 +200,7 @@ const accounts = ref<Account[]>([])
 const platforms = ref<PlatformInfo[]>([])
 const loading = ref(false)
 const checking = ref<number | null>(null)
+const togglingSync = ref<number | null>(null)
 const dialog = ref(false)
 const submitting = ref(false)
 const editing = ref<Account | null>(null)
@@ -331,6 +352,11 @@ async function poll(sessionId: string) {
     pollErrors = 0
     qrMessage.value = data.message
     qrStatus.value = data.status
+    // 平台二维码会自然过期并被登录页换新（抖音约 60s）；后端把新码随轮询回传，
+    // 这里换图即可继续扫，不必让用户重开弹窗（倒计时另按这批新码重新计）。
+    if (data.qr_image_base64) {
+      qrImage.value = data.qr_image_base64
+    }
     if (data.status === 'success') {
       stopPolling()
       qrDialog.value = false
@@ -359,6 +385,20 @@ function stopPolling() {
     pollTimer = undefined
   }
   stopCountdown()
+}
+
+async function toggleSync(row: Account) {
+  const next = !row.sync_enabled
+  togglingSync.value = row.id
+  try {
+    await api.put(`/api/accounts/${row.id}/sync-enabled`, { enabled: next })
+    row.sync_enabled = next
+    ElMessage.success(next ? '已开启该账号同步' : '已进入沉默期，该账号所有同步/调用已禁止')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  } finally {
+    togglingSync.value = null
+  }
 }
 
 async function check(row: Account) {
@@ -451,6 +491,23 @@ onUnmounted(stopPolling)
   transition: transform .14s ease-out, box-shadow .14s ease-out;
 }
 .acc:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
+
+/* 同步总开关行 */
+.acc-sync {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  background: color-mix(in oklab, var(--ok) 6%, var(--surface));
+}
+.acc-sync.off {
+  border-color: color-mix(in oklab, var(--warn) 45%, var(--line-soft));
+  background: var(--warn-soft);
+}
+.acc-sync-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.acc-sync-title { font-weight: 700; font-size: var(--fs-sm); color: var(--ink); }
+.acc-sync-sub { font-size: var(--fs-xs); color: var(--muted); }
+.acc-sync .grow { flex: 1; }
+.acc-sync .ui-switch[disabled] { opacity: .5; cursor: not-allowed; }
 
 /* 平台卡片选择器 */
 .plat-picker {

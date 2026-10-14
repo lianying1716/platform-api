@@ -43,6 +43,13 @@
         <el-option label="已完成" value="done" />
         <el-option label="失败" value="error" />
       </el-select>
+      <!-- 排序：全部倒序，默认最新（本次入库顺序） -->
+      <el-select v-model="filters.sort" size="small" style="width: 150px" @change="load">
+        <el-option label="最新（默认）" value="latest" />
+        <el-option label="按发布时间" value="published_at" />
+        <el-option label="按同步时间" value="synced_at" />
+        <el-option label="按点赞数" value="like_count" />
+      </el-select>
       <span class="grow" />
       <span v-if="selected.length" class="ui-badge acc">已选 {{ selected.length }} 条</span>
     </div>
@@ -65,7 +72,7 @@
           >
             <!-- 封面走服务端代理：抖音/B站封面是签名防盗链地址，直连会过期或 403。
                  加载失败时自动退回占位符，避免留下空白/破图。 -->
-            <img v-if="a.cover_url && !coverFailed(a.asset_id)"
+            <img v-if="(a.has_cover || a.cover_url) && !coverFailed(a.asset_id)"
               :src="coverSrc(a.asset_id)" alt=""
               loading="lazy" @error="markCoverFailed(a.asset_id)" />
             <span v-else class="ph">
@@ -498,6 +505,7 @@ const filters = reactive({
   transcribe_status: '',
   content_type: '',
   category: '',
+  sort: 'latest',
 })
 const accounts = ref<Array<{ id: number; platform: string; display_name: string }>>([])
 const filteredAccounts = computed(() =>

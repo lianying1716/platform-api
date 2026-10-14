@@ -50,7 +50,7 @@ def test_sqlite_migration_not_blocked(tmp_path):
     command.upgrade(_cfg(url), "head")  # 不抛异常即通过
     with create_engine(url).connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == "0019"
+    assert rev == "0020"
 
 
 def test_pg_full_migration_succeeds(temp_pg):
@@ -58,7 +58,7 @@ def test_pg_full_migration_succeeds(temp_pg):
     command.upgrade(_cfg(temp_pg), "head")
     with create_engine(temp_pg).connect() as conn:
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == "0019"
+    assert rev == "0020"
 
 
 def test_pg_lock_serializes_second_holder(temp_pg):

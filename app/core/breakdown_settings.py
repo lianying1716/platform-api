@@ -5,6 +5,8 @@
 
 - `breakdown_prompt`：拆解报告的 system 提示词（约束 JSON 结构与「禁编造」）。
 - `breakdown_viral_multiple`：对标账号报告里「爆款」判定阈值（播放 >= 该账号中位数 × 倍数）。
+- 自动爆款拆解的「阀门」：播放门槛 / 点赞门槛 / 互动率门槛 / 发布时间窗口 / 命中规则 /
+  是否自动转录、自动视频理解、自动拆解。都存 KV，用户可在设置页按需调。
 """
 
 import math
@@ -18,6 +20,16 @@ from app.models import SystemSetting
 BREAKDOWN_KEYS: dict[str, str] = {
     "prompt": "breakdown_prompt",
     "viral_multiple": "breakdown_viral_multiple",
+    # 自动爆款拆解的判定阀门
+    "min_play": "breakdown_min_play",
+    "min_like": "breakdown_min_like",
+    "min_engagement_rate": "breakdown_min_engagement_rate",
+    "publish_within_days": "breakdown_publish_within_days",
+    "match_rule": "breakdown_match_rule",  # any / all
+    # 自动执行链：命中阀门的爆款自动转录 / 视频理解 / 拆解
+    "auto_transcribe": "breakdown_auto_transcribe",
+    "auto_understand": "breakdown_auto_understand",
+    "auto_breakdown": "breakdown_auto_breakdown",
 }
 
 # 内置默认提示词：定义报告 JSON 结构 + 各分析维度 + 禁编造约束。
@@ -48,14 +60,48 @@ DEFAULT_BREAKDOWN_PROMPT = (
 
 _DEFAULT_VIRAL_MULTIPLE = 3.0
 
+# 自动爆款判定阀门的默认值。设计取向：**默认只开"相对自身中位数"这一条**（最贴近
+# 用户对"爆款"的直觉：比自己平时火），其余阀门默认 0=不限，命中规则默认 any（任一命中）。
+# 这样即便用户什么都不调，也不会把所有视频都判成爆款、把加工额度烧光。
+_DEFAULTS: dict[str, tuple[object, str]] = {
+    "breakdown_min_play": (0, "int"),
+    "breakdown_min_like": (0, "int"),
+    "breakdown_min_engagement_rate": (0.0, "float"),
+    "breakdown_publish_within_days": (0, "int"),
+    "breakdown_match_rule": ("any", "str"),
+    "breakdown_auto_transcribe": (True, "bool"),
+    "breakdown_auto_understand": (False, "bool"),
+    "breakdown_auto_breakdown": (False, "bool"),
+}
 
-def get_breakdown_settings(db: Session) -> dict:
-    """返回拆解配置（短名 -> 值），缺失/非法回退内置默认。
+_MATCH_RULES = ("any", "all")
 
-    返回键与 `BREAKDOWN_KEYS` 一致：``{"prompt": str, "viral_multiple": float}``。
+
+def _coerce(raw, default, kind: str):
+    if raw is None or str(raw) == "":
+        return default
+    try:
+        if kind == "int":
+            return int(str(raw).strip())
+        if kind == "float":
+            return float(str(raw).strip())
+        if kind == "bool":
+            text = str(raw).strip().lower()
+            if text in ("1", "true", "yes", "on"):
+                return True
+            if text in ("0", "false", "no", "off"):
+                return False
+            return default
+        return str(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_breakdown_settings_from_rows(rows: dict[str, str]) -> dict:
+    """从 system_setting 行映射解析拆解配置（不依赖 DB Session）。
+
+    返回键与 ``BREAKDOWN_KEYS`` 一致；所有数值做有限性/非负校验，非法回退默认。
     """
-    rows = {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
-
     raw_prompt = rows.get("breakdown_prompt")
     prompt = raw_prompt if (raw_prompt and raw_prompt.strip()) else DEFAULT_BREAKDOWN_PROMPT
 
@@ -68,4 +114,59 @@ def get_breakdown_settings(db: Session) -> dict:
     if not math.isfinite(mult) or mult <= 0:
         mult = _DEFAULT_VIRAL_MULTIPLE
 
-    return {"prompt": prompt, "viral_multiple": mult}
+    out: dict = {"prompt": prompt, "viral_multiple": mult}
+    for key, (default, kind) in _DEFAULTS.items():
+        short = key[len("breakdown_"):]  # breakdown_min_play -> min_play
+        value = _coerce(rows.get(key), default, kind)
+        if kind in ("int", "float"):
+            if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value < 0:
+                value = default
+        if key == "breakdown_match_rule" and value not in _MATCH_RULES:
+            value = default
+        out[short] = value
+    if out["min_engagement_rate"] > 1:
+        out["min_engagement_rate"] = 1.0  # 互动率上限 100%
+    return out
+
+
+def get_breakdown_settings(db: Session) -> dict:
+    """返回拆解配置（短名 -> 值），缺失/非法回退内置默认。"""
+    rows = {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
+    return resolve_breakdown_settings_from_rows(rows)
+
+
+def is_viral(data_context: dict, settings_map: dict) -> bool:
+    """按配置的阀门判断一条内容是否算「爆款」（纯函数，便于测试）。
+
+    阀门（都是"越大越像爆款"）：
+    - ``viral_multiple``：播放 >= 该账号中位数 × 倍数（始终参与；中位数为 0 时不满足）；
+    - ``min_play`` / ``min_like``：绝对量门槛（>0 才参与）；
+    - ``min_engagement_rate``：(点赞+评论+收藏+分享)/播放 的互动率门槛（>0 才参与）；
+    - ``match_rule``：``any``=任一命中即爆款；``all``=全部满足才算。
+
+    返回 False 表示不自动拆解（阀门全部未开启时也返回 False，避免全量误判）。
+    """
+    checks: list[bool] = []
+
+    mult = float(settings_map.get("viral_multiple") or 0)
+    median_play = float(data_context.get("median_play") or 0)
+    play = float(data_context.get("play") or 0)
+    if mult > 0:
+        checks.append(bool(median_play) and play >= median_play * mult)
+
+    min_play = float(settings_map.get("min_play") or 0)
+    if min_play > 0:
+        checks.append(play >= min_play)
+
+    min_like = float(settings_map.get("min_like") or 0)
+    if min_like > 0:
+        checks.append(float(data_context.get("like") or 0) >= min_like)
+
+    min_rate = float(settings_map.get("min_engagement_rate") or 0)
+    if min_rate > 0:
+        checks.append(float(data_context.get("engagement_rate") or 0) >= min_rate)
+
+    if not checks:
+        return False
+    rule = settings_map.get("match_rule") or "any"
+    return all(checks) if rule == "all" else any(checks)

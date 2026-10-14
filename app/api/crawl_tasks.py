@@ -68,6 +68,7 @@ def create_task(body: CrawlTaskIn, db: Session = Depends(get_db)):
             or account.is_system
             or account.platform != body.platform
             or account.status != "active"
+            or not bool(account.sync_enabled)
         ):
             raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
     task = CrawlTask(**body.model_dump())
@@ -89,6 +90,7 @@ def update_task(task_id: int, body: CrawlTaskIn, db: Session = Depends(get_db)):
             or account.is_system
             or account.platform != body.platform
             or account.status != "active"
+            or not bool(account.sync_enabled)
         ):
             raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
     for k, v in body.model_dump().items():

@@ -46,6 +46,9 @@ class PlatformAccount(Base):
     status: Mapped[str] = mapped_column(String(16), default="unchecked")
     status_message: Mapped[str] = mapped_column(String(512), default="")
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)  # 历史迁移/系统导入的隐藏归属
+    # 账号级「同步总开关」（沉默期）：False = 该账号所有同步/调用一律禁止（源头拦截）。
+    # 与订阅级 enabled 是与门关系：订阅开着但总开关关掉，照样不排队、不执行。
+    sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
     last_crawl_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 采集公平轮换
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

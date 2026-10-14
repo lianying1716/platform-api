@@ -43,18 +43,24 @@ _download_gate = asyncio.Lock()
 _last_download_at: float = 0.0
 
 
-async def _await_download_slot() -> None:
-    """获取下载槽位：与上一次下载至少相隔 gap + 抖动秒。"""
+async def _await_download_slot(gap_seconds: float | None = None) -> None:
+    """获取下载槽位：与上一次下载至少相隔 ``gap_seconds`` 秒。
+
+    ``gap_seconds`` 由调用方按设置页的随机区间抽样传入（照抄抖小云下载循环里的
+    ``Task.Delay(random.Next(1,4)*1000)``）；未传时回退到旧的固定 gap+抖动配置。
+    """
     from app.config import settings
 
     global _last_download_at
     async with _download_gate:
-        gap = max(0.0, float(getattr(settings, "download_min_gap_seconds", 2.0)))
-        jitter = max(0.0, float(getattr(settings, "download_jitter_seconds", 3.0)))
+        if gap_seconds is None:
+            gap = max(0.0, float(getattr(settings, "download_min_gap_seconds", 2.0)))
+            jitter = max(0.0, float(getattr(settings, "download_jitter_seconds", 3.0)))
+            gap_seconds = gap + random.uniform(0, jitter)
         wait = 0.0
         if _last_download_at:
             elapsed = asyncio.get_running_loop().time() - _last_download_at
-            wait = (gap + random.uniform(0, jitter)) - elapsed
+            wait = float(gap_seconds) - elapsed
         if wait > 0:
             await asyncio.sleep(wait)
         _last_download_at = asyncio.get_running_loop().time()
@@ -283,7 +289,10 @@ async def handle_download(db: Session, payload: dict) -> None:
     # 抖音走 play_addr 直链 + Cookie（照抄抖小云），B站走 playurl DASH + ffmpeg（照抄 bili-sync）。
     cookie = _content_cookie(db, content)
     # 节流：所有下载共用一条串行通道 + 最小间隔，避免批量同步打爆 CDN 触发限流。
-    await _await_download_slot()
+    # 相邻下载随机等待：从设置页配置的区间抽样（每个下载任务各抽一次）。
+    from app.core.sync_settings import get_sync_settings, pick_download_gap_seconds
+
+    await _await_download_slot(pick_download_gap_seconds(get_sync_settings(db)))
     result = await _download_content(content, target_dir, cookie)
     # download() 返回 DownloadResult(dataclass)，不是 dict —— 这里必须属性访问。
     asset.video_file = result.video_file
@@ -318,6 +327,15 @@ async def handle_download(db: Session, payload: dict) -> None:
     except Exception:  # noqa: BLE001 自动加工是增强项，失败不得翻转已完成的下载
         db.rollback()
         logger.exception("素材 #%s 自动加工入队失败，已忽略", asset_id)
+    # 自动爆款拆解：按设置页配置的阀门判定，命中则自动转录/理解/拆解。
+    try:
+        from app.services.auto_breakdown import enqueue_auto_breakdown
+
+        enqueue_auto_breakdown(db, asset, content)
+        db.commit()
+    except Exception:  # noqa: BLE001 自动拆解是增强项，失败不得翻转已完成的下载
+        db.rollback()
+        logger.exception("素材 #%s 自动爆款拆解入队失败，已忽略", asset_id)
 
 
 async def handle_transcribe(db: Session, payload: dict) -> None:
@@ -368,6 +386,17 @@ async def handle_transcribe(db: Session, payload: dict) -> None:
     except Exception:  # noqa: BLE001 自动分析是增强项，失败不得翻转已完成的转录
         db.rollback()
         logger.exception("素材 #%s 转录后自动分析入队失败，已忽略", asset_id)
+    # 转录完成后也补一次自动爆款拆解：拆解依赖转录文本，下载那刻可能还没转录好。
+    try:
+        content = db.get(ContentItem, asset.content_id)
+        if content is not None:
+            from app.services.auto_breakdown import enqueue_auto_breakdown
+
+            enqueue_auto_breakdown(db, asset, content)
+            db.commit()
+    except Exception:  # noqa: BLE001 自动拆解是增强项，失败不得翻转已完成的转录
+        db.rollback()
+        logger.exception("素材 #%s 转录后自动爆款拆解入队失败，已忽略", asset_id)
 
 
 async def handle_analyze(db: Session, payload: dict, job=None) -> None:

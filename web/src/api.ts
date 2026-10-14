@@ -81,5 +81,7 @@ export interface Account {
   storage_root_id: number | null
   storage_root_name: string
   storage_root_path: string
+  // 账号级同步总开关：false = 沉默期（禁止该账号所有同步/调用）
+  sync_enabled: boolean
   credential_preview: Record<string, string>
 }

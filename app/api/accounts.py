@@ -58,6 +58,11 @@ def _account_out(account: PlatformAccount, root: StorageRoot | None = None) -> s
 async def _run_check(db: Session, account: PlatformAccount, actor: str = "admin") -> schemas.CheckResponse:
     if account.status == "deleted":
         raise HTTPException(status_code=409, detail="账号已停用，不能体检；请重新登录或恢复账号")
+    if not bool(account.sync_enabled):
+        # 沉默期：体检也是平台调用，一并禁止（用户明确要求"停"）。
+        from app.services.account_state import SILENT_MESSAGE
+
+        raise HTTPException(status_code=409, detail=SILENT_MESSAGE)
     _adapter_or_400(account.platform)
     before = account.external_id
     from app.services.account_health import check_account
@@ -145,7 +150,11 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
     if poll.status != "success":
         if poll.status in ("expired", "error"):
             qr_sessions.remove(session_id)
-        return schemas.QrLoginStatus(status=poll.status, message=poll.message)
+        return schemas.QrLoginStatus(
+            status=poll.status,
+            message=poll.message,
+            qr_image_base64=poll.qr_image_b64,
+        )
 
     # 登录成功 → 决定"更新哪个账号 / 要不要新建"：
     #   1. 有身份标识：按 (platform, external_id) 精确匹配并更新；匹配不到则新建
@@ -301,6 +310,24 @@ async def update_credential(account_id: int, body: schemas.CredentialUpdate, db:
     db.commit()
     if not body.skip_check:
         await _run_check(db, account)
+    db.refresh(account)
+    return _account_out(account)
+
+
+@router.put("/accounts/{account_id}/sync-enabled", response_model=schemas.AccountOut)
+def update_account_sync_enabled(
+    account_id: int, body: schemas.AccountSyncToggle, db: Session = Depends(get_db)
+):
+    """账号级同步总开关。关闭 = 沉默期：该账号所有同步/采集/体检一律禁止（源头拦截）。
+
+    订阅与素材都保留不删；重新打开即恢复（订阅各自开关照旧生效）。
+    """
+    account = db.get(PlatformAccount, account_id)
+    if account is None or account.status == "deleted":
+        raise HTTPException(status_code=404, detail="账号不存在或已停用")
+    account.sync_enabled = body.enabled
+    _audit(db, account.id, "update", f"同步总开关 -> {'开启' if body.enabled else '关闭（沉默期）'}")
+    db.commit()
     db.refresh(account)
     return _account_out(account)
 

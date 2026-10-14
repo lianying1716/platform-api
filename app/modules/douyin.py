@@ -113,16 +113,6 @@ COLLECT_PARAMS = _with(
     cursor="0", count="10",
 )
 
-# 我点赞的作品（SyncFavoriteVideos）
-FAVORITE_PARAMS = _with(
-    version_code="170400", version_name="17.4.0",
-    screen_width="1536", screen_height="960",
-    browser_version="140.0.0.0", engine_version="140.0.0.0",
-    cpu_core_num="20", support_h265="1", support_dash="1",
-    min_cursor="0", cut_version="1", count="18",
-)
-
-
 # 收藏夹列表（SyncCollectFolderList -> /aweme/v1/web/collects/list）—— 抖小云 DouyinCollectListParams
 COLLECT_FOLDER_LIST_PARAMS = _with(
     version_code="170400", version_name="17.4.0",
@@ -387,21 +377,6 @@ _COLLECT_REFERER = (
 )
 
 
-async def recent_collection_videos(
-    cookie: str, max_cursor: str = "0", count: str = "20", sec_user_id: str = ""
-) -> dict | None:
-    """我点赞的作品（dysync SyncFavoriteVideos -> /aweme/v1/web/aweme/favorite）。
-
-    注：这是「点赞」列表，抖小云把 VideoTypeEnum.dy_favorite 叫做「喜欢的」；
-    查询参数名是 max_cursor（不是 cursor）。sec_user_id 是**自己主页**的 sec_uid。
-    """
-    params = dict(FAVORITE_PARAMS, max_cursor=max_cursor, sec_user_id=sec_user_id, count=count)
-    referer = "https://www.douyin.com/user/self?showTab=like"
-    return await _fetch_source_json(
-        "/aweme/v1/web/aweme/favorite", params, cookie, method="GET", referer=referer
-    )
-
-
 async def collect_folder_list(cookie: str, cursor: str = "0") -> dict | None:
     """自定义收藏夹列表（dysync SyncCollectFolderList -> /aweme/v1/web/collects/list）。"""
     params = dict(COLLECT_FOLDER_LIST_PARAMS, cursor=cursor, count="10")
@@ -517,7 +492,7 @@ class DouyinAdapter:
     credential_kind = "cookie"
     supports_qr = True  # 经 browser_qr（Playwright），未装浏览器时 API 会返回明确报错
     # 账号级单例同步源：整个账号只有一份，可在「账号」页用开关直接打开（对齐抖小云）。
-    singleton_sync_sources = ("favorite", "like")
+    singleton_sync_sources = ("favorite",)
     credential_fields = [
         {"key": "cookie", "label": "Cookie 字符串（整段粘贴）", "required": True},
         {"key": "sec_user_id", "label": "SecUserId（主页地址 /user/ 后面那串）", "required": False},
@@ -563,7 +538,6 @@ class DouyinAdapter:
 
         逐项对应抖小云 VideoTypeEnum 的同步入口：
         - favorite（我的收藏）：无列表接口，返回虚拟项，remote_id 用 sec_user_id 占位。
-        - like（我点赞的）：同上，虚拟项。
         - collection（收藏的合集）：/aweme/v1/web/mix/listcollection 真实列表。
         - collect_folder（自定义收藏夹）：/aweme/v1/web/collects/list 真实列表。
         - series（收藏的短剧）：/aweme/v1/web/series/collections 真实列表。
@@ -572,9 +546,8 @@ class DouyinAdapter:
         """
         cookie = credential.get("cookie", "")
         sec_user_id = (credential.get("sec_user_id") or "").strip()
-        if source_type in ("favorite", "like"):
-            title = "我的收藏" if source_type == "favorite" else "我点赞的作品"
-            return [{"remote_id": sec_user_id or "self", "title": title}]
+        if source_type == "favorite":
+            return [{"remote_id": sec_user_id or "self", "title": "我的收藏"}]
         if source_type == "creator":
             if not sec_user_id:
                 return []
@@ -759,7 +732,6 @@ class DouyinAdapter:
         """拉取订阅源内容（逐项对应抖小云 VideoTypeEnum）。
 
         - favorite：我的收藏（POST /aweme/v1/web/aweme/listcollection）
-        - like：我点赞的作品（/aweme/v1/web/aweme/favorite，需自己 sec_user_id）
         - collect_folder：某收藏夹内作品（/aweme/v1/web/collects/video/list）
         - collection：某合集内作品（/aweme/v1/web/mix/aweme）
         - series：某短剧剧集（/aweme/v1/web/series/aweme）
@@ -768,12 +740,6 @@ class DouyinAdapter:
         cookie = credential.get("cookie", "")
         if source_type == "creator":
             return await self._fetch_creator_videos(cookie, remote_id, limit)
-        if source_type == "like":
-            sec_user_id = (credential.get("sec_user_id") or remote_id or "").strip()
-            return await self._fetch_paged(
-                cookie, recent_collection_videos, limit,
-                cursor_param="max_cursor", sec_user_id=sec_user_id,
-            )
         if source_type == "collect_folder":
             return await self._fetch_paged(cookie, collect_folder_videos, limit, collects_id=remote_id)
         if source_type == "collection":

@@ -1,10 +1,11 @@
-"""抖音新增订阅源类型（点赞/收藏夹/合集/短剧）拉取测试（mock httpx，不联网）。
+"""抖音新增订阅源类型（收藏夹/合集/短剧）拉取测试（mock httpx，不联网）。
 
 逐项对应抖小云 VideoTypeEnum：
-- like            -> /aweme/v1/web/aweme/favorite
 - collect_folder  -> /aweme/v1/web/collects/video/list
 - collection      -> /aweme/v1/web/mix/aweme
 - series          -> /aweme/v1/web/series/aweme
+
+注：**点赞同步（like 源）已按产品决定整条删除**，不再作为订阅源。
 """
 
 import httpx
@@ -90,20 +91,17 @@ def _patch(monkeypatch, routes):
 
 
 @pytest.mark.asyncio
-async def test_fetch_like_uses_favorite_endpoint(monkeypatch):
+async def test_like_source_removed(monkeypatch):
+    """点赞同步已整条删除：like 不再是订阅源，拉取返回空、不发起任何请求。"""
     from app.modules import douyin
 
-    payload = {"status_code": 0, "has_more": 0, "cursor": 0, "aweme_list": [_aweme("L1")]}
-    calls = _patch(monkeypatch, {"aweme/favorite": payload})
+    calls = _patch(monkeypatch, {"aweme/favorite": {"status_code": 0, "aweme_list": []}})
     items = await douyin.DouyinAdapter().fetch_source(
         {"cookie": "c=1", "sec_user_id": "SELF_SEC"}, "like", "SELF_SEC", 10
     )
-    assert len(items) == 1
-    assert items[0]["external_id"] == "L1"
-    assert items[0]["metrics"]["like"] == 20
-    assert calls[0]["url"] == "/aweme/v1/web/aweme/favorite"
-    assert calls[0]["params"]["sec_user_id"] == "SELF_SEC"
-    assert calls[0]["params"]["max_cursor"] == "0"
+    assert items == []
+    assert calls == []  # 不请求 /aweme/v1/web/aweme/favorite
+    assert "like" not in douyin.DouyinAdapter.singleton_sync_sources
 
 
 @pytest.mark.asyncio
@@ -219,19 +217,18 @@ async def test_favorite_falls_back_to_browser_when_blocked(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_like_falls_back_to_browser_when_blocked(monkeypatch):
+async def test_favorite_falls_back_to_browser_when_blocked(monkeypatch):
+    """我的收藏被 WAF 拦（返回 blocked）时，走浏览器兜底把本批救回来。"""
     from app.modules import douyin, douyin_browser_fetch
 
-    _patch(monkeypatch, {"aweme/favorite": "blocked"})
+    _patch(monkeypatch, {"listcollection": "blocked"})
 
     async def fake_fetch_json(path, params, cookie, *, method="GET", referer="https://www.douyin.com/"):
-        return {"status_code": 0, "has_more": 0, "cursor": 0, "aweme_list": [_aweme("LK1")]}
+        return {"status_code": 0, "has_more": 0, "cursor": 0, "aweme_list": [_aweme("FV1")]}
 
     monkeypatch.setattr(douyin_browser_fetch, "fetch_json", fake_fetch_json)
-    items = await douyin.DouyinAdapter().fetch_source(
-        {"cookie": "c=1", "sec_user_id": "SELF"}, "like", "SELF", 10
-    )
-    assert [i["external_id"] for i in items] == ["LK1"]
+    items = await douyin.DouyinAdapter().fetch_source({"cookie": "c=1"}, "favorite", "", 10)
+    assert [i["external_id"] for i in items] == ["FV1"]
 
 
 @pytest.mark.asyncio

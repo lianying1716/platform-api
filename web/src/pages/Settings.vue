@@ -183,17 +183,85 @@
 
       <!-- 爆款拆解 -->
       <el-tab-pane label="爆款拆解" name="breakdown">
-        <p class="tip">爆款拆解报告使用的提示词，以及「对标账号」里判定爆款的热度倍数（播放 ≥ 该账号自身中位数 × 倍数）。</p>
-        <el-form label-width="140px" style="max-width: 720px">
-          <el-form-item label="拆解提示词">
-            <el-input v-model="bd.prompt" type="textarea" :rows="14" />
-          </el-form-item>
-          <el-form-item label="爆款倍数 viral_multiple">
+        <p class="tip">自动爆款判定「阀门」+ 命中后的自动加工链。视频下载完成后，命中任一/全部阀门的才会被自动拆解。</p>
+        <el-form label-width="200px" style="max-width: 720px">
+          <el-divider content-position="left">爆款阀门（都是"越大越像爆款"）</el-divider>
+          <el-form-item label="相对自身中位数倍数">
             <el-input-number v-model="bd.viral_multiple" :min="0.1" :step="0.5" :precision="1" />
-            <span class="detail">必须为正数</span>
+            <span class="detail">播放 ≥ 该账号近期播放中位数 × 倍数（默认 3；作者无数据时不参与）</span>
+          </el-form-item>
+          <el-form-item label="播放量门槛">
+            <el-input-number v-model="bd.min_play" :min="0" :precision="0" />
+            <span class="detail">0 = 不限</span>
+          </el-form-item>
+          <el-form-item label="点赞量门槛">
+            <el-input-number v-model="bd.min_like" :min="0" :precision="0" />
+            <span class="detail">0 = 不限</span>
+          </el-form-item>
+          <el-form-item label="互动率门槛">
+            <el-input-number v-model="bd.min_engagement_rate" :min="0" :max="1" :step="0.01" :precision="2" />
+            <span class="detail">(点赞+评论+收藏+分享)/播放 ≥ 该值；0 = 不限</span>
+          </el-form-item>
+          <el-form-item label="发布时间窗口（天）">
+            <el-input-number v-model="bd.publish_within_days" :min="0" :precision="0" />
+            <span class="detail">只判定最近 N 天内发布的作品；0 = 不限</span>
+          </el-form-item>
+          <el-form-item label="命中规则">
+            <el-radio-group v-model="bd.match_rule">
+              <el-radio-button value="any">任一命中</el-radio-button>
+              <el-radio-button value="all">全部满足</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-divider content-position="left">命中后自动执行</el-divider>
+          <el-form-item label="自动转录">
+            <el-switch v-model="bd.auto_transcribe" />
+            <span class="detail">理解 / 拆解都依赖转录，命中时通常需要</span>
+          </el-form-item>
+          <el-form-item label="自动视频理解">
+            <el-switch v-model="bd.auto_understand" />
+          </el-form-item>
+          <el-form-item label="自动爆款拆解">
+            <el-switch v-model="bd.auto_breakdown" />
+            <span class="detail">命中阀门后自动出拆解报告（消耗 LLM 额度）</span>
+          </el-form-item>
+          <el-divider content-position="left">拆解报告提示词</el-divider>
+          <el-form-item label="拆解提示词">
+            <el-input v-model="bd.prompt" type="textarea" :rows="12" />
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="saveBreakdownSettings">保存</el-button>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
+
+      <!-- 同步频率 -->
+      <el-tab-pane label="同步频率" name="sync">
+        <p class="tip">同步节奏与批量。同步时间 / 每次数量都是「随机区间」，模拟人工、避开固定节奏被风控（照抄抖小云）。</p>
+        <el-form label-width="220px" style="max-width: 720px">
+          <el-form-item label="同步间隔下限（分钟）">
+            <el-input-number v-model="sync.interval_min_minutes" :min="1" :precision="0" />
+            <span class="detail">订阅未单独设置间隔时，用这个全局随机区间</span>
+          </el-form-item>
+          <el-form-item label="同步间隔上限（分钟）">
+            <el-input-number v-model="sync.interval_max_minutes" :min="1" :precision="0" />
+            <span class="detail">每次到期后在该区间内随机取一个间隔</span>
+          </el-form-item>
+          <el-form-item label="每次同步数量下限">
+            <el-input-number v-model="sync.batch_min" :min="1" :max="30" :precision="0" />
+          </el-form-item>
+          <el-form-item label="每次同步数量上限">
+            <el-input-number v-model="sync.batch_max" :min="1" :max="30" :precision="0" />
+            <span class="detail">单次拉取/下载的条数范围，上限 30（对齐抖小云 BatchCount）</span>
+          </el-form-item>
+          <el-form-item label="下载间隔下限（秒）">
+            <el-input-number v-model="sync.download_gap_min_seconds" :min="0" :step="0.5" :precision="1" />
+          </el-form-item>
+          <el-form-item label="下载间隔上限（秒）">
+            <el-input-number v-model="sync.download_gap_max_seconds" :min="0" :step="0.5" :precision="1" />
+            <span class="detail">相邻两次下载之间的随机等待，避开密集直链请求</span>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="saveSyncSettings">保存</el-button>
           </el-form-item>
         </el-form>
       </el-tab-pane>
@@ -436,6 +504,7 @@ const tabs = [
   { k: 'comments', label: '评论抓取' },
   { k: 'process', label: '视频理解' },
   { k: 'breakdown', label: '爆款拆解' },
+  { k: 'sync', label: '同步频率' },
   { k: 'diag', label: '依赖诊断' },
   { k: 'version', label: '版本与升级' },
   { k: 'admin', label: '管理员' },
@@ -580,23 +649,79 @@ const proc = reactive<any>({
   typePromptsText: '{}',
 })
 
-const bd = reactive<any>({ prompt: '', viral_multiple: 3 })
+const bd = reactive<any>({
+  prompt: '', viral_multiple: 3,
+  min_play: 0, min_like: 0, min_engagement_rate: 0, publish_within_days: 0,
+  match_rule: 'any',
+  auto_transcribe: true, auto_understand: false, auto_breakdown: false,
+})
 
 async function loadBreakdownSettings() {
   const { data } = await api.get('/api/system/breakdown-settings')
   bd.prompt = data.prompt ?? ''
   bd.viral_multiple = data.viral_multiple ?? 3
+  bd.min_play = data.min_play ?? 0
+  bd.min_like = data.min_like ?? 0
+  bd.min_engagement_rate = data.min_engagement_rate ?? 0
+  bd.publish_within_days = data.publish_within_days ?? 0
+  bd.match_rule = data.match_rule ?? 'any'
+  bd.auto_transcribe = data.auto_transcribe ?? true
+  bd.auto_understand = data.auto_understand ?? false
+  bd.auto_breakdown = data.auto_breakdown ?? false
 }
 
 async function saveBreakdownSettings() {
   if (!bd.prompt || !bd.prompt.trim()) return ElMessage.warning('提示词不能为空')
   if (!(bd.viral_multiple > 0)) return ElMessage.warning('爆款倍数必须为正数')
-  await api.put('/api/system/breakdown-settings', {
-    prompt: bd.prompt,
-    viral_multiple: bd.viral_multiple,
-  })
-  ElMessage.success('已保存')
-  await loadBreakdownSettings()
+  try {
+    await api.put('/api/system/breakdown-settings', {
+      prompt: bd.prompt,
+      viral_multiple: bd.viral_multiple,
+      min_play: bd.min_play,
+      min_like: bd.min_like,
+      min_engagement_rate: bd.min_engagement_rate,
+      publish_within_days: bd.publish_within_days,
+      match_rule: bd.match_rule,
+      auto_transcribe: bd.auto_transcribe,
+      auto_understand: bd.auto_understand,
+      auto_breakdown: bd.auto_breakdown,
+    })
+    ElMessage.success('已保存')
+    await loadBreakdownSettings()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  }
+}
+
+// 同步频率（照抄抖小云：随机时间 + 每次数量范围）
+const sync = reactive<any>({
+  interval_min_minutes: 300, interval_max_minutes: 360,
+  batch_min: 10, batch_max: 18,
+  download_gap_min_seconds: 2, download_gap_max_seconds: 10,
+})
+
+async function loadSyncSettings() {
+  const { data } = await api.get('/api/system/sync-settings')
+  Object.assign(sync, data)
+}
+
+async function saveSyncSettings() {
+  if (sync.interval_min_minutes > sync.interval_max_minutes) {
+    return ElMessage.warning('同步间隔下限不能大于上限')
+  }
+  if (sync.batch_min > sync.batch_max) {
+    return ElMessage.warning('每次数量下限不能大于上限')
+  }
+  if (sync.download_gap_min_seconds > sync.download_gap_max_seconds) {
+    return ElMessage.warning('下载间隔下限不能大于上限')
+  }
+  try {
+    await api.put('/api/system/sync-settings', { ...sync })
+    ElMessage.success('已保存')
+    await loadSyncSettings()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  }
 }
 
 async function loadRoots() {
@@ -837,6 +962,7 @@ onMounted(() => {
   loadCommentSettings()
   loadProcessSettings()
   loadBreakdownSettings()
+  loadSyncSettings()
   loadVersion()
 })
 

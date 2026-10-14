@@ -27,6 +27,9 @@ async def check_all_accounts() -> None:
         for account in accounts:
             if account.credential is None:
                 continue
+            # 沉默期账号连体检都停（用户明确要求）：不做任何平台调用。
+            if not bool(account.sync_enabled):
+                continue
             try:
                 await check_account(account)
             except Exception as exc:  # noqa: BLE001 单个账号异常不中断整批巡检
@@ -63,6 +66,7 @@ async def enqueue_due_subscriptions() -> None:
     """
     from app.core.queue import enqueue
     from app.models import PlatformAccount, Subscription
+    from app.services.account_state import is_callable
 
     db = SessionLocal()
     try:
@@ -75,14 +79,23 @@ async def enqueue_due_subscriptions() -> None:
                 Subscription.deleted_at.is_(None),
                 # 停用/不可用账号的订阅不排队（排了也只会立刻报"账号已停用"）。
                 PlatformAccount.status == "active",
+                # 沉默期账号（同步总开关关闭）一律不排队：源头拦截，订阅开着也无效。
+                PlatformAccount.sync_enabled.is_(True),
             )
         ).all()
+        # 同步间隔：订阅自己设了 interval_minutes 就用它（固定值）；否则用设置页配置的
+        # 全局随机区间（照抄抖小云"随机时间"的意图，避免固定整点节奏）。这里把随机放在
+        # 判定这一层：每次到期后重新抽样，等价于"每次同步间隔都在区间内随机"。
+        from app.core.sync_settings import get_sync_settings, pick_interval_minutes
+
+        sync_cfg = get_sync_settings(db)
         queued = 0
         for sub in subs:
             # 博主订阅：没开"同步博主视频"就只跟踪关注关系，不拉视频。
             if sub.source_type == "creator" and not sub.sync_videos:
                 continue
-            interval = max(10, int(sub.interval_minutes or 0))
+            fixed = int(sub.interval_minutes or 0)
+            interval = max(10, fixed) if fixed > 0 else pick_interval_minutes(sync_cfg)
             # 用「上次尝试」判到期：失败也退避满一个 interval，不在风控期反复打平台。
             last = sub.last_attempt_at or sub.last_sync_at
             if last is not None and (now - last).total_seconds() < interval * 60:

@@ -55,17 +55,25 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
         return _finish(db, run, "error", error="账号不存在或未录入凭证")
     if account.status != "active":
         return _finish(db, run, "error", error=f"账号已停用或不可用（status={account.status}）")
+    if not bool(account.sync_enabled):
+        from app.services.account_state import SILENT_MESSAGE
+
+        return _finish(db, run, "error", error=SILENT_MESSAGE)
 
     adapter = get_adapter(subscription.platform)
     fetch = getattr(adapter, "fetch_source", None)
     if fetch is None:
         return _finish(db, run, "error", error=f"{adapter.label} 暂不支持订阅同步")
 
+    # 本次同步的条数上限：从设置页配置的随机区间里取一个（照抄抖小云 BatchCount 的
+    # 「每次查询数量」语义），并受 _SYNC_FETCH_LIMIT 安全上限约束。
+    from app.core.sync_settings import get_sync_settings, pick_batch_size
+
+    batch = pick_batch_size(get_sync_settings(db))
+    fetch_limit = min(batch, _SYNC_FETCH_LIMIT)
     try:
         credential = decrypt_credential(account.credential.ciphertext)
-        items = await _fetch_source_cached(
-            db, subscription, fetch, credential, _SYNC_FETCH_LIMIT
-        )
+        items = await _fetch_source_cached(db, subscription, fetch, credential, fetch_limit)
     except Exception as exc:  # noqa: BLE001 网络/风控异常不应让平台崩
         return _finish(db, run, "error", error=f"拉取失败: {exc}")
 

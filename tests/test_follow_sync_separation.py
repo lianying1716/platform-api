@@ -186,18 +186,18 @@ def test_only_new_true_does_not_report_updated(session, monkeypatch):
 # ------------------------------------------------------ 收藏 / 点赞账号级独立开关
 
 
-def test_switch_list_shows_three_independent_switches(client, session):
+def test_switch_list_shows_independent_switches(client, session):
     acc = _account(session)
     data = client.get(f"/api/accounts/{acc.id}/sync-switches").json()
     keys = {s["key"]: s for s in data["switches"]}
-    assert set(keys) == {"favorite", "like", "creator"}
-    # 收藏/点赞默认关闭，必须手动打开
+    # 点赞同步已删除；收藏 + 关注列表各自独立
+    assert set(keys) == {"favorite", "creator"}
+    # 收藏默认关闭，必须手动打开；关注列表还没有内容
     assert keys["favorite"]["enabled"] is False
-    assert keys["like"]["enabled"] is False
     assert keys["creator"]["enabled"] is False   # 还没有关注列表
 
 
-def test_toggle_favorite_and_like_are_independent(client, session):
+def test_toggle_favorite_is_independent_and_like_source_removed(client, session):
     acc = _account(session)
 
     r = client.put(f"/api/accounts/{acc.id}/sync-switches/favorite", json={"enabled": True})
@@ -207,27 +207,28 @@ def test_toggle_favorite_and_like_are_independent(client, session):
     data = client.get(f"/api/accounts/{acc.id}/sync-switches").json()
     keys = {s["key"]: s for s in data["switches"]}
     assert keys["favorite"]["enabled"] is True
-    assert keys["like"]["enabled"] is False, "打开收藏不应连带打开点赞"
+    # 点赞同步已整条删除：开关列表里不再有 like
+    assert "like" not in keys
 
-    # 落库检查：收藏是一条 enabled=True 的 favorite 订阅，点赞仍不存在
+    # 落库检查：收藏是一条 enabled=True 的 favorite 订阅，没有任何 like 订阅
     favs = session.scalars(select(Subscription).where(Subscription.source_type == "favorite")).all()
     assert len(favs) == 1 and favs[0].enabled is True
     assert session.scalars(select(Subscription).where(Subscription.source_type == "like")).all() == []
 
 
-def test_toggle_like_then_off_reuses_same_row(client, session):
+def test_toggle_favorite_off_then_on_reuses_same_row(client, session):
     acc = _account(session)
-    client.put(f"/api/accounts/{acc.id}/sync-switches/like", json={"enabled": True})
-    sub_id = session.scalars(select(Subscription).where(Subscription.source_type == "like")).one().id
-    client.put(f"/api/accounts/{acc.id}/sync-switches/like", json={"enabled": False})
+    client.put(f"/api/accounts/{acc.id}/sync-switches/favorite", json={"enabled": True})
+    sub_id = session.scalars(select(Subscription).where(Subscription.source_type == "favorite")).one().id
+    client.put(f"/api/accounts/{acc.id}/sync-switches/favorite", json={"enabled": False})
     session.expire_all()
     row = session.get(Subscription, sub_id)
     assert row.enabled is False
 
     # 再打开：复用同一行，不因唯一约束冲突
-    client.put(f"/api/accounts/{acc.id}/sync-switches/like", json={"enabled": True})
+    client.put(f"/api/accounts/{acc.id}/sync-switches/favorite", json={"enabled": True})
     session.expire_all()
-    rows = session.scalars(select(Subscription).where(Subscription.source_type == "like")).all()
+    rows = session.scalars(select(Subscription).where(Subscription.source_type == "favorite")).all()
     assert len(rows) == 1 and rows[0].enabled is True
 
 
@@ -415,3 +416,57 @@ def test_stale_attempt_after_interval_is_due(session, monkeypatch):
 
     asyncio.run(sched.enqueue_due_subscriptions())
     assert len(session.scalars(select(JobQueue).where(JobQueue.job_type == "sync")).all()) == 1
+
+
+# ---------------------------------------------------------------------------
+# 账号级「同步总开关」= 沉默期（需求：关闭即禁止该账号所有同步/调用）
+# ---------------------------------------------------------------------------
+def test_master_switch_off_blocks_scheduler_enqueue(client, session):
+    """总开关关闭后，即便订阅 enabled=True、账号 status=active，也不得排队。"""
+    from app.core.scheduler import enqueue_due_subscriptions
+    from app.models import JobQueue
+
+    acc = _account(session)
+    _creator_sub(session, acc, sync_videos=True, enabled=True)
+    # 先打开一次确认正常会排队
+    acc.sync_enabled = False
+    session.commit()
+
+    asyncio.run(enqueue_due_subscriptions())
+    queued = session.scalars(select(JobQueue).where(JobQueue.job_type == "sync")).all()
+    assert queued == [], "沉默期账号不允许排队同步"
+
+
+def test_master_switch_off_rejects_manual_sync(session):
+    """沉默期账号：手动同步被源头拒绝并如实记录错误。"""
+    acc = _account(session)
+    acc.sync_enabled = False
+    session.commit()
+    sub = _creator_sub(session, acc, sync_videos=True, enabled=True)
+    run = asyncio.run(sync_service.run_subscription_sync(session, sub))
+    assert run.status == "error"
+    assert "沉默期" in (run.error or "")
+
+
+def test_master_switch_off_rejects_check(client, session):
+    """沉默期账号：手动体检也禁止（用户明确要求"停"）。"""
+    acc = _account(session)
+    acc.sync_enabled = False
+    session.commit()
+    r = client.post(f"/api/accounts/{acc.id}/check")
+    assert r.status_code == 409
+    assert "沉默期" in r.json()["detail"]
+
+
+def test_master_switch_toggle_roundtrip(client, session):
+    """总开关可开可关，落库并以 sync_enabled 回显。"""
+    acc = _account(session)
+    assert client.get("/api/accounts").json()[0]["sync_enabled"] is True
+
+    r = client.put(f"/api/accounts/{acc.id}/sync-enabled", json={"enabled": False})
+    assert r.status_code == 200 and r.json()["sync_enabled"] is False
+    session.expire_all()
+    assert session.get(PlatformAccount, acc.id).sync_enabled is False
+
+    r = client.put(f"/api/accounts/{acc.id}/sync-enabled", json={"enabled": True})
+    assert r.json()["sync_enabled"] is True

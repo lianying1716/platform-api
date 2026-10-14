@@ -51,6 +51,8 @@ class AccountOut(BaseModel):
     storage_root_id: int | None = None  # NULL = 使用默认根目录
     storage_root_name: str = ""  # 绑定的存储根名称（展示用）
     storage_root_path: str = ""  # 绑定的存储根路径（展示用）
+    # 账号级同步总开关：False = 沉默期（禁止该账号所有同步/调用）。
+    sync_enabled: bool = True
     credential_preview: dict[str, str] = {}  # 脱敏后的凭证字段
 
     model_config = {"from_attributes": True}
@@ -60,6 +62,12 @@ class AccountStorageUpdate(BaseModel):
     """给账号指定/清除存储根。storage_root_id=None 表示用默认根。"""
 
     storage_root_id: int | None = None
+
+
+class AccountSyncToggle(BaseModel):
+    """账号级同步总开关：False = 沉默期（禁止该账号所有同步/调用）。"""
+
+    enabled: bool
 
 
 class AccountCreate(BaseModel):
@@ -97,3 +105,5 @@ class QrLoginStatus(BaseModel):
     status: str  # pending / scanned / success / expired / error
     message: str = ""
     account_id: int | None = None
+    # 轮询遇到平台二维码自然过期时回传的新二维码（抖音约 60s 一换），前端直接换图继续。
+    qr_image_base64: str | None = None

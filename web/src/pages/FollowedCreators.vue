@@ -2,7 +2,7 @@
   <div class="ui-page">
     <div class="ui-head">
       <h1>关注列表</h1>
-      <span class="sub">收藏、点赞、关注列表各自独立 —— 谁要同步，先手动打开。</span>
+      <span class="sub">跟踪我关注的博主 / 收藏夹 / 合集。同步总开关在「账号中心」每个账号的卡片上。</span>
       <div class="grow" />
       <span v-if="cooling" class="ui-badge warn">风控冷却中 · 展示缓存</span>
     </div>
@@ -22,43 +22,6 @@
       <span class="grow" />
       <span class="ui-badge">跟踪中 {{ accountRows.length }}</span>
       <span class="ui-badge ok">已开启 {{ enabledCount }}</span>
-    </div>
-
-    <!-- 同步开关面板：收藏 / 点赞 / 关注列表 —— 显眼、各自独立、默认可控 -->
-    <div v-if="switches.length" class="sync-panel">
-      <div class="panel-head">
-        <span class="panel-title">同步开关</span>
-        <span class="panel-sub">收藏、点赞需要手动打开才会同步</span>
-      </div>
-      <div class="switch-grid">
-        <div v-for="sw in switches" :key="sw.key" class="switch-card" :class="{ on: sw.enabled }">
-          <div class="sw-main">
-            <span class="sw-name">{{ sw.label }}</span>
-            <span class="sw-state" :class="sw.enabled ? 'ok' : 'off'">
-              {{ sw.enabled ? '已开启' : '未开启' }}
-            </span>
-          </div>
-          <p class="sw-desc">{{ sw.description }}</p>
-          <div class="sw-foot">
-            <span v-if="sw.key === 'creator'" class="sw-meta">
-              已跟踪 {{ sw.followed_count || 0 }} 位 · 其中 {{ sw.video_sync_count || 0 }} 位开了视频同步
-            </span>
-            <span v-else class="sw-meta">
-              {{ sw.last_sync_at ? `上次同步 ${fmt(sw.last_sync_at)}` : '从未同步' }}
-            </span>
-            <span class="grow" />
-            <button
-              class="ui-switch lg"
-              :class="{ on: sw.enabled }"
-              :disabled="togglingSwitch === sw.key || (!sw.exists && !sw.enabled && sw.key === 'creator')"
-              :aria-label="sw.enabled ? `关闭${sw.label}` : `开启${sw.label}`"
-              @click="toggleSwitch(sw)"
-            >
-              <i />
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
 
     <!-- 一级 tab：平台（只在有账号的平台里出现） -->
@@ -182,7 +145,7 @@
             </div>
           </template>
 
-          <!-- 收藏 / 点赞 / 合集：单条同步链路 -->
+          <!-- 收藏 / 合集：单条同步链路 -->
           <div v-else class="sync-bar" :class="{ on: row.enabled }">
             <span class="sync-label">
               <span class="ui-dot" :class="row.enabled ? 'ok' : ''" />
@@ -424,34 +387,18 @@ interface SyncRunRow {
   fetched: number; added: number; updated: number; error: string
 }
 
-/** 账号级同步开关（收藏 / 点赞 / 关注列表），由后端 /api/accounts/{id}/sync-switches 提供。 */
-interface SyncSwitch {
-  key: string
-  source_type: string
-  label: string
-  description: string
-  enabled: boolean
-  exists: boolean
-  subscription_id?: number | null
-  only_new?: boolean
-  last_sync_at?: string | null
-  followed_count?: number
-  video_sync_count?: number
-}
-
 const PLATFORM_LABELS: Record<string, string> = {
   douyin: '抖音', bilibili: 'B站', xhs: '小红书', zhihu: '知乎',
 }
 const SUPPORTED = ['douyin', 'bilibili', 'xhs', 'zhihu']
 const MANUAL_SOURCE_PLATFORMS = new Set(['xhs', 'zhihu'])
 const SOURCE_TYPES: Record<string, string> = {
-  favorite: '收藏', like: '点赞', collect_folder: '收藏夹', collection: '合集',
+  favorite: '收藏', collect_folder: '收藏夹', collection: '合集',
   series: '短剧', creator: '博主',
 }
 // 每种平台的来源类型选项（抽屉表单里只显示该平台真正支持的）
 const DOUYIN_SOURCE_TYPES = [
   { value: 'favorite', label: '我的收藏' },
-  { value: 'like', label: '我点赞的作品' },
   { value: 'collect_folder', label: '自定义收藏夹' },
   { value: 'collection', label: '收藏的合集' },
   { value: 'series', label: '收藏的短剧' },
@@ -480,11 +427,9 @@ const rows = ref<TrackRow[]>([])
 const loading = ref(false)
 const refreshing = ref(false)
 const cooling = ref(false)
-const switches = ref<SyncSwitch[]>([])
-const togglingSwitch = ref<string | null>(null)
 const activePlatform = ref('douyin')
 const activeAccountId = ref('')
-const activeType = ref<'all' | 'creator' | 'favorite' | 'like' | 'other'>('all')
+const activeType = ref<'all' | 'creator' | 'favorite' | 'other'>('all')
 const syncing = ref<number | null>(null)
 
 const dialog = ref(false)
@@ -600,17 +545,15 @@ const typeFilters = [
   { value: 'all' as const, label: '全部' },
   { value: 'creator' as const, label: '博主' },
   { value: 'favorite' as const, label: '收藏' },
-  { value: 'like' as const, label: '点赞' },
   { value: 'other' as const, label: '收藏夹 / 合集' },
 ]
-function typeCount(v: 'creator' | 'favorite' | 'like' | 'other') {
+function typeCount(v: 'creator' | 'favorite' | 'other') {
   return accountRows.value.filter((r) => matchType(r, v)).length
 }
 function matchType(r: TrackRow, v: string) {
   if (v === 'creator') return r.source_type === 'creator'
   if (v === 'favorite') return r.source_type === 'favorite'
-  if (v === 'like') return r.source_type === 'like'
-  if (v === 'other') return !['creator', 'favorite', 'like'].includes(r.source_type)
+  if (v === 'other') return !['creator', 'favorite'].includes(r.source_type)
   return true
 }
 function countFor(platform: string) {
@@ -643,7 +586,6 @@ async function load() {
       api.get('/api/subscriptions'),
       api.get('/api/followed-creators'),
     ])
-    void loadSwitches()
     const byId = new Map<number, TrackRow>()
     for (const s of subs.data as TrackRow[]) byId.set(s.id, { ...s })
     // 用 creator 视图补上博主资料字段（头像/主页/签名/粉丝）
@@ -673,11 +615,9 @@ function syncAccountSelection() {
 function switchPlatform(platform: string) {
   activePlatform.value = platform
   syncAccountSelection()
-  void loadSwitches()
 }
 function switchAccount(id: string) {
   activeAccountId.value = id
-  void loadSwitches()
 }
 
 async function refresh(force: boolean) {
@@ -711,7 +651,6 @@ async function toggleEnabled(row: TrackRow) {
     } else {
       await api.put(`/api/subscriptions/${row.id}`, subPayload(row, { enabled: next, sync_videos: row.sync_videos }))
     }
-    void loadSwitches()
   } catch (e: any) {
     row.enabled = !next
     ElMessage.error(e?.response?.data?.detail || '操作失败')
@@ -725,7 +664,6 @@ async function toggleVideos(row: TrackRow) {
   if (next) row.enabled = true   // 开后端会一并打开关注关系，前端保持同步
   try {
     await api.put(`/api/followed-creators/${row.id}`, { sync_videos: next })
-    void loadSwitches()
   } catch (e: any) {
     row.sync_videos = !next
     ElMessage.error(e?.response?.data?.detail || '操作失败')
@@ -770,32 +708,6 @@ async function syncRow(row: TrackRow) {
     await load()
   } finally {
     syncing.value = null
-  }
-}
-
-async function loadSwitches() {
-  const acc = currentAccount.value
-  if (!acc) { switches.value = []; return }
-  try {
-    switches.value = (await api.get(`/api/accounts/${acc.id}/sync-switches`)).data.switches
-  } catch {
-    switches.value = []
-  }
-}
-
-async function toggleSwitch(sw: SyncSwitch) {
-  const acc = currentAccount.value
-  if (!acc) return
-  const next = !sw.enabled
-  togglingSwitch.value = sw.key
-  try {
-    await api.put(`/api/accounts/${acc.id}/sync-switches/${sw.key}`, { enabled: next })
-    ElMessage.success(next ? `已开启${sw.label}` : `已关闭${sw.label}`)
-    await Promise.all([loadSwitches(), load()])
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '操作失败')
-  } finally {
-    togglingSwitch.value = null
   }
 }
 
@@ -991,30 +903,7 @@ onMounted(async () => {
 <style scoped>
 .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 
-/* 同步开关面板：收藏/点赞/关注列表三块独立开关，摆在页面最显眼处 */
-.sync-panel {
-  border: 1px solid var(--ink); background: var(--surface);
-  box-shadow: var(--shadow-1); padding: var(--sp-4); margin-bottom: 16px;
-  min-width: 0;
-}
-.panel-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
-.panel-title { font-size: var(--fs-md); font-weight: 750; color: var(--ink); }
-.panel-sub { font-size: var(--fs-sm); color: var(--muted); }
-.switch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 12px; min-width: 0; }
-.switch-card {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 12px; border: 1px solid var(--line-soft); background: var(--surface-2);
-  transition: border-color .14s ease-out, background .14s ease-out;
-}
-.switch-card.on { border-color: color-mix(in oklab, var(--ok) 45%, var(--ink)); background: var(--ok-soft); }
-.sw-main { display: flex; align-items: center; gap: 8px; }
-.sw-name { font-weight: 700; color: var(--ink); }
-.sw-state { font-size: var(--fs-xs); font-weight: 700; padding: 1px 6px; border: 1px solid var(--line-soft); }
-.sw-state.ok { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 40%, var(--line-soft)); }
-.sw-state.off { color: var(--muted); }
-.sw-desc { margin: 0; font-size: var(--fs-sm); color: var(--ink-2); }
-.sw-foot { display: flex; align-items: center; gap: 12px; }
-.sw-meta { font-size: var(--fs-xs); color: var(--muted); }
+/* 账号级同步总开关已移到「账号中心」；本页每条订阅仍各自有开关。 */
 .ui-switch[disabled] { opacity: .45; cursor: not-allowed; }
 
 /* 博主卡片：关注关系是次级信息，独立一行 */

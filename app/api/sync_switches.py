@@ -1,13 +1,13 @@
-"""账号级同步开关（收藏 / 点赞 / 关注列表）——把「要人工打开的同步」摆在最显眼处。
+"""账号级同步开关（收藏 / 稍后再看 / 关注列表）——把「要人工打开的同步」摆在最显眼处。
 
-背景（对齐抖小云的独立 job 开关）：收藏、点赞、关注列表三者互不相干，
+背景（对齐抖小云的独立 job 开关）：收藏、稍后再看、关注列表各自独立，
 用户必须先手动打开某一类，系统才去同步它。本模块提供账号维度的一览与开关读写：
 
 - ``GET  /api/accounts/{id}/sync-switches``            列出该账号的三类开关及状态
-- ``PUT  /api/accounts/{id}/sync-switches/{key}``      打开/关闭某一类（收藏/点赞/关注列表）
+- ``PUT  /api/accounts/{id}/sync-switches/{key}``      打开/关闭某一类（收藏/稍后再看/关注列表）
 
 约定：
-- 收藏 / 点赞：默认**关闭**，必须手动打开；打开即建订阅（不存在时按平台的单例源创建）。
+- 收藏 / 稍后再看：默认**关闭**，必须手动打开；打开即建订阅（不存在时按平台的单例源创建）。
 - 关注列表：默认**开启**（导入关注即跟踪关系），但「同步博主名下视频」是更高一级的
   手动开关，落在 ``subscription.sync_videos``，不在本模块的账号级开关里。
 - 本模块只负责"开关状态"，不在这里发起拉取；"是否真的同步了"看 sync_run（含 updated）。
@@ -29,7 +29,6 @@ router = APIRouter(prefix="/api", tags=["sync-switches"], dependencies=[Depends(
 # 账号级开关的稳定 key（前端按 key 渲染，不靠顺序）
 _KIND_LABELS = {
     "favorite": ("收藏同步", "把「我的收藏」里的作品同步入库"),
-    "like": ("点赞同步", "把我点赞过的作品同步入库"),
     "watch_later": ("稍后再看", "把 B站「稍后再看」列表同步入库"),
 }
 _CREATOR_LABEL = ("关注列表", "跟踪我关注的博主；博主名下视频需要在卡片上单独开启")
@@ -48,7 +47,7 @@ def _active_creator_subs(db: Session, account_id: int) -> list[Subscription]:
 
 
 def _singleton_sub(db: Session, account_id: int, source_type: str) -> Subscription | None:
-    """取该账号下某个「单例源」订阅（收藏/点赞各最多一条），软删行也算在内以便复活。"""
+    """取该账号下某个「单例源」订阅（收藏/稍后再看各最多一条），软删行也算在内以便复活。"""
     return db.scalars(
         select(Subscription).where(
             Subscription.account_id == account_id,
@@ -81,13 +80,13 @@ def _switch_view(db: Session, account: PlatformAccount, source_type: str) -> dic
 
 @router.get("/accounts/{account_id}/sync-switches")
 def list_switches(account_id: int, db: Session = Depends(get_db)):
-    """列出账号的三类同步开关。收藏/点赞默认关闭，关注列表默认开启。"""
+    """列出账号的同步开关。收藏/稍后再看默认关闭，关注列表默认开启。"""
     account = db.get(PlatformAccount, account_id)
     if account is None or account.status == "deleted":
         raise HTTPException(status_code=404, detail="账号不存在或已停用")
 
     switches: list[dict] = []
-    for source_type in ("favorite", "like", "watch_later"):
+    for source_type in ("favorite", "watch_later"):
         view = _switch_view(db, account, source_type)
         if view is not None:
             switches.append(view)
@@ -120,7 +119,7 @@ class SwitchIn(BaseModel):
 
 @router.put("/accounts/{account_id}/sync-switches/{key}")
 async def update_switch(account_id: int, key: str, body: SwitchIn, db: Session = Depends(get_db)):
-    """打开/关闭一类同步开关。打开收藏/点赞时按需创建订阅（幂等）。"""
+    """打开/关闭一类同步开关。打开收藏/稍后再看时按需创建订阅（幂等）。"""
     account = db.get(PlatformAccount, account_id)
     if account is None or account.status == "deleted":
         raise HTTPException(status_code=404, detail="账号不存在或已停用")
@@ -146,7 +145,7 @@ async def update_switch(account_id: int, key: str, body: SwitchIn, db: Session =
 
     sub = _singleton_sub(db, account.id, key)
     if sub is None:
-        # 收藏/点赞是"整个账号"级别的单例源，remote_id 由平台决定（抖音为 sec_user_id）。
+        # 收藏是"整个账号"级别的单例源，remote_id 由平台决定（抖音为 sec_user_id）。
         if account.credential is None:
             raise HTTPException(status_code=400, detail="账号未录入凭证，请先在账号中心登录")
         adapter = get_adapter(account.platform)

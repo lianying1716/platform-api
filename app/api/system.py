@@ -350,11 +350,19 @@ def get_breakdown_settings_api(db: Session = Depends(get_db)):
 
 @router.put("/breakdown-settings")
 def update_breakdown_settings_api(body: dict, db: Session = Depends(get_db)):
-    """写入爆款拆解配置。先全量校验再落库：非法值返回 422，不做部分写入。"""
+    """写入爆款拆解配置（含自动拆解阀门）。先全量校验再落库：非法值返回 422，不做部分写入。"""
     import math
 
-    from app.core.breakdown_settings import BREAKDOWN_KEYS
+    from app.core.breakdown_settings import (
+        BREAKDOWN_KEYS,
+        resolve_breakdown_settings_from_rows,
+    )
 
+    _int_bounds = {
+        "min_play": (0, 10 ** 12),
+        "min_like": (0, 10 ** 12),
+        "publish_within_days": (0, 3650),
+    }
     normalized: dict[str, str] = {}
     for short, value in (body or {}).items():
         if short == "prompt":
@@ -368,6 +376,28 @@ def update_breakdown_settings_api(body: dict, db: Session = Depends(get_db)):
             if not math.isfinite(fv) or fv <= 0:
                 raise HTTPException(status_code=422, detail="viral_multiple 必须是有限正数")
             normalized[BREAKDOWN_KEYS["viral_multiple"]] = str(fv)
+        elif short == "min_engagement_rate":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise HTTPException(status_code=422, detail="min_engagement_rate 必须是数字")
+            fv = float(value)
+            if not math.isfinite(fv) or fv < 0 or fv > 1:
+                raise HTTPException(status_code=422, detail="min_engagement_rate 需在 [0, 1] 之间（互动率）")
+            normalized[BREAKDOWN_KEYS["min_engagement_rate"]] = str(fv)
+        elif short in _int_bounds:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise HTTPException(status_code=422, detail=f"{short} 必须是整数")
+            lo, hi = _int_bounds[short]
+            if value < lo or value > hi:
+                raise HTTPException(status_code=422, detail=f"{short} 需在 [{lo}, {hi}] 之间")
+            normalized[BREAKDOWN_KEYS[short]] = str(value)
+        elif short == "match_rule":
+            if value not in ("any", "all"):
+                raise HTTPException(status_code=422, detail="match_rule 只能是 any 或 all")
+            normalized[BREAKDOWN_KEYS["match_rule"]] = str(value)
+        elif short in ("auto_transcribe", "auto_understand", "auto_breakdown"):
+            if not isinstance(value, bool):
+                raise HTTPException(status_code=422, detail=f"{short} 必须是布尔")
+            normalized[BREAKDOWN_KEYS[short]] = "true" if value else "false"
         # 未知键忽略（与既有 /settings、/comment-settings 行为一致）
 
     for key, value in normalized.items():
@@ -377,7 +407,66 @@ def update_breakdown_settings_api(body: dict, db: Session = Depends(get_db)):
             db.add(row)
         row.value = value
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "settings": resolve_breakdown_settings_from_rows(
+        {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
+    )}
+
+
+# ---------- 同步频率 / 批量配置（照抄抖小云：随机时间 + 每次数量范围） ----------
+@router.get("/sync-settings")
+def get_sync_settings_api(db: Session = Depends(get_db)):
+    from app.core.sync_settings import get_sync_settings
+
+    return get_sync_settings(db)
+
+
+@router.put("/sync-settings")
+def update_sync_settings_api(body: dict, db: Session = Depends(get_db)):
+    """写入同步频率配置。先全量收敛到合法区间再落库（min>max 自动交换、越界钳制）。"""
+    from app.core.sync_settings import (
+        BATCH_CEIL,
+        BATCH_FLOOR,
+        DOWNLOAD_GAP_CEIL,
+        INTERVAL_MINUTES_CEIL,
+        INTERVAL_MINUTES_FLOOR,
+        SYNC_KEYS,
+        resolve_sync_settings_from_rows,
+    )
+
+    # 先把传入值并入现有配置，再用读取侧同一套归一逻辑纠正区间，避免部分写入留下非法组合。
+    rows = {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
+    merged = dict(rows)
+    bounds = {
+        "interval_min_minutes": (INTERVAL_MINUTES_FLOOR, INTERVAL_MINUTES_CEIL, "int"),
+        "interval_max_minutes": (INTERVAL_MINUTES_FLOOR, INTERVAL_MINUTES_CEIL, "int"),
+        "batch_min": (BATCH_FLOOR, BATCH_CEIL, "int"),
+        "batch_max": (BATCH_FLOOR, BATCH_CEIL, "int"),
+        "download_gap_min_seconds": (0.0, DOWNLOAD_GAP_CEIL, "float"),
+        "download_gap_max_seconds": (0.0, DOWNLOAD_GAP_CEIL, "float"),
+    }
+    for short, value in (body or {}).items():
+        if short not in SYNC_KEYS:
+            continue  # 未知键忽略（与既有 /settings 行为一致）
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise HTTPException(status_code=422, detail=f"{short} 必须是数字")
+        lo, hi, kind = bounds[short]
+        fv = float(value)
+        if fv != fv or fv in (float("inf"), float("-inf")):
+            raise HTTPException(status_code=422, detail=f"{short} 必须是有限数字")
+        if fv < lo or fv > hi:
+            raise HTTPException(status_code=422, detail=f"{short} 需在 [{lo}, {hi}] 之间")
+        merged[SYNC_KEYS[short]] = str(int(value) if kind == "int" else fv)
+
+    resolved = resolve_sync_settings_from_rows(merged)
+    for short, val in resolved.items():
+        key = SYNC_KEYS[short]
+        row = db.get(SystemSetting, key)
+        if row is None:
+            row = SystemSetting(key=key)
+            db.add(row)
+        row.value = str(val)
+    db.commit()
+    return {"ok": True, "settings": resolved}
 
 
 # ---------- 素材分档加工配置（普通/高级门控 + 类型目录 + 类型提示词） ----------

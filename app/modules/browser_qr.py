@@ -13,6 +13,7 @@ Cookie（无需用户手动复制任何东西），随后关闭浏览器。
 """
 
 import base64
+import hashlib
 import os
 import shutil
 import subprocess
@@ -287,6 +288,37 @@ async def _qr_image_b64(page, selector: str) -> str:
     return base64.b64encode(await el.screenshot()).decode()
 
 
+async def _read_qr_image_now(page, selector: str) -> str | None:
+    """同步读取当前二维码（不等待）。
+
+    平台自带的二维码会过期并被登录页自动换成新的一张（抖音实测约 60s 一换、换后 status
+    立刻回到 new）。轮询遇到"平台自然过期"时用这个立刻抓当前这张图回传给前端换图，
+    让用户能继续扫——而不是把整个会话判死、逼用户重新点一次。
+    """
+    try:
+        el = await page.query_selector(selector)
+        if el is None:
+            return None
+        src = str(await el.get_property("src"))
+    except Exception:  # noqa: BLE001 页面跳转/元素消失时取不到，交给调用方按过期处理
+        return None
+    if src.startswith("data:image"):
+        return src.split(",", 1)[1]
+    if src.startswith("http"):
+        try:
+            async with httpx.AsyncClient(
+                headers={"User-Agent": _UA}, follow_redirects=True, timeout=15
+            ) as client:
+                resp = await client.get(src)
+            return base64.b64encode(resp.content).decode()
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        return base64.b64encode(await el.screenshot()).decode()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def browser_qr_start(platform: str) -> QrStart:
     conf = _PLATFORM_CONF[platform]
     async_playwright = _require_playwright()
@@ -366,7 +398,9 @@ async def browser_qr_start(platform: str) -> QrStart:
 
         qr_b64 = await _qr_image_b64(page, conf["qr_selector"])
         session_id = uuid.uuid4().hex
-        state: dict = {"qr_status": ""}
+        # 记下当前二维码指纹：轮询遇到"平台自然过期"时，只有页面上的图确实换新了
+        # （抖音过期后约 2s 自动换成新码）才把新图回传，避免把同一张已被判废的死码再发一次。
+        state: dict = {"qr_status": "", "qr_hash": hashlib.md5(qr_b64.encode()).hexdigest()}
         _live[session_id] = {
             "pw": pw,
             "browser": browser,
@@ -457,8 +491,25 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
         if mapped == "scanned":
             return QrPoll(status="scanned", message="已扫码，请在手机上点击确认")
         if remote in ("expired", "canceled", "cancelled"):
-            await _close(session_id)
-            return QrPoll(status="expired", message="二维码已失效，请重新获取")
+            # 平台二维码约 60s 自然过期并由登录页自动换新码。旧逻辑一看到 expired 就
+            # 销毁会话，用户稍慢就扫到死码、只能重来（macOS 上表现为"扫码登录不成功"）。
+            # 这里改成：抓当前页面上的新码回传，前端换图继续扫；只有连新码都拿不到、
+            # 或会话真的超时才判 expired。state 里的旧状态清掉，等新一轮 check_qrconnect。
+            fresh = await _read_qr_image_now(page, conf["qr_selector"])
+            st = sess.setdefault("state", {})
+            fresh_hash = hashlib.md5(fresh.encode()).hexdigest() if fresh else ""
+            if fresh and fresh_hash != st.get("qr_hash"):
+                # 图片确实换成新码了：回传新图，清掉旧的 expired 状态等新一轮 check_qrconnect。
+                st["qr_hash"] = fresh_hash
+                st.pop("qr_status", None)
+                return QrPoll(
+                    status="pending",
+                    message="二维码已刷新，请用手机 App 重新扫描",
+                    qr_image_b64=fresh,
+                )
+            # 还没换出新码（过期与换码之间约 1~2s）：保持 pending 让前端再等一轮，
+            # 别把这段短暂窗口判死。
+            return QrPoll(status="pending", message="二维码正在刷新，请稍候…")
         return QrPoll(status="pending", message="等待扫码（请用手机 App 扫描二维码）")
 
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_map.items())
