@@ -14,7 +14,7 @@
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](web)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Compose-2496ED.svg)](docker-compose.yml)
 
-[在线演示](https://cai.xsai5.xyz/demo/) · [官网](https://cai.xsai5.xyz/) · [宣传片](#宣传片) · [快速开始](#快速开始)
+[在线演示](https://cai.xsai5.xyz/demo/) · [官网](https://cai.xsai5.xyz/) · [宣传片](#宣传片v9) · [快速开始](#快速开始)
 
 </div>
 
