@@ -320,3 +320,39 @@ async def test_poll_no_requeue_when_shown_matches_page(monkeypatch):
     r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
     assert r.status == "pending", r
     assert r.qr_image_b64 is None, "同一张码无需每轮重推"
+
+
+@pytest.mark.asyncio
+async def test_poll_reports_risk_block_instead_of_pending_forever(monkeypatch):
+    """抖音要求"去 App 完成验证"（error_code=2046）时必须如实报错，不能继续 pending。
+
+    真机证据（Mac）：扫码后状态到 scanned，随后抖音改回
+      error_code=2046, description="为保障你的账号安全，请前往抖音APP完成验证后再进行登录"
+    旧逻辑只认 status（此时为 None），把它当"还没扫"继续 pending，
+    用户对着"已扫码待确认"干等到会话超时 —— 是个纯粹的误导。
+    """
+    sid = "s-risk"
+    closed = []
+    async def _close(s): closed.append(s)
+    monkeypatch.setattr(browser_qr, "_close", _close)
+
+    _install(monkeypatch, sid, [], state={
+        "qr_status": "scanned",
+        "qr_error_code": 2046,
+        "qr_error_desc": "为保障你的账号安全，请前往抖音APP完成验证后再进行登录",
+    })
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "error", r
+    assert "验证" in r.message, r.message
+    assert closed == [sid], "命中风控后应结束会话，不再空转"
+
+
+@pytest.mark.asyncio
+async def test_poll_ignores_zero_error_code(monkeypatch):
+    """error_code=0 是正常响应，不能误判成风控。"""
+    sid = "s-ok0"
+    async def _close(s): pass
+    monkeypatch.setattr(browser_qr, "_close", _close)
+    _install(monkeypatch, sid, [], state={"qr_status": "scanned", "qr_error_code": 0})
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "scanned", r

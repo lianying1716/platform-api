@@ -164,7 +164,12 @@
     <!-- 扫码弹窗 -->
     <el-dialog v-model="qrDialog" title="扫码登录" width="360px" @closed="stopPolling" destroy-on-close>
       <div class="qr-box">
-        <img v-if="qrImage" :src="`data:image/png;base64,${qrImage}`" alt="二维码" class="qr-img" />
+        <img
+          v-if="qrImage && !qrBlocked"
+          :src="`data:image/png;base64,${qrImage}`"
+          alt="二维码"
+          class="qr-img"
+        />
         <p class="qr-status" :class="qrStatus">{{ qrMessage }}</p>
         <p
           v-if="qrStatus === 'pending' || qrStatus === 'scanned' || qrStatus === 'confirmed'"
@@ -173,8 +178,9 @@
         >
           二维码有效期剩余 <b>{{ countdownText }}</b>
         </p>
-        <p v-if="qrStatus === 'expired' || qrStatus === 'error'" class="qr-hint">
-          二维码已失效，点下方按钮重新获取
+        <p v-if="qrStatus === 'expired'" class="qr-hint">二维码已失效，点下方按钮重新获取</p>
+        <p v-else-if="qrStatus === 'error' && !qrBlocked" class="qr-hint">
+          本次扫码未能完成，点下方按钮重新获取
         </p>
         <button
           v-if="qrStatus === 'expired' || qrStatus === 'error'"
@@ -210,6 +216,9 @@ const qrDialog = ref(false)
 const qrImage = ref('')
 const qrMessage = ref('')
 const qrStatus = ref('pending')
+// 平台要求「去 App 完成安全验证」时置 true：此时二维码已无用（再扫也不放行），
+// 界面只留说明与重试入口，避免用户对着已经失效的码反复扫。
+const qrBlocked = ref(false)
 let pollTimer: number | undefined
 let pollErrors = 0
 // 二维码倒计时：后端 qr_session_ttl（默认 300s）为准，前端只负责展示。
@@ -336,6 +345,7 @@ async function startQr() {
     qrImage.value = data.qr_image_base64
     qrMessage.value = '请用手机 App 扫码'
     qrStatus.value = 'pending'
+    qrBlocked.value = false
     qrDialog.value = true
     pollErrors = 0
     startCountdown(data.expires_in)
@@ -352,6 +362,9 @@ async function poll(sessionId: string) {
     pollErrors = 0
     qrMessage.value = data.message
     qrStatus.value = data.status
+    // 后端把"平台要求去 App 验证"也归为 error；据此收起二维码并停止倒计时误导。
+    qrBlocked.value =
+      data.status === 'error' && typeof data.message === 'string' && data.message.includes('验证')
     // 平台二维码会自然过期并被登录页换新（抖音约 60s）；后端把新码随轮询回传，
     // 这里换图即可继续扫，不必让用户重开弹窗（倒计时另按这批新码重新计）。
     // 状态含义：pending=等待扫码 / scanned=已扫待手机确认 / confirmed=已确认，

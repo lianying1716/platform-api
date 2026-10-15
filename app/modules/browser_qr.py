@@ -495,6 +495,13 @@ def _attach_qr_status_listener(page, conf: dict, state: dict) -> None:
         st = inner.get("status")
         if st:
             state["qr_status"] = str(st)
+        # 抖音在需要二次验证时会丢掉 status、改回 error_code=2046 + 文案
+        # （"为保障你的账号安全，请前往抖音APP完成验证后再进行登录"）。
+        # 只认 status 会把这个错误吞掉，界面继续显示"已扫码待确认"，误导用户。
+        code = inner.get("error_code")
+        if code not in (None, 0):
+            state["qr_error_code"] = code
+            state["qr_error_desc"] = str(inner.get("description") or "")
         state["qr_seen_at"] = time.time()
         # 原始响应留一份（含 error_code/description/extra），真机卡住时靠它定位
         state["qr_raw"] = {
@@ -641,6 +648,16 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
                 {r["name"]: cookie_map.get(r["name"]) for r in conf_c.get("login_cookies", [])},
                 page_hash[:8] or "-",
                 shown[:8] or "-",
+            )
+        # 平台要求"去 App 完成验证"（抖音 2046 等）：这是硬拦截，继续等下去也不会有
+        # 结果，必须如实告诉用户去 App 验证，而不是让他对着"已扫码待确认"干等。
+        risk_code = st.get("qr_error_code")
+        if risk_code and risk_code != 0:
+            await _close(session_id)
+            desc = st.get("qr_error_desc") or "平台要求完成安全验证"
+            return QrPoll(
+                status="error",
+                message=f"{desc}（抖音已拦截本次扫码登录，请在手机抖音 App 内完成验证后重试）",
             )
         # 扫码进度优先用平台自己的状态端点（抖音 check_qrconnect），
         # 比猜 cookie 准确：passport_csrf_token 进页面就有，用它判"已扫码"会误报。
