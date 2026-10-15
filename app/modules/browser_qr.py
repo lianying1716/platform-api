@@ -408,7 +408,10 @@ async def browser_qr_start(platform: str) -> QrStart:
         session_id = uuid.uuid4().hex
         # 记下当前二维码指纹：轮询遇到"平台自然过期"时，只有页面上的图确实换新了
         # （抖音过期后约 2s 自动换成新码）才把新图回传，避免把同一张已被判废的死码再发一次。
-        state: dict = {"qr_status": "", "qr_hash": hashlib.md5(qr_b64.encode()).hexdigest()}
+        _qr_hash = hashlib.md5(qr_b64.encode()).hexdigest()
+        # qr_hash = 页面当前码指纹（用于过期换码判定）；shown_hash = 最后一次**发给前端**
+        # 的码指纹。两者不等就说明用户屏幕上那张已经不是页面在轮询的那张——扫码必然失败。
+        state: dict = {"qr_status": "", "qr_hash": _qr_hash, "shown_hash": _qr_hash}
         _live[session_id] = {
             "pw": pw,
             "browser": browser,
@@ -492,28 +495,36 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
     local_storage = await _read_local_storage(page)
 
     if not _is_logged_in(platform, cookie_map, local_storage, page.url):
+        st = sess.setdefault("state", {})
+        # 页面当前活跃的码只读一次，诊断与"自愈换图"共用（避免一轮里重复截两次图）。
+        page_now = await _read_qr_image_now(page, conf["qr_selector"])
+        page_hash = hashlib.md5(page_now.encode()).hexdigest() if page_now else ""
+        shown = st.get("shown_hash") or ""
         # 诊断快照：真机"扫了没反应"时，靠这几行区分是「登录信号没落盘」还是
-        # 「落盘了但我们的判定条件没覆盖」。每次会话最多 20 条，避免轮询刷屏。
-        _dbg = sess.setdefault("state", {})
-        if _dbg.get("dbg_logged", 0) < 20:
-            _dbg["dbg_logged"] = _dbg.get("dbg_logged", 0) + 1
+        # 「落盘了但我们的判定条件没覆盖」还是「屏幕上的码已脱节」。每会话上限 20 条。
+        if st.get("dbg_logged", 0) < 20:
+            st["dbg_logged"] = st.get("dbg_logged", 0) + 1
             conf_c = _PLATFORM_CONF.get(platform, {})
             interesting = {
                 k: v for k, v in cookie_map.items()
                 if k in ("LOGIN_STATUS", "sessionid", "sid_tt", "web_session", "passToken", "z_c0")
             }
             logger.info(
-                "qr_poll[%s] url=%s cookies=%s login_cookies_hit=%s ls_keys=%s qr_status=%s",
+                "qr_poll[%s] url=%s cookies=%s login_cookies_hit=%s ls_keys=%s qr_status=%s "
+                "page_hash=%s shown_hash=%s stale_image=%s",
                 platform,
                 (page.url or "")[:80],
                 sorted(interesting) or "-",
                 {r["name"]: cookie_map.get(r["name"]) for r in conf_c.get("login_cookies", [])},
                 [k for k in ("HasUserLogin", "user_sec_id", "user_id") if local_storage.get(k)],
-                (sess.get("state") or {}).get("qr_status", ""),
+                st.get("qr_status", ""),
+                page_hash[:8] or "-",
+                shown[:8] or "-",
+                bool(page_hash and shown and page_hash != shown),
             )
         # 扫码进度优先用平台自己的状态端点（抖音 check_qrconnect），
         # 比猜 cookie 准确：passport_csrf_token 进页面就有，用它判"已扫码"会误报。
-        remote = (sess.get("state") or {}).get("qr_status", "")
+        remote = st.get("qr_status", "")
         mapped = (conf.get("qr_status_map") or {}).get(remote, "")
         if mapped == "scanned":
             return QrPoll(status="scanned", message="已扫码，请在手机上点击确认")
@@ -523,7 +534,6 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
             # 兜底 `pending("等待扫码…")`，用户明明确认过了，界面不但不前进、提示还
             # 倒退成「请用手机扫描二维码」，看起来就是点了没反应。
             # 这里给一小段宽限期等落盘；超过宽限如实报错（而不是永远 pending 骗用户）。
-            st = sess.setdefault("state", {})
             first = st.setdefault("confirmed_at", time.time())
             if time.time() - first <= _CONFIRMED_GRACE_SECONDS:
                 # 单独一个 status：前端据此给"已完成确认"的视觉反馈，
@@ -533,24 +543,31 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
                 status="error",
                 message="已确认，但迟迟拿不到登录状态，请关闭后重新获取二维码",
             )
+        # 尚未扫码：先把「页面当前活跃的码」对齐到用户屏幕上那张，再决定回什么。
+        #
+        # 背景（macOS 实测：扫码后界面毫无反应、抖音一直回 status=new）：
+        # 抖音登录页的二维码会自然过期并**自动换新**。旧逻辑只在观察到远端 expired
+        # 时才把新图发一次；一旦这次轮换没被观察到（事件错过 / 换码与轮询错开），
+        # 用户屏幕上就一直挂着页面早已不再轮询的那张死码——手机扫它，抖音永远回 new，
+        # 表现为"扫了没反应"，且一直持续到 5 分钟会话超时。
+        # 改为每轮都用页面当前码对齐 shown_hash：只要两者不一致就把新图回传，
+        # 屏幕上的码始终等于页面正在轮询的码，从根上消掉这个状态。
+        if page_now and page_hash != shown:
+            st["qr_hash"] = page_hash
+            st["shown_hash"] = page_hash
+            st.pop("qr_status", None)
+            was_expired = remote in ("expired", "canceled", "cancelled")
+            return QrPoll(
+                status="pending",
+                message=(
+                    "二维码已刷新，请用手机 App 重新扫描"
+                    if was_expired
+                    else "二维码已更新，请以当前页面上的码为准"
+                ),
+                qr_image_b64=page_now,
+            )
         if remote in ("expired", "canceled", "cancelled"):
-            # 平台二维码约 60s 自然过期并由登录页自动换新码。旧逻辑一看到 expired 就
-            # 销毁会话，用户稍慢就扫到死码、只能重来（macOS 上表现为"扫码登录不成功"）。
-            # 这里改成：抓当前页面上的新码回传，前端换图继续扫；只有连新码都拿不到、
-            # 或会话真的超时才判 expired。state 里的旧状态清掉，等新一轮 check_qrconnect。
-            fresh = await _read_qr_image_now(page, conf["qr_selector"])
-            st = sess.setdefault("state", {})
-            fresh_hash = hashlib.md5(fresh.encode()).hexdigest() if fresh else ""
-            if fresh and fresh_hash != st.get("qr_hash"):
-                # 图片确实换成新码了：回传新图，清掉旧的 expired 状态等新一轮 check_qrconnect。
-                st["qr_hash"] = fresh_hash
-                st.pop("qr_status", None)
-                return QrPoll(
-                    status="pending",
-                    message="二维码已刷新，请用手机 App 重新扫描",
-                    qr_image_b64=fresh,
-                )
-            # 还没换出新码（过期与换码之间约 1~2s）：保持 pending 让前端再等一轮，
+            # 页面当前码与屏幕上一致、但平台说它已过期：等下一轮换码（约 1~2s），
             # 别把这段短暂窗口判死。
             return QrPoll(status="pending", message="二维码正在刷新，请稍候…")
         return QrPoll(status="pending", message="等待扫码（请用手机 App 扫描二维码）")

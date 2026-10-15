@@ -186,11 +186,17 @@ async def test_poll_keeps_pending_between_expiry_and_refresh(monkeypatch):
         "page": _RefreshPage(f"data:image/png;base64,{same}"),  # 还是同一张旧码
         "context": FakeContext([]),
         "created": time.time(), "browser": None, "pw": None, "xvfb": None,
-        "state": {"qr_status": "expired", "qr_hash": _h.md5(same.encode()).hexdigest()},
+        # shown_hash 与页面当前码一致 = 用户屏幕上那张就是页面在轮询的这张，
+        # 平台此刻报 expired、页面还没换新，属于 1~2s 换码窗口。
+        "state": {
+            "qr_status": "expired",
+            "qr_hash": _h.md5(same.encode()).hexdigest(),
+            "shown_hash": _h.md5(same.encode()).hexdigest(),
+        },
     })
     r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
     assert r.status == "pending", r
-    assert r.qr_image_b64 is None, "同一张旧码不该再回传，避免把死码发回前端"
+    assert r.qr_image_b64 is None, "屏幕上已是最新的那张码，无需重复回传"
     assert closed == [], "换码窗口内不该销毁会话"
 
 
@@ -263,3 +269,51 @@ async def test_poll_confirmed_stuck_reports_error_not_pending_forever(monkeypatc
     last = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
     assert last.status == "error", f"应最终报错，实际 {last.status}: {last.message}"
     assert "确认" in last.message or "登录状态" in last.message, last.message
+
+
+@pytest.mark.asyncio
+async def test_poll_self_heals_when_shown_qr_is_stale(monkeypatch):
+    """屏幕上的码与页面当前码脱节时，即使平台还回 new 也要把新图发下去（自愈）。
+
+    回归背景（macOS 实测：扫了没反应、抖音一直回 new）：
+    抖音会自然换码，旧逻辑只在**观察到远端 expired** 时才发新图。轮换一旦没被观察到，
+    用户屏幕就长期挂着一张页面已不再轮询的死码，怎么扫都是 new。
+    现在每轮都对齐 shown_hash：不一致就回传当前码，把用户从死码里救出来。
+    """
+    import hashlib as _h
+    sid = "s-stale"
+    closed = []
+    async def _close(s): closed.append(s)
+    monkeypatch.setattr(browser_qr, "_close", _close)
+
+    old_code = "OLDCODE"
+    monkeypatch.setitem(browser_qr._live, sid, {
+        "page": _RefreshPage("data:image/png;base64,NEWCODE"),  # 页面已经是新码
+        "context": FakeContext([]),
+        "created": time.time(), "browser": None, "pw": None, "xvfb": None,
+        # 屏幕上那张 = 旧码；远端状态还是 new（正因如此旧逻辑不会补救）
+        "state": {"qr_status": "new", "shown_hash": _h.md5(old_code.encode()).hexdigest()},
+    })
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "pending", r
+    assert r.qr_image_b64 == "NEWCODE", "必须把页面当前码发回前端，替换掉屏幕上的死码"
+    assert closed == [], "自愈不该销毁会话"
+
+
+@pytest.mark.asyncio
+async def test_poll_no_requeue_when_shown_matches_page(monkeypatch):
+    """屏幕上的码 == 页面当前码时不重复回传（避免每轮都推一张相同的图）。"""
+    import hashlib as _h
+    sid = "s-same"
+    async def _close(s): pass
+    monkeypatch.setattr(browser_qr, "_close", _close)
+    same = "SAMECODE"
+    monkeypatch.setitem(browser_qr._live, sid, {
+        "page": _RefreshPage(f"data:image/png;base64,{same}"),
+        "context": FakeContext([]),
+        "created": time.time(), "browser": None, "pw": None, "xvfb": None,
+        "state": {"qr_status": "new", "shown_hash": _h.md5(same.encode()).hexdigest()},
+    })
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "pending", r
+    assert r.qr_image_b64 is None, "同一张码无需每轮重推"
