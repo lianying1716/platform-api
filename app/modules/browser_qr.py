@@ -455,9 +455,18 @@ def _attach_qr_status_listener(page, conf: dict, state: dict) -> None:
             data = await resp.json()
         except Exception:  # noqa: BLE001 非 JSON/已关闭，忽略
             return
-        st = ((data or {}).get("data") or {}).get("status")
+        inner = (data or {}).get("data") or {}
+        st = inner.get("status")
         if st:
             state["qr_status"] = str(st)
+        state["qr_seen_at"] = time.time()
+        # 原始响应留一份（含 error_code/description/extra），真机卡住时靠它定位
+        state["qr_raw"] = {
+            "status": inner.get("status"),
+            "error_code": inner.get("error_code"),
+            "description": str(inner.get("description") or "")[:120],
+            "extra": str(inner.get("extra") or "")[:120],
+        }
 
     def _hook(resp):
         # 响应体只能异步读，这里起个 task，不阻塞页面
@@ -500,27 +509,27 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
         page_now = await _read_qr_image_now(page, conf["qr_selector"])
         page_hash = hashlib.md5(page_now.encode()).hexdigest() if page_now else ""
         shown = st.get("shown_hash") or ""
-        # 诊断快照：真机"扫了没反应"时，靠这几行区分是「登录信号没落盘」还是
-        # 「落盘了但我们的判定条件没覆盖」还是「屏幕上的码已脱节」。每会话上限 20 条。
-        if st.get("dbg_logged", 0) < 20:
+        # 诊断快照：**只在状态变化时记录**（而不是每轮都记）—— 否则上限会被
+        # 一串重复的 new 吃光，真正关键的 scanned→confirmed 那一步反而看不到。
+        # 另外把 cookie 全名与 localStorage 全键也记上，避免"信号存在但没被识别"。
+        if st.get("qr_status") != st.get("dbg_last_status") or st.get("dbg_logged", 0) == 0:
             st["dbg_logged"] = st.get("dbg_logged", 0) + 1
+            st["dbg_last_status"] = st.get("qr_status")
             conf_c = _PLATFORM_CONF.get(platform, {})
-            interesting = {
-                k: v for k, v in cookie_map.items()
-                if k in ("LOGIN_STATUS", "sessionid", "sid_tt", "web_session", "passToken", "z_c0")
-            }
+            _seen = st.get("qr_seen_at")
             logger.info(
-                "qr_poll[%s] url=%s cookies=%s login_cookies_hit=%s ls_keys=%s qr_status=%s "
-                "page_hash=%s shown_hash=%s stale_image=%s",
+                "qr_poll[%s] status=%s age=%.0fs raw=%s url=%s cookie_names=%s ls_keys=%s "
+                "login_cookies_hit=%s page_hash=%s shown_hash=%s",
                 platform,
-                (page.url or "")[:80],
-                sorted(interesting) or "-",
-                {r["name"]: cookie_map.get(r["name"]) for r in conf_c.get("login_cookies", [])},
-                [k for k in ("HasUserLogin", "user_sec_id", "user_id") if local_storage.get(k)],
                 st.get("qr_status", ""),
+                (time.time() - _seen) if _seen else -1,
+                st.get("qr_raw", {}),
+                (page.url or "")[:70],
+                sorted(cookie_map.keys()),
+                sorted(local_storage.keys())[:20],
+                {r["name"]: cookie_map.get(r["name"]) for r in conf_c.get("login_cookies", [])},
                 page_hash[:8] or "-",
                 shown[:8] or "-",
-                bool(page_hash and shown and page_hash != shown),
             )
         # 扫码进度优先用平台自己的状态端点（抖音 check_qrconnect），
         # 比猜 cookie 准确：passport_csrf_token 进页面就有，用它判"已扫码"会误报。
