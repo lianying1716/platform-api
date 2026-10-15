@@ -24,18 +24,37 @@
 
 <div align="center">
 
-<a href="https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-1080p.mp4">
-  <img src="https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-poster.jpg" width="720" alt="星采 Stargather 宣传片 v9">
-</a>
+<!-- GitHub 只对 user-attachments 资源渲染内嵌播放器：指向 raw.githubusercontent 的
+     <video> 会被过滤掉，点开只会下载文件。 -->
+<video src="https://github.com/user-attachments/assets/b1712f76-5b14-494a-a576-aaf10b782687" controls width="100%"></video>
 
-<sub>点封面看 1080p 全片 · [720p 轻量版](https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-720p.mp4) · [接触表](https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-contact-sheet.jpg)</sub>
+<sub>约 60 秒（默认静音，点播放器右下角开声音）· [1080p 全片](https://github.com/user-attachments/assets/b0172e09-dea4-41a9-bf11-cf9ed5f0d67e) · [封面帧](https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-poster.jpg) · [接触表](https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-contact-sheet.jpg)</sub>
 
 </div>
 
-<!-- GitHub 会渲染内嵌播放器；点封面可看高清原片 -->
-<video src="https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-1080p.mp4" poster="https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-poster.jpg" controls width="100%"></video>
-
 > 片子是按真实界面、真实数据、真视频播放做的（不是自造的 UI mock），制作流程见工作台仓库的 `promo-video/`。
+
+---
+
+## 界面
+
+下面的截图都来自公开演示站（[cai.xsai5.xyz/demo](https://cai.xsai5.xyz/demo/)）的真实页面，
+里面是演示数据、账号 ID 与 Cookie 都是脱敏后的占位值。
+
+<table>
+<tr>
+<td width="50%" align="center"><img src="https://raw.githubusercontent.com/lianying1716/platform-api/assets/shots/overview.jpg" alt="总览"><br><sub><b>总览</b> · 素材总量、时长、账号覆盖</sub></td>
+<td width="50%" align="center"><img src="https://raw.githubusercontent.com/lianying1716/platform-api/assets/shots/accounts.jpg" alt="账号中心"><br><sub><b>账号中心</b> · 六平台登录态，掉线自动体检</sub></td>
+</tr>
+<tr>
+<td width="50%" align="center"><img src="https://raw.githubusercontent.com/lianying1716/platform-api/assets/shots/crawl.jpg" alt="关键词采集"><br><sub><b>关键词采集</b> · 按关键词发现作品，门槛触发评论</sub></td>
+<td width="50%" align="center"><img src="https://raw.githubusercontent.com/lianying1716/platform-api/assets/shots/assets-videos.jpg" alt="素材库"><br><sub><b>素材库</b> · 按平台 / 账号 / 分类筛选，可播放</sub></td>
+</tr>
+<tr>
+<td width="50%" align="center"><img src="https://raw.githubusercontent.com/lianying1716/platform-api/assets/shots/transcript.jpg" alt="转录与拆解"><br><sub><b>转录与分档加工</b> · 转录、视频理解、爆款拆解</sub></td>
+<td width="50%" align="center"><img src="https://raw.githubusercontent.com/lianying1716/platform-api/assets/shots/pipeline.jpg" alt="处理队列"><br><sub><b>处理队列</b> · 下载 / 转录 / 采集任务与进度</sub></td>
+</tr>
+</table>
 
 ---
 
@@ -297,18 +316,13 @@ uv run pytest tests/ -q          # 默认 SQLite，覆盖大部分逻辑
 
 ## 协议来源与许可
 
-平台各平台适配器**重写**自以下工作区开源项目（保留来源注释），许可均为宽松许可：
+平台的各平台适配器参考了若干开源项目的公开实现（涉及 B 站、抖音、公众号等），这些项目均为
+宽松许可（MIT / Unlicense 等），来源注释保留在对应源码文件的头部；语音转录与媒体下载
+分别依赖 faster-whisper 与 yt-dlp。
 
-- [amtoaer/bili-sync](https://github.com/amtoaer/bili-sync)（MIT）—— B站
-- [jianzhichu/dysync.net](https://github.com/jianzhichu/dysync.net)（MIT）—— 抖音
-- [wechat-article/wechat-article-exporter](https://github.com/wechat-article/wechat-article-exporter)（MIT）—— 公众号
-- [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper)（MIT）、[yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)（Unlicense）—— 作为依赖
-
-早期版本曾参考 MediaCrawler（非商业许可）；**自 2026-10-10 起仓库内不含其任何代码或复制资源**
-（签名改用宽松许可依赖或由平台页面自身完成，反检测改用 MIT 的 `playwright-stealth`），
-干净历史由 [`scripts/verify_history_clean.py`](scripts/verify_history_clean.py) 断言。
-前端平台图标几何来自 [simple-icons](https://github.com/simple-icons/simple-icons)（CC0），
-仅作识别性使用，商标归各平台所有。详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+项目早期还参考过一个非商业许可的采集项目，如今相关代码与资源已全部移除，当前仓库里不含
+它的任何内容。前端的平台图标只作识别性使用，商标归各平台所有。第三方清单见
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 本项目采用 **Apache-2.0** 许可，见 [`LICENSE`](LICENSE)。
 

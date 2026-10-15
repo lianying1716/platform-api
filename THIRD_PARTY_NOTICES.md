@@ -45,6 +45,17 @@
 当前主线代码不受该非商业许可约束。详细合规口径见工作台仓库
 `docs/license-and-usage-compliance.md`。
 
+## 适配器参考来源
+
+`app/modules/` 下的各平台适配器参考（重写）了以下开源项目，许可均为宽松许可，
+来源注释保留在对应源码文件头部：
+
+| 项目 | 许可 | 参考范围 |
+|---|---|---|
+| [amtoaer/bili-sync](https://github.com/amtoaer/bili-sync) | MIT | B站 |
+| [jianzhichu/dysync.net](https://github.com/jianzhichu/dysync.net) | MIT | 抖音 |
+| [wechat-article/wechat-article-exporter](https://github.com/wechat-article/wechat-article-exporter) | MIT | 微信公众号 |
+
 ## 平台商标
 
 前端 `web/src/brand/platforms.ts` 中的平台标识几何来自 simple-icons（CC0-1.0），
