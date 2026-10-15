@@ -178,6 +178,11 @@
         >
           二维码有效期剩余 <b>{{ countdownText }}</b>
         </p>
+        <!-- 命中滑块验证：这一步**只能在电脑端完成**，手机上点确认不算数。
+             提示要明确指向"那个刚弹出的浏览器窗口"，否则用户会一直盯着二维码看。 -->
+        <p v-if="qrStatus === 'captcha'" class="qr-hint captcha">
+          {{ qrMessage }}
+        </p>
         <p v-if="qrStatus === 'expired'" class="qr-hint">二维码已失效，点下方按钮重新获取</p>
         <p v-else-if="qrStatus === 'error' && !qrBlocked" class="qr-hint">
           本次扫码未能完成，点下方按钮重新获取
@@ -687,6 +692,15 @@ onUnmounted(stopPolling)
   font-size: 13px;
   color: var(--muted);
   margin: 4px 0 10px;
+}
+
+/* 滑块验证提示要显眼：这是唯一需要用户去"另一个窗口"操作的步骤，
+   用 warn 色 + 加粗避免被当成普通说明略过。 */
+.qr-hint.captcha {
+  color: var(--warn, #b45309);
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: left;
 }
 
 .qr-status.success {

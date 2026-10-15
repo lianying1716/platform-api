@@ -533,3 +533,209 @@ def test_claim_is_single_winner():
     assert qr_sessions.get(sid) is None
 
     qr_sessions.remove(sid)
+
+
+# ---------- 真机关键缺失环节：扫码确认后的「验证码中间页」 ----------
+# 用户实测发现（并对照工作区内多平台采集工具的官方注释确认）：
+# 抖音扫码确认后**常会跳到「验证码中间页」**，那个滑块必须在**电脑端**拖过去，
+# 手机上点"确认登录"不算数。旧流程从不看页面被切走，只盯 check_qrconnect，
+# 于是永远停在 scanned 直到超时——这就是"手机确认了、界面毫无反应"的真因。
+
+
+@pytest.mark.asyncio
+async def test_captcha_wall_detected_by_page_title(monkeypatch):
+    """页面标题变成「验证码中间页」时必须识别出来（最可靠的判据，实测就是这个标题）。"""
+
+    class _TitlePage:
+        url = "https://www.douyin.com/"
+        frames: list = []
+
+        async def title(self):
+            return "验证码中间页"
+
+    hit = await browser_qr._detect_captcha_wall(_TitlePage())
+    assert hit is not None, "标题为「验证码中间页」必须命中"
+    assert "验证码中间页" in hit
+
+
+@pytest.mark.asyncio
+async def test_captcha_wall_detected_by_slider_iframe(monkeypatch):
+    """出现 verifycenter/captcha 的 iframe（滑块本体）也要命中。"""
+
+    class _Fr:
+        url = "https://rmc.bytedance.com/verifycenter/captcha/v2?subtype=slide"
+
+        async def locator(self, sel):
+            class _L:
+                async def count(self_inner):
+                    return 0
+            return _L()
+
+    class _Page:
+        url = "https://www.douyin.com/"
+        frames = [_Fr()]
+
+        async def title(self):
+            return "抖音"
+
+    hit = await browser_qr._detect_captcha_wall(_Page())
+    assert hit is not None and "iframe" in hit
+
+
+@pytest.mark.asyncio
+async def test_captcha_wall_detected_by_slider_dom(monkeypatch):
+    """只有滑块 DOM（没有标题/iframe 线索）时也要命中。
+
+    注意选择器必须用实测结构：旧实现用的 #captcha-verify-image 已经不存在了，
+    现在是 class="captcha-verify-image"——照抄旧 id 会永远命中不了。
+    """
+
+    class _L:
+        def __init__(self, n):
+            self._n = n
+
+        async def count(self):
+            return self._n
+
+    class _Page:
+        url = "https://www.douyin.com/"
+        frames: list = []
+
+        async def title(self):
+            return "抖音"
+
+        # 注意：Playwright 的 page.locator() 是**同步**返回 Locator、count() 才是 await。
+        # 假页面必须照这个形状写，否则 await 会作用在协程上、永远命中不了。
+        def locator(self, sel):
+            return _L(1 if sel == ".captcha-verify-image" else 0)
+
+    hit = await browser_qr._detect_captcha_wall(_Page())
+    assert hit is not None and "captcha-verify-image" in hit
+
+
+@pytest.mark.asyncio
+async def test_normal_login_page_is_not_a_captcha_wall(monkeypatch):
+    """正常登录页（只有常态反欺诈 SDK）不能被误判成验证码墙。
+
+    抖音登录页总会加载 rmc-nocaptcha，误判会让每次扫码都报"要过滑块"。
+    """
+
+    class _Fr:
+        url = "https://rmc.bytedance.com/rmc-nocaptcha/sdk.html"
+
+        async def locator(self, sel):
+            class _L:
+                async def count(self):
+                    return 0
+            return _L()
+
+    class _Page:
+        url = "https://www.douyin.com/"
+        frames = [_Fr()]
+
+        async def title(self):
+            return "抖音-记录美好生活"
+
+        async def locator(self, sel):
+            class _L:
+                async def count(self):
+                    return 0
+            return _L()
+
+    assert await browser_qr._detect_captcha_wall(_Page()) is None, "正常登录页不该判成验证码墙"
+
+
+def test_missing_captcha_selectors_are_not_stale_ids():
+    """防回归：不能再用已失效的 #captcha-verify-image（现在是 class）。"""
+    for sel in browser_qr._CAPTCHA_SLIDER_SELECTORS:
+        assert "#captcha-verify-image" not in sel, "旧 id 选择器已失效，必须用实测的 class"
+
+
+def test_captcha_extends_session_deadline():
+    """命中滑块后会话要延长存活时间。
+
+    真机场景：用户第 4 分钟才扫码、再拖滑块，很容易超出默认 300s；若还按原 TTL
+    掐掉，会在用户正操作时把浏览器关掉并报"已超时"。
+    """
+    import time as _t
+
+    from app.config import settings
+
+    # 模拟"用户第 250 秒才扫到码、随后命中滑块"
+    sess = {"created": _t.time() - 250, "state": {}}
+    base = browser_qr._session_deadline(sess)
+    assert abs(base - (sess["created"] + settings.qr_session_ttl)) < 1, "未命中滑块时按原 TTL"
+
+    sess["state"]["captcha_seen_at"] = _t.time()
+    extended = browser_qr._session_deadline(sess)
+    assert extended > base, "命中滑块后截止时间必须往后推（否则会用掉用户操作的时间）"
+    assert abs(extended - (sess["state"]["captcha_seen_at"] + browser_qr._CAPTCHA_EXTRA_SECONDS)) < 1
+
+
+def test_captcha_extension_never_shortens_default_ttl():
+    """额外余量不能把原本更宽的截止时间缩短（命中得早时应仍按原 TTL）。"""
+    import time as _t
+
+    from app.config import settings
+
+    sess = {"created": _t.time(), "state": {"captcha_seen_at": _t.time()}}
+    # 刚建会话就命中滑块：原 TTL(300s) 比 extra(180s) 宽，必须保留 300s
+    assert abs(browser_qr._session_deadline(sess) - (sess["created"] + settings.qr_session_ttl)) < 1
+
+
+@pytest.mark.asyncio
+async def test_poll_reports_captcha_state_with_actionable_message(monkeypatch):
+    """轮询命中验证码墙时要如实上报 captcha 状态，并给出可操作指引。"""
+    sid = "cap1"
+
+    class _CapPage:
+        url = "https://www.douyin.com/"
+        frames: list = []
+
+        async def title(self):
+            return "验证码中间页"
+
+        async def evaluate(self, script, *a):
+            return {}
+
+    monkeypatch.setitem(browser_qr._live, sid, {
+        "page": _CapPage(), "context": FakeContext([]),
+        "created": time.time(), "browser": None, "pw": None, "xvfb": None,
+        "state": {}, "engine": "chrome", "user_visible": True,
+    })
+
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "captcha", r
+    assert "滑块" in r.message
+    # 必须点明"手机确认不算数"，否则用户会一直盯着手机重试
+    assert "手机" in r.message
+
+
+@pytest.mark.asyncio
+async def test_captcha_without_visible_window_points_to_manual_cookie(monkeypatch):
+    """NAS 等无可见窗口场景：不能骗用户"去拖滑块"（他看不到那个窗口）。
+
+    容器里 Xvfb 是虚拟显示，程序能渲染但用户看不见、更没法操作——必须如实
+    引导改用手动贴 Cookie。
+    """
+    sid = "cap2"
+
+    class _CapPage:
+        url = "https://www.douyin.com/"
+        frames: list = []
+
+        async def title(self):
+            return "验证码中间页"
+
+        async def evaluate(self, script, *a):
+            return {}
+
+    monkeypatch.setitem(browser_qr._live, sid, {
+        "page": _CapPage(), "context": FakeContext([]),
+        "created": time.time(), "browser": None, "pw": None, "xvfb": None,
+        "state": {}, "engine": "chromium", "user_visible": False,
+    })
+
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "captcha", r
+    assert "Cookie" in r.message, "无窗口时必须引导改用手动 Cookie"

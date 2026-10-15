@@ -30,7 +30,9 @@ class QrStart:
 
 @dataclass
 class QrPoll:
-    status: str  # pending / scanned / success / expired / error
+    # pending 等待扫码 / scanned 已扫待确认 / confirmed 已确认待落盘 /
+    # captcha 命中滑块验证（需要在电脑端人工完成）/ success / expired / error
+    status: str
     message: str = ""
     credential: dict | None = None  # success 时返回凭证明文 JSON
     external_id: str = ""

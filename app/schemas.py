@@ -105,7 +105,8 @@ class QrLoginSession(BaseModel):
 
 
 class QrLoginStatus(BaseModel):
-    status: str  # pending / scanned / success / expired / error
+    # pending / scanned / confirmed / captcha（需电脑端人工过滑块）/ success / expired / error
+    status: str
     message: str = ""
     account_id: int | None = None
     # 轮询遇到平台二维码自然过期时回传的新二维码（抖音约 60s 一换），前端直接换图继续。

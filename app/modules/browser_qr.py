@@ -36,6 +36,35 @@ logger = logging.getLogger("platform.browser_qr")
 # 这段只影响"失败消息出现得早晚"，一旦 cookie 落盘会立刻走 success 分支。
 _CONFIRMED_GRACE_SECONDS = 45
 
+# 抖音扫码确认后，**常常**会先跳到一个「验证码中间页」（页面标题就叫这四个字），
+# 里面是 rmc.bytedance.com 的滑块验证 iframe（subtype=slide）。这一步**必须在电脑端
+# 页面上由人完成**，手机点"确认登录"是不算的——这正是真机上"手机确认了、界面却一直
+# 停在已扫码"的原因：我们只盯着 check_qrconnect，从不看页面已经被切到验证码页。
+#
+# 参照实现（工作区内的多平台采集工具）官方注释：
+#   "If Douyin keeps prompting failure, open the browser and see if mobile phone number
+#    verification appears after scanning the QR code. If it does, manually go through it."
+# 它的做法是 sleep 后看 title 是否含"验证码中间页"，然后自动拖滑块。
+#
+# 我们**不自动破滑块**（那是对抗风控，既不稳也不该做），改为：检测到就如实上报，
+# 让用户到电脑端的那个浏览器窗口里手动滑一下，页面通过后我们会自动继续走登录。
+_CAPTCHA_PAGE_TITLE = "验证码中间页"
+
+# 命中滑块验证后额外给的存活时间（秒）。理由：滑块是人工操作，用户可能在会话
+# 第 4 分钟才扫上码，拖滑块 + 验证后跳转很容易超出默认会话 TTL；若还按原 TTL
+# 掐掉，会把浏览器从用户手里抽走、报一句"已超时"，正是最误导人的那种失败。
+_CAPTCHA_EXTRA_SECONDS = 180
+
+# 抖音风控滑块相关的 DOM（实测抖音首页被拦时的结构；**不能**照抄旧实现的
+# "#captcha-verify-image"，那个 id 已经不存在了，现在是 class）。
+_CAPTCHA_FRAME_HINT = "verifycenter/captcha"
+_CAPTCHA_SLIDER_SELECTORS = (
+    ".captcha-verify-image",
+    "#captcha_container",
+    ".captcha-slider-btn",
+    ".captcha_verify_bar",
+)
+
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -174,6 +203,18 @@ def _can_open_window() -> bool:
     if sys.platform in ("darwin", "win32"):
         return True
     return bool(os.environ.get("DISPLAY")) or shutil.which("Xvfb") is not None
+
+
+def _window_is_user_visible() -> bool:
+    """这个窗口用户**肉眼看得见、能手去操作**吗？
+
+    与 _can_open_window 的区别很关键：Xvfb 是虚拟显示，程序能渲染，但用户看不见、
+    更没法去拖滑块。所以 Linux 上只有**已存在的真实 DISPLAY**才算可见；我们自己为了
+    跑有头模式起的 Xvfb 不算。用来决定"滑块验证"到底能不能让人工来做。
+    """
+    if sys.platform in ("darwin", "win32"):
+        return True
+    return bool(os.environ.get("DISPLAY"))
 
 
 def _resolve_engine(conf: dict) -> str:
@@ -350,6 +391,60 @@ def _has_captcha_challenge(page) -> bool:
             continue  # 常态反欺诈 SDK，不是挑战
         return True
     return False
+
+
+def _session_deadline(sess: dict) -> float:
+    """会话的实际存活截止时刻。
+
+    默认是 created + qr_session_ttl；一旦命中过滑块验证，再给 _CAPTCHA_EXTRA_SECONDS
+    的余量（人工拖滑块 + 验证后跳转都要时间）。轮询与后台 GC 必须用同一个口径，
+    否则调度器会在用户正拖滑块时把浏览器关掉。
+    """
+    base = sess["created"] + settings.qr_session_ttl
+    seen = (sess.get("state") or {}).get("captcha_seen_at")
+    if seen:
+        # 从"命中滑块的那一刻"起算额外余量，且不能因此缩短原来的截止时间。
+        base = max(base, float(seen) + _CAPTCHA_EXTRA_SECONDS)
+    return base
+
+
+async def _detect_captcha_wall(page) -> str | None:
+    """页面是否被切到了「验证码中间页」（需要**在电脑端人工**过滑块）。
+
+    返回命中依据（用于日志与提示），没命中返回 None。
+
+    为什么必须有这一步：抖音在扫码确认后常常先跳验证码中间页，**手机点确认不算数**，
+    必须在这个浏览器窗口里把滑块拖过去。旧流程完全没看页面被切走这件事，只盯着
+    check_qrconnect——于是用户手机确认了、界面却永远停在"已扫码"，直到会话超时。
+    （真机日志里 scanned 之后 300 秒毫无变化，就是这个原因。）
+
+    命中判定按可靠性排序：
+      1. 页面标题含「验证码中间页」（最稳，实测就是这个标题）
+      2. 出现 verifycenter/captcha 的 iframe（滑块本体）
+      3. 页面里有滑块相关 DOM（选择器以实测为准，别用已失效的 #captcha-verify-image）
+    """
+    # 1) 标题
+    try:
+        title = await page.title()
+        if title and _CAPTCHA_PAGE_TITLE in title:
+            return f"页面标题为「{title}」"
+    except Exception:  # noqa: BLE001 页面跳转中读不到标题，交给后面的依据
+        pass
+
+    # 2) 滑块 iframe
+    for fr in list(getattr(page, "frames", None) or []):
+        if _CAPTCHA_FRAME_HINT in (fr.url or ""):
+            return "出现滑块验证 iframe（verifycenter/captcha）"
+
+    # 3) 滑块 DOM（顶层或 iframe 内都查）
+    for target in [page, *list(getattr(page, "frames", None) or [])]:
+        for sel in _CAPTCHA_SLIDER_SELECTORS:
+            try:
+                if await target.locator(sel).count() > 0:
+                    return f"出现滑块元素（{sel}）"
+            except Exception:  # noqa: BLE001 跨 frame 查询失败按未命中处理
+                continue
+    return None
 
 
 async def _qr_image_b64(page, selector: str) -> str:
@@ -635,6 +730,8 @@ async def browser_qr_start(platform: str) -> QrStart:
             "user_data_dir": user_data_dir,
             # 一次性 profile 目录用完要删；共享 profile 必须留着（登录态在里面）。
             "temp_profile": bool(throwaway and user_data_dir == throwaway),
+            # 窗口是否用户可见可操作（决定"滑块验证"能否让人工来做）。
+            "user_visible": _window_is_user_visible() and engine == "chrome",
         }
         _attach_qr_status_listener(page, conf, state)
         # 单张码寿命：抖音登录页的码只活 59s 就自动换新（实测）。前端倒计时按它走，
@@ -810,7 +907,7 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
     sess = _live.get(session_id)
     if sess is None:
         return QrPoll(status="expired", message="扫码会话不存在或已结束，请重新发起")
-    if time.time() - sess["created"] > settings.qr_session_ttl:
+    if time.time() > _session_deadline(sess):
         await _close(session_id)
         return QrPoll(status="expired", message="二维码已超时，请重新发起")
 
@@ -822,6 +919,34 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
 
     if not _is_logged_in(platform, cookie_map, local_storage, page.url):
         st = sess.setdefault("state", {})
+        # ⚠️ 关键一步（真机缺失的那环）：抖音在扫码确认后常把页面切到「验证码中间页」，
+        # 滑块必须**在电脑端这个浏览器窗口里**拖过去，手机点"确认登录"不算数。
+        # 必须先判它：此时页面已经没有二维码了，继续走下面的取码逻辑只会得到
+        # "读不到码 -> 当成过期/换码 -> 一直 pending"，用户看到的就是"手机确认了没反应"。
+        wall = await _detect_captcha_wall(page)
+        if wall:
+            st["captcha_wall"] = wall
+            st["captcha_seen_at"] = time.time()
+            if st.get("dbg_last_wall") != wall:
+                st["dbg_last_wall"] = wall
+                logger.warning(
+                    "qr_poll[%s] 命中验证码中间页，需要电脑端人工过滑块：%s",
+                    platform, wall,
+                )
+            return QrPoll(
+                status="captcha",
+                message=(
+                    # 能不能人工过滑块，取决于有没有"看得见的窗口"：
+                    #   Mac/Win 真实浏览器有头 -> 用户能在弹出窗口里拖滑块
+                    #   NAS 无头容器 -> 没有窗口可拖，只能改用手动贴 Cookie
+                    "抖音要求完成滑块验证：请在本机刚弹出的浏览器窗口里拖动滑块，"
+                    "滑完会自动继续登录（手机上点的确认不算数）"
+                    if sess.get("user_visible")
+                    else "抖音要求完成滑块验证，且服务器没有可视窗口可供操作。"
+                    "请改用「手动粘 Cookie」录入抖音（本机浏览器登录后复制 Cookie）。"
+                ),
+            )
+        st.pop("captcha_wall", None)
         # 页面当前活跃的码只读一次，诊断与"自愈换图"共用（避免一轮里重复截两次图）。
         page_now = await _read_qr_image_wait(page, conf["qr_selector"])
         page_hash = hashlib.md5(page_now.encode()).hexdigest() if page_now else ""
@@ -1018,5 +1143,5 @@ async def cleanup_expired() -> None:
     """由调度器周期调用，回收超时未完成的浏览器会话。"""
     now = time.time()
     for sid, sess in list(_live.items()):
-        if now - sess["created"] > settings.qr_session_ttl:
+        if now > _session_deadline(sess):
             await _close(sid)
