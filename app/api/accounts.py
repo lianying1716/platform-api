@@ -152,7 +152,11 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
     terminal = qr_sessions.terminal_status(session_id)
     if terminal is not None:
         status, message, account_id = terminal
-        logger.info("qr_poll_replay session=%s status=%s", session_id[:12], status)
+        # 带上原话：真机上"确认后界面没反应"到底是哪一步，全靠这条日志定性。
+        logger.info(
+            "qr_poll_replay session=%s status=%s account=%s msg=%s",
+            session_id[:12], status, account_id, str(message)[:120],
+        )
         return schemas.QrLoginStatus(status=status, message=message, account_id=account_id)
     sess = qr_sessions.get(session_id)
     if sess is None:
