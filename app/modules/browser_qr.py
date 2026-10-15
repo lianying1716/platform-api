@@ -14,6 +14,7 @@ Cookie（无需用户手动复制任何东西），随后关闭浏览器。
 
 import base64
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
@@ -26,6 +27,13 @@ import httpx
 
 from app.config import settings
 from app.modules.base import QrPoll, QrStart
+
+logger = logging.getLogger("platform.browser_qr")
+
+# 手机确认（check_qrconnect=confirmed）到登录状态落盘的宽限期（秒）。
+# 实测确认与写 cookie/localStorage 之间约 1~2s；给足余量但别无限等——
+# 超时如实报错，好过永远停在 pending 让用户干等。
+_CONFIRMED_GRACE_SECONDS = 15
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -484,12 +492,47 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
     local_storage = await _read_local_storage(page)
 
     if not _is_logged_in(platform, cookie_map, local_storage, page.url):
+        # 诊断快照：真机"扫了没反应"时，靠这几行区分是「登录信号没落盘」还是
+        # 「落盘了但我们的判定条件没覆盖」。每次会话最多 20 条，避免轮询刷屏。
+        _dbg = sess.setdefault("state", {})
+        if _dbg.get("dbg_logged", 0) < 20:
+            _dbg["dbg_logged"] = _dbg.get("dbg_logged", 0) + 1
+            conf_c = _PLATFORM_CONF.get(platform, {})
+            interesting = {
+                k: v for k, v in cookie_map.items()
+                if k in ("LOGIN_STATUS", "sessionid", "sid_tt", "web_session", "passToken", "z_c0")
+            }
+            logger.info(
+                "qr_poll[%s] url=%s cookies=%s login_cookies_hit=%s ls_keys=%s qr_status=%s",
+                platform,
+                (page.url or "")[:80],
+                sorted(interesting) or "-",
+                {r["name"]: cookie_map.get(r["name"]) for r in conf_c.get("login_cookies", [])},
+                [k for k in ("HasUserLogin", "user_sec_id", "user_id") if local_storage.get(k)],
+                (sess.get("state") or {}).get("qr_status", ""),
+            )
         # 扫码进度优先用平台自己的状态端点（抖音 check_qrconnect），
         # 比猜 cookie 准确：passport_csrf_token 进页面就有，用它判"已扫码"会误报。
         remote = (sess.get("state") or {}).get("qr_status", "")
         mapped = (conf.get("qr_status_map") or {}).get(remote, "")
         if mapped == "scanned":
             return QrPoll(status="scanned", message="已扫码，请在手机上点击确认")
+        if mapped == "success":
+            # 手机已确认（check_qrconnect=confirmed），但 cookie/localStorage 还没落盘
+            # ——两者之间通常差 1~2 秒。旧逻辑没有这个分支：confirmed 会掉到最后的
+            # 兜底 `pending("等待扫码…")`，用户明明确认过了，界面不但不前进、提示还
+            # 倒退成「请用手机扫描二维码」，看起来就是点了没反应。
+            # 这里给一小段宽限期等落盘；超过宽限如实报错（而不是永远 pending 骗用户）。
+            st = sess.setdefault("state", {})
+            first = st.setdefault("confirmed_at", time.time())
+            if time.time() - first <= _CONFIRMED_GRACE_SECONDS:
+                # 单独一个 status：前端据此给"已完成确认"的视觉反馈，
+                # 不能和"等待扫码"混在 pending 里（用户会以为没反应）。
+                return QrPoll(status="confirmed", message="已在手机确认，正在获取登录状态…")
+            return QrPoll(
+                status="error",
+                message="已确认，但迟迟拿不到登录状态，请关闭后重新获取二维码",
+            )
         if remote in ("expired", "canceled", "cancelled"):
             # 平台二维码约 60s 自然过期并由登录页自动换新码。旧逻辑一看到 expired 就
             # 销毁会话，用户稍慢就扫到死码、只能重来（macOS 上表现为"扫码登录不成功"）。

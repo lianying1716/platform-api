@@ -6,7 +6,9 @@
 - 轮询从不返回 scanned，用户扫码后没有任何反馈；
 - 前端轮询 catch{} 静默停掉，超时也不提示。
 """
+import asyncio
 import time
+
 import pytest
 from app.modules import browser_qr
 
@@ -190,3 +192,74 @@ async def test_poll_keeps_pending_between_expiry_and_refresh(monkeypatch):
     assert r.status == "pending", r
     assert r.qr_image_b64 is None, "同一张旧码不该再回传，避免把死码发回前端"
     assert closed == [], "换码窗口内不该销毁会话"
+
+
+@pytest.mark.asyncio
+async def test_poll_confirmed_without_cookies_yet_does_not_regress_to_pending(monkeypatch):
+    """手机确认后（check_qrconnect=confirmed）状态还没落盘时，不能倒退成「等待扫码」。
+
+    回归背景（用户实测：Mac 上抖音扫码确认后界面毫无反应）：
+    `qr_status_map` 声明了 confirmed→success，但轮询只处理 scanned 分支，
+    confirmed 落到兜底 `return pending("等待扫码…")` —— 用户已经确认，界面却提示
+    让他「再用 App 扫一次」，看起来就是点了没反应。
+    """
+    sid = "s-confirmed"
+    async def _close(s): pass
+    monkeypatch.setattr(browser_qr, "_close", _close)
+
+    # confirmed，但 cookie/localStorage 都还没写（确认与落盘之间的窗口）
+    _install(monkeypatch, sid,
+             [{"name": "passport_csrf_token", "value": "csrf", "domain": ".douyin.com"}],
+             state={"qr_status": "confirmed"})
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "confirmed", r.status
+    # 关键：不是「等待扫码」，而是告知已在完成登录
+    assert "等待扫码" not in r.message, r.message
+    assert "确认" in r.message, r.message
+
+
+@pytest.mark.asyncio
+async def test_poll_confirmed_then_cookies_appear_succeeds(monkeypatch):
+    """确认后 cookie 落盘，下一轮必须立刻判成功（而不是继续 pending）。"""
+    sid = "s-confirmed-2"
+    closed = []
+    async def _close(s): closed.append(s)
+    monkeypatch.setattr(browser_qr, "_close", _close)
+
+    _install(monkeypatch, sid,
+             [{"name": "passport_csrf_token", "value": "csrf", "domain": ".douyin.com"}],
+             state={"qr_status": "confirmed"})
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "confirmed"
+
+    _install(monkeypatch, sid,
+             [{"name": "sid_tt", "value": "abc", "domain": ".douyin.com"}],
+             ls={"HasUserLogin": "1", "user_sec_id": "SEC9", "user_id": "42"},
+             state={"qr_status": "confirmed"})
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "success", r
+    assert r.credential["sec_user_id"] == "SEC9"
+    assert closed == [sid]
+
+
+@pytest.mark.asyncio
+async def test_poll_confirmed_stuck_reports_error_not_pending_forever(monkeypatch):
+    """确认了但迟迟没落盘：给若干轮宽限后要如实报错，不能永远 pending 骗用户。"""
+    sid = "s-confirmed-3"
+    async def _close(s): pass
+    monkeypatch.setattr(browser_qr, "_close", _close)
+    # 宽限期是真实计时，这里把它压到极短再让时间真的流逝，验证"超限即报错"。
+    monkeypatch.setattr(browser_qr, "_CONFIRMED_GRACE_SECONDS", 0.05)
+    state = {"qr_status": "confirmed"}
+    _install(monkeypatch, sid, [], state=state)
+
+    # 宽限期内：先给"正在完成登录"，不是报错
+    browser_qr._live[sid]["state"] = state
+    first = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert first.status == "confirmed" and "确认" in first.message, first.message
+
+    await asyncio.sleep(0.3)  # 超过宽限
+    browser_qr._live[sid]["state"] = state
+    last = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert last.status == "error", f"应最终报错，实际 {last.status}: {last.message}"
+    assert "确认" in last.message or "登录状态" in last.message, last.message

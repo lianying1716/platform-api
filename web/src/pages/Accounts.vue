@@ -167,7 +167,7 @@
         <img v-if="qrImage" :src="`data:image/png;base64,${qrImage}`" alt="二维码" class="qr-img" />
         <p class="qr-status" :class="qrStatus">{{ qrMessage }}</p>
         <p
-          v-if="qrStatus === 'pending' || qrStatus === 'scanned'"
+          v-if="qrStatus === 'pending' || qrStatus === 'scanned' || qrStatus === 'confirmed'"
           class="qr-countdown"
           :class="{ warn: qrRemaining <= 60 }"
         >
@@ -354,6 +354,8 @@ async function poll(sessionId: string) {
     qrStatus.value = data.status
     // 平台二维码会自然过期并被登录页换新（抖音约 60s）；后端把新码随轮询回传，
     // 这里换图即可继续扫，不必让用户重开弹窗（倒计时另按这批新码重新计）。
+    // 状态含义：pending=等待扫码 / scanned=已扫待手机确认 / confirmed=已确认，
+    // 后端正在等登录态落盘（此时别当成"没反应"，页面会显示对应提示）。
     if (data.qr_image_base64) {
       qrImage.value = data.qr_image_base64
     }
@@ -613,7 +615,8 @@ onUnmounted(stopPolling)
   color: var(--muted);
 }
 
-.qr-status.scanned {
+.qr-status.scanned,
+.qr-status.confirmed {
   color: var(--warn);
   font-weight: 700;
 }
