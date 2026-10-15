@@ -161,3 +161,87 @@ def test_real_browser_probe_finds_nothing_in_container():
     # 探测清单必须覆盖三个平台，否则某平台会静默永远走 chromium
     for plat in ("darwin", "win32", "linux"):
         assert browser_qr._REAL_BROWSER_PATHS.get(plat), f"{plat} 缺少真实浏览器探测路径"
+
+
+def test_temp_profile_is_not_created_when_shared_works(monkeypatch):
+    """共享 profile 成功时不该留下一次性临时目录。
+
+    真机踩过：早期实现无条件 mkdtemp，每扫一次就在临时区留一个空目录，
+    180s 内积了 4 个。这里用一个假 pw 验证"按需创建"。
+    """
+    import asyncio
+    import tempfile as _tempfile
+
+    from app.config import settings
+
+    created = {"mkdtemp": 0}
+    real_mkdtemp = _tempfile.mkdtemp
+
+    def counting_mkdtemp(*a, **kw):
+        created["mkdtemp"] += 1
+        return real_mkdtemp(*a, **kw)
+
+    monkeypatch.setattr(_tempfile, "mkdtemp", counting_mkdtemp)
+
+    class _FakeCtx:
+        async def close(self):
+            return None
+
+    class _FakePW:
+        class chromium:  # noqa: N801
+            @staticmethod
+            async def launch_persistent_context(user_data_dir, **kw):
+                # 共享目录"启动成功"
+                return _FakeCtx()
+
+        async def stop(self):
+            return None
+
+    class _FakeAPW:
+        async def start(self):
+            return _FakePW()
+
+    monkeypatch.setattr(browser_qr, "_require_playwright", lambda: lambda: _FakeAPW())
+    monkeypatch.setattr(browser_qr, "_find_real_browser", lambda: "/Applications/Google Chrome.app/x")
+    monkeypatch.setattr(browser_qr, "_can_open_window", lambda: True)
+    monkeypatch.setattr(settings, "qr_browser_engine", "auto", raising=False)
+    monkeypatch.setattr(settings, "qr_chrome_profile_dir", None, raising=False)
+
+    # 让页面相关调用短路：我们只关心 profile 的创建时机
+    async def _fake_img(page, selector):
+        return "ZmFrZQ=="
+
+    monkeypatch.setattr(browser_qr, "_qr_image_b64", _fake_img)
+
+    class _FakePage:
+        url = "https://www.douyin.com/jingxuan"
+
+        async def goto(self, *a, **kw):
+            return None
+
+        def on(self, *a, **kw):
+            return None
+
+    class _CtxWithPage(_FakeCtx):
+        async def new_page(self):
+            return _FakePage()
+
+    class _FakePW2(_FakePW):
+        class chromium:  # noqa: N801
+            @staticmethod
+            async def launch_persistent_context(user_data_dir, **kw):
+                return _CtxWithPage()
+
+    class _FakeAPW2:
+        async def start(self):
+            return _FakePW2()
+
+    monkeypatch.setattr(browser_qr, "_require_playwright", lambda: lambda: _FakeAPW2())
+
+    async def _run():
+        s = await browser_qr.browser_qr_start("douyin")
+        sid = s.session_data["browser_session"]
+        await browser_qr._close(sid)
+
+    asyncio.run(_run())
+    assert created["mkdtemp"] == 0, "共享 profile 成功时不该创建一次性临时目录"

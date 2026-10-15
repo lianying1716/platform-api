@@ -514,10 +514,17 @@ async def browser_qr_start(platform: str) -> QrStart:
             # （反检测收益保留），只是不带跨会话状态，远好过直接掉回无头 Chromium。
             import tempfile as _tempfile
 
-            # 第二候选：一次性临时目录（每次全新，绝无锁冲突）。
-            throwaway = _tempfile.mkdtemp(prefix="qr-chrome-")
-            candidates = [str(shared_profile), throwaway]
+            # 候选：先共享 profile（留住登录态/设备指纹），失败再退到一次性目录。
+            # 一次性目录**按需创建**——共享目录能用时就不建，否则每扫一次都会在
+            # 临时区留一个空目录（实测过）。
+            candidates: list[str | None] = [str(shared_profile), None]
             for idx, candidate in enumerate(candidates):
+                if candidate is None:
+                    try:
+                        candidate = _tempfile.mkdtemp(prefix="qr-chrome-")
+                    except Exception:  # noqa: BLE001 连临时目录都建不出来就放弃
+                        continue
+                    throwaway = candidate
                 try:
                     Path(candidate).mkdir(parents=True, exist_ok=True)
                 except Exception:  # noqa: BLE001 建不出来就换下一个候选
@@ -535,6 +542,10 @@ async def browser_qr_start(platform: str) -> QrStart:
                         candidate,
                         str(exc)[:110],
                     )
+            # 一次性目录最终没用上（共享目录成功了，或两次都失败）：立刻清掉。
+            if throwaway and user_data_dir != throwaway:
+                shutil.rmtree(throwaway, ignore_errors=True)
+                throwaway = None
             if context is None:
                 # 真实 Chrome 彻底起不来：降级 Chromium，别让用户没法登录。
                 logger.warning("真实 Chrome 均启动失败，降级为 chromium")
