@@ -148,7 +148,13 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
     adapter = get_adapter(sess.platform)
     poll = await adapter.qr_poll(sess.data)
     if poll.status != "success":
-        if poll.status in ("expired", "error"):
+        # ⚠️ 不要在这里因 expired/error 删会话。抖音的二维码**每 60 秒必然过期一次**
+        # 并由登录页自动换新码，适配层对这种情况已经自愈（抓新图回传、返回 pending）。
+        # 只有「会话真的不存在」或「超过会话 TTL」才会返回 expired —— 那两种情况适配层
+        # 自己已经收口。API 层再删一次，会把"正在换码"误判成"整次扫码失败"，
+        # 表现为用户刚扫码就弹"二维码已过期"，而手机端其实已确认。
+        if poll.status == "error":
+            # error 是真正的失败（如风控拦截），此时才结束会话，避免继续空转。
             qr_sessions.remove(session_id)
         return schemas.QrLoginStatus(
             status=poll.status,

@@ -356,3 +356,61 @@ async def test_poll_ignores_zero_error_code(monkeypatch):
     _install(monkeypatch, sid, [], state={"qr_status": "scanned", "qr_error_code": 0})
     r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
     assert r.status == "scanned", r
+
+
+@pytest.mark.asyncio
+async def test_api_poll_does_not_kill_session_on_expired(monkeypatch, client):
+    """API 层收到 expired 不能销毁会话 —— 抖音每 60s 必过期一次换新码。
+
+    回归背景（真机：刚扫码就弹「二维码已过期」，而手机端已确认）：
+    适配层对"平台自然过期"已自愈（抓新图、返回 pending），但 API 层还留着
+    旧逻辑 `if poll.status in ("expired","error"): qr_sessions.remove(...)`，
+    于是每 60 秒就把整次扫码会话删掉，下轮轮询变成"会话不存在"。
+    """
+    from app.api import accounts as accounts_api
+    from app.services import qr_sessions
+
+    sid = qr_sessions.create("douyin", {"browser_session": "x"})
+
+    class _Poll:
+        status = "expired"
+        message = "二维码正在刷新，请稍候…"
+        qr_image_b64 = None
+
+    class _Adapter:
+        async def qr_poll(self, data):
+            return _Poll()
+
+    monkeypatch.setattr(accounts_api, "get_adapter", lambda p: _Adapter())
+
+    r = client.get(f"/api/accounts/qr-login/{sid}")
+    assert r.status_code == 200, r.text
+    # 会话必须还在：否则"换码"会被误判成"整次失败"。
+    assert qr_sessions.get(sid) is not None, "expired 不该销毁会话（那是换码，不是失败）"
+
+    qr_sessions.remove(sid)
+
+
+@pytest.mark.asyncio
+async def test_api_poll_ends_session_on_error(monkeypatch, client):
+    """error 是真正失败（如风控拦截）：应结束会话，避免继续空转。"""
+    from app.api import accounts as accounts_api
+    from app.services import qr_sessions
+
+    sid = qr_sessions.create("douyin", {"browser_session": "x"})
+
+    class _Poll:
+        status = "error"
+        message = "请在手机抖音 App 内完成验证后重试"
+        qr_image_b64 = None
+
+    class _Adapter:
+        async def qr_poll(self, data):
+            return _Poll()
+
+    monkeypatch.setattr(accounts_api, "get_adapter", lambda p: _Adapter())
+
+    r = client.get(f"/api/accounts/qr-login/{sid}")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "error"
+    assert qr_sessions.get(sid) is None, "真失败应结束会话"
