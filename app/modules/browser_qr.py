@@ -816,6 +816,15 @@ def _attach_qr_status_listener(page, conf: dict, state: dict) -> None:
         if code not in (None, 0):
             state["qr_error_code"] = code
             state["qr_error_desc"] = str(inner.get("description") or "")
+        elif code == 0:
+            # 平台恢复正常轮询（error_code 回到 0）：说明二次验证已经过了。
+            # 必须清掉旧的 2046，否则用户滑完滑块后我们仍会一直提示"要去做二次验证"。
+            # 注意**保留** captcha_seen_at：它撑着会话的延长时限，此刻清掉可能让
+            # 会话立刻过期、把刚过完验证的用户踢出去。延长只会"只增不减"，留着无害。
+            state.pop("qr_error_code", None)
+            state.pop("qr_error_desc", None)
+            state.pop("captcha_wall", None)
+            state.pop("dbg_last_wall", None)
         state["qr_seen_at"] = time.time()
         # 原始响应留一份（含 error_code/description/extra），真机卡住时靠它定位
         state["qr_raw"] = {
@@ -991,15 +1000,43 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
                 page_hash[:8] or "-",
                 shown[:8] or "-",
             )
-        # 平台要求"去 App 完成验证"（抖音 2046 等）：这是硬拦截，继续等下去也不会有
-        # 结果，必须如实告诉用户去 App 验证，而不是让他对着"已扫码待确认"干等。
+        # 平台要求二次验证（抖音 error_code=2046）：**千万不要关浏览器**。
+        #
+        # 真机踩坑（我们自己引入的）：用户手机点完确认，抖音立刻返回 2046，同时把页面
+        # 切到「验证码中间页」——但页面跳转/iframe 加载需要时间，这一轮 _detect_captcha_wall
+        # 往往还没命中，于是旧代码直接走到这里 `_close()`，把用户唯一能操作的那个窗口
+        # 关掉了。用户看到的就是"刚提示要二次验证，窗口立即消失"，根本没机会过滑块。
+        #
+        # 正确做法：只要有**用户可见的窗口**，就把窗口留着、把会话留着、继续轮询，
+        # 让他在页面提示里完成验证；完成后页面自己跳转、cookie 落盘，我们会走 success。
         risk_code = st.get("qr_error_code")
         if risk_code and risk_code != 0:
-            await _close(session_id)
             desc = st.get("qr_error_desc") or "平台要求完成安全验证"
+            if sess.get("user_visible"):
+                # 记一下：既为日志定性，也让 _session_deadline 给足人工操作时间。
+                st.setdefault("captcha_seen_at", time.time())
+                if st.get("dbg_last_wall") != f"error_code={risk_code}":
+                    st["dbg_last_wall"] = f"error_code={risk_code}"
+                    logger.warning(
+                        "qr_poll[%s] 平台要求二次验证（error_code=%s），保留窗口等待人工完成：%s",
+                        platform, risk_code, desc[:60],
+                    )
+                return QrPoll(
+                    status="captcha",
+                    message=(
+                        "抖音要求完成二次验证：请到刚弹出的浏览器窗口里，"
+                        "按页面提示完成验证（通常是拖动滑块），完成后会自动继续登录。"
+                        "注意：手机上点的确认不算数。"
+                    ),
+                )
+            # 没有可见窗口：留着也没人能操作，如实收口并引导手动 Cookie。
+            await _close(session_id)
             return QrPoll(
                 status="error",
-                message=f"{desc}（抖音已拦截本次扫码登录，请在手机抖音 App 内完成验证后重试）",
+                message=(
+                    f"{desc}（服务器没有可视窗口可完成验证，"
+                    "请改用「手动粘 Cookie」录入抖音）"
+                ),
             )
         # 扫码进度优先用平台自己的状态端点（抖音 check_qrconnect），
         # 比猜 cookie 准确：passport_csrf_token 进页面就有，用它判"已扫码"会误报。

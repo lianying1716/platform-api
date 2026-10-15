@@ -565,7 +565,7 @@ async def test_captcha_wall_detected_by_slider_iframe(monkeypatch):
     class _Fr:
         url = "https://rmc.bytedance.com/verifycenter/captcha/v2?subtype=slide"
 
-        async def locator(self, sel):
+        def locator(self, sel):  # Playwright: locator() 同步，count() 才 await
             class _L:
                 async def count(self_inner):
                     return 0
@@ -623,7 +623,7 @@ async def test_normal_login_page_is_not_a_captcha_wall(monkeypatch):
     class _Fr:
         url = "https://rmc.bytedance.com/rmc-nocaptcha/sdk.html"
 
-        async def locator(self, sel):
+        def locator(self, sel):  # Playwright: locator() 同步，count() 才 await
             class _L:
                 async def count(self):
                     return 0
@@ -636,7 +636,7 @@ async def test_normal_login_page_is_not_a_captcha_wall(monkeypatch):
         async def title(self):
             return "抖音-记录美好生活"
 
-        async def locator(self, sel):
+        def locator(self, sel):  # Playwright: locator() 同步，count() 才 await
             class _L:
                 async def count(self):
                     return 0
@@ -739,3 +739,200 @@ async def test_captcha_without_visible_window_points_to_manual_cookie(monkeypatc
     r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
     assert r.status == "captcha", r
     assert "Cookie" in r.message, "无窗口时必须引导改用手动 Cookie"
+
+
+@pytest.mark.asyncio
+async def test_risk_code_keeps_window_alive_for_manual_verification(monkeypatch):
+    """真机 bug 回归：平台要求二次验证时**绝不能关掉窗口**。
+
+    用户实测："网页端提示需要做二次验证，这时候窗口则立即消失"——根本没有机会过滑块。
+
+    成因（我们自己引入的）：抖音手机确认后会立刻返回 error_code=2046，并同时把页面切到
+    「验证码中间页」；但页面跳转/iframe 加载需要时间，那一轮 _detect_captcha_wall 还没命中，
+    旧代码就走到 risk_code 分支 `await _close()`，把用户唯一能操作的窗口关掉了。
+
+    正确行为：有可见窗口 -> 保留窗口与会话、返回 captcha 状态、让用户去完成验证。
+    """
+    sid = "risk1"
+    closed = []
+
+    async def _close(s):
+        closed.append(s)
+
+    monkeypatch.setattr(browser_qr, "_close", _close)
+
+    # 页面**还没**变成验证码页（跳转中），所以 _detect_captcha_wall 返回 None，
+    # 这一轮只能靠 risk_code 分支兜住——正是真机的情形。
+    class _MidPage:
+        url = "https://www.douyin.com/"
+        frames: list = []
+
+        async def title(self):
+            return "抖音"
+
+        def locator(self, sel):
+            class _L:
+                async def count(self):
+                    return 0
+            return _L()
+
+        async def evaluate(self, script, *a):
+            return {}
+
+    monkeypatch.setitem(browser_qr._live, sid, {
+        "page": _MidPage(), "context": FakeContext([]),
+        "created": time.time(), "browser": None, "pw": None, "xvfb": None,
+        "engine": "chrome", "user_visible": True,
+        "state": {"qr_error_code": 2046,
+                  "qr_error_desc": "为保障你的账号安全，请前往抖音APP完成验证后再进行登录"},
+    })
+
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+
+    assert r.status == "captcha", f"有可见窗口时应保留窗口等待人工验证，实际 {r.status}"
+    assert closed == [], "二次验证时绝不能关闭窗口（否则用户没机会过滑块）"
+    # 会话必须还在，用户完成验证后我们还要继续轮询
+    assert sid in browser_qr._live, "会话必须保留"
+    # 指引要明确指向那个窗口
+    assert "窗口" in r.message, r.message
+
+
+@pytest.mark.asyncio
+async def test_risk_code_without_window_closes_and_guides_to_manual_cookie(monkeypatch):
+    """没有可见窗口时（NAS 容器）才对收口：关会话并引导手动贴 Cookie。"""
+    sid = "risk2"
+    closed = []
+
+    async def _close(s):
+        closed.append(s)
+        browser_qr._live.pop(s, None)
+
+    monkeypatch.setattr(browser_qr, "_close", _close)
+
+    class _Page:
+        url = "https://www.douyin.com/"
+        frames: list = []
+
+        async def title(self):
+            return "抖音"
+
+        def locator(self, sel):
+            class _L:
+                async def count(self):
+                    return 0
+            return _L()
+
+        async def evaluate(self, script, *a):
+            return {}
+
+    monkeypatch.setitem(browser_qr._live, sid, {
+        "page": _Page(), "context": FakeContext([]),
+        "created": time.time(), "browser": None, "pw": None, "xvfb": None,
+        "engine": "chromium", "user_visible": False,
+        "state": {"qr_error_code": 2046, "qr_error_desc": "请完成验证"},
+    })
+
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+
+    assert r.status == "error", r
+    assert "Cookie" in r.message, "无窗口时应引导手动粘 Cookie"
+    assert closed == [sid], "无窗口时应收口会话（留着也没人能操作）"
+
+
+@pytest.mark.asyncio
+async def test_captcha_grace_survives_until_user_finishes(monkeypatch):
+    """命中二次验证后，会话到期时间要真的往后推——否则用户正过滑块时被 GC 掐掉。"""
+    from app.config import settings
+
+    sid = "risk3"
+
+    class _MidPage:
+        url = "https://www.douyin.com/"
+        frames: list = []
+
+        async def title(self):
+            return "抖音"
+
+        def locator(self, sel):
+            class _L:
+                async def count(self):
+                    return 0
+            return _L()
+
+        async def evaluate(self, script, *a):
+            return {}
+
+    # 模拟"会话已经跑了 280 秒（接近 300s TTL）才出现二次验证"
+    sess = {
+        "page": _MidPage(), "context": FakeContext([]),
+        "created": time.time() - 280, "browser": None, "pw": None, "xvfb": None,
+        "engine": "chrome", "user_visible": True,
+        "state": {"qr_error_code": 2046, "qr_error_desc": "请完成验证"},
+    }
+    monkeypatch.setitem(browser_qr._live, sid, sess)
+
+    before = browser_qr._session_deadline(sess)
+    r = await browser_qr.browser_qr_poll("douyin", {"browser_session": sid})
+    assert r.status == "captcha", r
+    after = browser_qr._session_deadline(sess)
+
+    assert after > before, "命中二次验证后必须延长存活时间"
+    assert after - time.time() > 100, "要留出足够的人工操作时间（不能只剩几十秒）"
+    assert after > time.time(), "此刻不能已经过期"
+    # 与 settings 挂钩，避免硬编码漂移
+    assert after - before <= settings.qr_session_ttl
+
+
+@pytest.mark.asyncio
+async def test_error_code_clears_after_user_passes_verification(monkeypatch):
+    """用户过完验证后，2046 提示必须消失。
+
+    否则会出现新的误导：用户明明滑完滑块了，界面还在催"请去完成二次验证"。
+    """
+    sid = "risk4"
+
+    # 走真实的响应监听回调：模拟"验证前 2046" -> "验证后 error_code 回到 0"
+    state: dict = {}
+
+    class _Resp:
+        url = "https://www.douyin.com/passport/web/check_qrconnect/?aid=6383"
+
+        class request:
+            post_data = "token=abc123&is_new_login=1"
+
+    class _JsonResp(_Resp):
+        def __init__(self, payload):
+            self._p = payload
+
+        async def json(self):
+            return self._p
+
+    # 直接调 _attach_qr_status_listener 里那套逻辑的等价路径：用内部函数构造
+    # 一个最小 page 来挂监听，再手动喂两轮响应。
+    handlers = []
+
+    class _Page:
+        def on(self, event, cb):
+            if event == "response":
+                handlers.append(cb)
+
+    browser_qr._attach_qr_status_listener(_Page(), browser_qr._PLATFORM_CONF["douyin"], state)
+
+    # 第一轮：平台要求二次验证
+    handlers[0](_JsonResp({"data": {"status": "", "error_code": 2046,
+                                    "description": "请前往抖音APP完成验证"}}))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if state.get("qr_error_code") == 2046:
+            break
+    assert state.get("qr_error_code") == 2046, "应先记录到 2046"
+
+    # 第二轮：验证通过，平台恢复正常轮询
+    handlers[0](_JsonResp({"data": {"status": "new", "error_code": 0}}))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if "qr_error_code" not in state:
+            break
+    assert "qr_error_code" not in state, "验证通过后必须清掉过期的 2046，否则一直催用户去验证"
+    assert "qr_error_desc" not in state
+    assert state.get("qr_status") == "new"
