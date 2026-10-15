@@ -348,6 +348,48 @@ def list_models_request(provider, *, api_key: str) -> ProtocolRequest:
     )
 
 
+def balance_requests(provider, *, api_key: str) -> list[tuple[str, ProtocolRequest]]:
+    """构建「查余额」的候选请求（按顺序试第一个成功的）。
+
+    统一走 newapi 兼容的两个只读端点 —— 这也是星算自己服务端实现的对外契约
+    （见 nexai `server/relay/newapi-billing-compat.js`）：
+
+        GET /v1/dashboard/billing/subscription  → { hard_limit_usd }   总额度
+        GET /v1/dashboard/billing/usage         → { total_usage }      已用（单位：分）
+
+    余额 = hard_limit_usd - total_usage / 100。
+
+    ⚠️ 单位是照抄 newapi 约定的坑：`total_usage` 要除以 100 才是与
+    `hard_limit_usd` 同口径的金额（newapi 的 Go 实现 `amount*100` 回填）。
+    不除会算出「额度 20148 - 已用 1237902」这种负数。
+
+    只对 OpenAI 兼容协议尝试：Anthropic / Gemini 原生网关没有这套端点，
+    盲目打过去只会拿到 404，不如直接告诉调用方「该供应商不支持查余额」。
+    """
+    if _protocol(provider) != "openai":
+        return []
+    base = _root(provider.base_url)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    return [
+        ("subscription", ProtocolRequest(f"{base}/dashboard/billing/subscription", dict(headers), {}, method="GET")),
+        ("usage", ProtocolRequest(f"{base}/dashboard/billing/usage", dict(headers), {}, method="GET")),
+    ]
+
+
+def parse_balance(subscription: dict, usage: dict) -> float:
+    """按 newapi 口径算出可用余额（元）。字段缺失时按 0 处理。"""
+
+    def _num(value: object) -> float:
+        try:
+            return float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.0
+
+    limit = _num((subscription or {}).get("hard_limit_usd"))
+    used_cents = _num((usage or {}).get("total_usage"))
+    return round(limit - used_cents / 100.0, 4)
+
+
 def parse_models(protocol: str, data: dict) -> list[str]:
     """解析各协议模型清单响应，去重且保持原顺序。"""
     name = (protocol or "").strip().lower()

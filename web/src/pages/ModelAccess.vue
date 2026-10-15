@@ -249,61 +249,78 @@
       </div>
     </template>
 
-    <el-dialog v-model="addDialog" title="添加模型" width="560px" :close-on-click-modal="false" :before-close="closeAddDialog">
-      <el-steps :active="step" finish-status="success" simple style="margin-bottom: 18px">
-        <el-step title="选择供应商" />
-        <el-step title="填写访问密钥" />
-        <el-step title="选择模型" />
-      </el-steps>
-
-      <div v-if="step === 0" class="step-body">
+    <el-dialog v-model="addDialog" title="添加模型" width="720px" :close-on-click-modal="false">
+      <div class="step-body">
+        <label>供应商</label>
         <el-select v-model="providerPreset" style="width: 100%" @change="applyPreset">
           <el-option v-for="p in presets" :key="p.key" :label="p.label" :value="p.key" />
         </el-select>
         <a v-if="providerPreset === 'xingsuan'" class="xingsuan-link" :href="XINGSUAN_HOME" target="_blank" rel="noopener noreferrer">
           还没有星算AI密钥？前往官网获取 <el-icon><TopRight /></el-icon>
         </a>
-        <label>Base URL</label>
-        <el-input v-model="provider.base_url" placeholder="https://api.example.com/v1" />
-        <el-collapse v-if="providerPreset === 'custom'">
-          <el-collapse-item title="高级选项">
-            <label>默认协议（供应商默认，模型未单独设置时生效）</label>
+
+        <div class="dialog-grid">
+          <div>
+            <label>请求地址</label>
+            <el-input v-model="provider.base_url" placeholder="https://api.example.com/v1" />
+          </div>
+          <div>
+            <label>请求协议</label>
             <el-select v-model="provider.protocol" style="width: 100%">
               <el-option label="OpenAI 兼容" value="openai" />
               <el-option label="Anthropic 原生" value="anthropic" />
               <el-option label="Gemini 原生" value="gemini" />
             </el-select>
-          </el-collapse-item>
-        </el-collapse>
-      </div>
-
-      <div v-else-if="step === 1" class="step-body">
-        <label>访问密钥</label>
-        <el-input v-model="provider.api_key" type="password" show-password placeholder="只保存加密后的密文" />
-        <div class="ui-bar" style="margin-top: 12px">
-          <button class="ui-btn sm" @click="testProvider">测试连接</button>
-          <span v-if="testMessage" class="hint">{{ testMessage }}</span>
+          </div>
         </div>
-      </div>
 
-      <div v-else class="step-body">
-        <div class="ui-bar">
-          <button class="ui-btn sm" @click="discover">拉取模型清单</button>
+        <label>API Key</label>
+        <el-input v-model="provider.api_key" type="password" show-password placeholder="只保存加密后的密文" />
+
+        <div class="ui-bar" style="margin-top: 4px">
+          <button class="ui-btn sm" :disabled="discovering" @click="discover">
+            {{ availableModels.length ? '重新拉取模型' : '拉取模型' }}
+          </button>
           <span v-if="discoverMessage" class="hint">{{ discoverMessage }}</span>
         </div>
-        <el-select v-model="selectedModels" multiple filterable allow-create default-first-option placeholder="搜索或手动输入模型名" style="width: 100%; margin-top: 12px">
-          <el-option v-for="name in availableModels" :key="name" :label="name" :value="name" />
-        </el-select>
-        <el-checkbox v-model="probeVideo" style="margin-top: 12px">
-          检测视频能力（会产生极少量调用费用，将检测 {{ selectedModels.length }} 个模型）
-        </el-checkbox>
       </div>
 
+      <div class="model-picker">
+        <div class="model-picker-head">
+          <el-input v-model="modelSearch" clearable placeholder="搜索模型名" style="width: 220px" />
+          <span class="ui-badge">已勾选 {{ selectedModels.length }} / {{ availableModels.length }}</span>
+          <span class="grow" />
+          <button class="ui-btn sm ghost" :disabled="!availableModels.length" @click="selectAllModels">全选</button>
+          <button class="ui-btn sm ghost" @click="selectedModels = []">清空</button>
+        </div>
+        <div v-if="!availableModels.length" class="model-picker-empty">
+          填写请求地址与 API Key 后点「拉取模型」；也可以直接在下面手动输入模型名。
+        </div>
+        <el-checkbox-group v-else v-model="selectedModels" class="model-picker-list">
+          <label v-for="name in filteredModels" :key="name" class="model-picker-row">
+            <el-checkbox :value="name" />
+            <span class="mono model-name">{{ name }}</span>
+          </label>
+        </el-checkbox-group>
+        <div class="ui-bar" style="margin-top: 10px">
+          <el-input v-model="manualModel" placeholder="清单里没有？手动输入模型名后回车" @keyup.enter="addManualModel" />
+          <button class="ui-btn sm" @click="addManualModel">添加</button>
+        </div>
+      </div>
+
+      <el-checkbox v-model="probeVideo" style="margin-top: 12px">
+        检测视频能力（会产生极少量调用费用，将检测 {{ selectedModels.length }} 个模型）
+      </el-checkbox>
+      <p class="hint">
+        导入为「覆盖」语义：以本次勾选为准，该供应商名下未勾选的模型会被删除；
+        仍被工作分配引用的会先停用，不会静默清掉你的分配。
+      </p>
+
       <template #footer>
-        <button class="ui-btn" @click="closeAddDialog()">取消</button>
-        <button v-if="step > 0" class="ui-btn" @click="step--">上一步</button>
-        <button v-if="step < 2" class="ui-btn primary" :disabled="step === 1 && !provider.api_key" @click="nextStep">下一步</button>
-        <button v-else class="ui-btn primary" :disabled="!selectedModels.length" @click="submitImport">导入并检测</button>
+        <button class="ui-btn" @click="addDialog = false">关闭</button>
+        <button class="ui-btn primary" :disabled="!selectedModels.length || importing" @click="submitImport">
+          {{ importing ? '导入中…' : '导入' }}
+        </button>
       </template>
     </el-dialog>
 
@@ -334,6 +351,24 @@
             <div><b>{{ p.name }}</b><span class="ui-badge" :class="p.enabled ? 'ok' : 'warn'">{{ p.enabled ? '已启用' : '已停用' }}</span></div>
             <div class="mono dim">{{ p.base_url }}</div>
             <div class="hint">密钥 {{ p.has_api_key ? (p.api_key_masked || '已配置') : '未配置' }}</div>
+            <div class="provider-metrics">
+              <button
+                class="metric"
+                :title="p.balance_error ? `刷新失败：${p.balance_error}` : '点击刷新余额（手动）'"
+                @click="refreshBalance(p)"
+              >
+                <span class="metric-label">余额</span>
+                <span class="metric-value" :class="{ err: p.balance_error }">{{ fmtBalance(p) }}</span>
+              </button>
+              <button
+                class="metric"
+                :title="p.latency_error ? `测速失败：${p.latency_error}` : '点击测延迟（手动）'"
+                @click="refreshLatency(p)"
+              >
+                <span class="metric-label">延迟</span>
+                <span class="metric-value" :class="{ err: p.latency_error }">{{ fmtLatency(p) }}</span>
+              </button>
+            </div>
           </div>
           <div class="provider-actions">
             <button class="ui-btn sm" @click="editProvider(p)">编辑</button>
@@ -347,7 +382,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { StarFilled, TopRight } from '@element-plus/icons-vue'
 import { api } from '../api'
@@ -376,16 +411,16 @@ const callFilters = reactive<{ work_type: string; status: string; model_id: numb
 })
 
 const addDialog = ref(false)
-const step = ref(0)
 const providerPreset = ref('xingsuan')
 const provider = reactive({ name: '', protocol: 'openai', base_url: '', api_key: '' })
 const selectedModels = ref<string[]>([])
 const availableModels = ref<string[]>([])
+const modelSearch = ref('')
+const manualModel = ref('')
 const probeVideo = ref(true)
-const testMessage = ref('')
+const discovering = ref(false)
+const importing = ref(false)
 const discoverMessage = ref('')
-const providerSnapshot = ref('')
-const createdProviderInDialog = ref(false)
 const providerDialog = ref(false)
 const providerLoading = ref(false)
 const providers = ref<any[]>([])
@@ -684,17 +719,14 @@ async function removeProvider(row: any) {
 }
 
 function openAdd() {
-  step.value = 0
   addDialog.value = true
   providerPreset.value = 'xingsuan'
   Object.assign(provider, { name: '星算AI', protocol: 'openai', base_url: 'https://api.xsai5.xyz/v1', api_key: '' })
   selectedModels.value = []
   availableModels.value = []
-  testMessage.value = ''
+  modelSearch.value = ''
+  manualModel.value = ''
   discoverMessage.value = ''
-  providerSnapshot.value = ''
-  createdProviderInDialog.value = false
-  providerId.value = null
 }
 
 function applyPreset(key: string) {
@@ -705,95 +737,97 @@ function applyPreset(key: string) {
   provider.name = preset.key === 'xingsuan' ? '星算AI' : preset.label
 }
 
-async function ensureProvider() {
-  const fingerprint = JSON.stringify([provider.name, provider.protocol, provider.base_url, provider.api_key])
-  if (providerId.value) {
-    if (fingerprint === providerSnapshot.value) return providerId.value
-    const payload: Record<string, string> = {
-      name: provider.name,
-      protocol: provider.protocol,
-      base_url: provider.base_url,
-    }
-    if (provider.api_key) payload.api_key = provider.api_key
-    await api.patch(`/api/model-access/providers/${providerId.value}`, payload)
-    providerSnapshot.value = fingerprint
-    return providerId.value
-  }
-  if (!provider.name) provider.name = presets.find((p) => p.key === providerPreset.value)?.label || provider.base_url
-  const { data } = await api.post('/api/model-access/providers', {
-    name: provider.name,
-    preset_key: providerPreset.value,
-    protocol: provider.protocol,
-    base_url: provider.base_url,
-    api_key: provider.api_key,
-  })
-  providerId.value = data.id as number
-  providerSnapshot.value = fingerprint
-  createdProviderInDialog.value = true
-  return providerId.value
+const filteredModels = computed(() => {
+  const keyword = modelSearch.value.trim().toLowerCase()
+  if (!keyword) return availableModels.value
+  return availableModels.value.filter((name) => name.toLowerCase().includes(keyword))
+})
+
+function selectAllModels() {
+  selectedModels.value = [...filteredModels.value]
 }
 
-async function closeAddDialog(done?: () => void) {
-  if (createdProviderInDialog.value && providerId.value) {
-    try {
-      await api.delete(`/api/model-access/providers/${providerId.value}`)
-    } catch { /* 已导入模型时保留供应商，稍后可在供应商管理中处理 */ }
-  }
-  createdProviderInDialog.value = false
-  providerId.value = null
-  providerSnapshot.value = ''
-  if (done) done()
-  else addDialog.value = false
-}
-
-async function nextStep() {
-  if (step.value === 1) {
-    try {
-      await ensureProvider()
-      await discover()
-      step.value = 2
-    } catch { /* axios 已提示 */ }
-    return
-  }
-  step.value++
-}
-
-const providerId = ref<number | null>(null)
-
-async function testProvider() {
-  testMessage.value = '正在测试…'
-  try {
-    await ensureProvider()
-    const { data } = await api.post(`/api/model-access/providers/${providerId.value}/test`)
-    testMessage.value = data.message
-  } catch {
-    testMessage.value = '测试失败'
-  }
+function addManualModel() {
+  const name = manualModel.value.trim()
+  if (!name) return
+  if (!availableModels.value.includes(name)) availableModels.value = [...availableModels.value, name]
+  if (!selectedModels.value.includes(name)) selectedModels.value = [...selectedModels.value, name]
+  manualModel.value = ''
 }
 
 async function discover() {
+  if (!provider.api_key.trim()) {
+    discoverMessage.value = '请先填写 API Key'
+    return
+  }
+  discovering.value = true
   discoverMessage.value = '正在读取模型清单…'
   try {
-    await ensureProvider()
-    const { data } = await api.post(`/api/model-access/providers/${providerId.value}/discover-models`)
+    const { data } = await api.post('/api/model-access/providers/preview-models', {
+      protocol: provider.protocol,
+      base_url: provider.base_url,
+      api_key: provider.api_key,
+      name: provider.name,
+      preset_key: providerPreset.value,
+    })
     availableModels.value = data.models || []
-    discoverMessage.value = `找到 ${availableModels.value.length} 个模型，也可以手动输入`
+    selectedModels.value = selectedModels.value.filter((name) => availableModels.value.includes(name))
+    discoverMessage.value = `找到 ${availableModels.value.length} 个模型`
   } catch {
-    discoverMessage.value = '清单读取失败，可以直接手动输入模型名'
+    discoverMessage.value = '清单读取失败，可以在下面手动输入模型名'
+  } finally {
+    discovering.value = false
   }
 }
 
 async function submitImport() {
-  await ensureProvider()
-  await api.post('/api/model-access/models/import', {
-    provider_id: providerId.value,
-    models: selectedModels.value.map((model_key) => ({ model_key, display_name: model_key })),
-    probe: { text: true, image: true, video: probeVideo.value },
-  })
-  createdProviderInDialog.value = false
-  addDialog.value = false
-  await loadAll()
-  startProbePolling()
+  importing.value = true
+  try {
+    const { data } = await api.post('/api/model-access/providers/import-models', {
+      name: provider.name,
+      preset_key: providerPreset.value,
+      protocol: provider.protocol,
+      base_url: provider.base_url,
+      api_key: provider.api_key,
+      models: selectedModels.value.map((model_key) => ({ model_key, display_name: model_key })),
+      probe: { text: true, image: true, video: probeVideo.value },
+    })
+    const removed = data.removed?.length || 0
+    const kept = data.kept_in_use?.length || 0
+    let message = `已导入 ${selectedModels.value.length} 个模型`
+    if (removed) message += `，下线删除 ${removed} 个`
+    if (kept) message += `，${kept} 个仍在工作分配中已改为停用`
+    ElMessage.success(message)
+    addDialog.value = false
+    await loadAll()
+    startProbePolling()
+  } catch { /* axios 已提示 */ } finally {
+    importing.value = false
+  }
+}
+
+async function refreshBalance(row: any) {
+  try {
+    await api.post(`/api/model-access/providers/${row.id}/refresh-balance`)
+    await loadProviders()
+  } catch { /* axios 已提示 */ }
+}
+
+async function refreshLatency(row: any) {
+  try {
+    await api.post(`/api/model-access/providers/${row.id}/refresh-latency`)
+    await loadProviders()
+  } catch { /* axios 已提示 */ }
+}
+
+function fmtBalance(row: any) {
+  if (row.balance_amount === null || row.balance_amount === undefined) return '—'
+  return `¥${Number(row.balance_amount).toFixed(2)}`
+}
+
+function fmtLatency(row: any) {
+  if (row.latency_ms === null || row.latency_ms === undefined) return '—'
+  return `${row.latency_ms}ms`
 }
 
 async function probe(row: any) {
@@ -962,6 +996,24 @@ onBeforeUnmount(() => window.clearTimeout(probePollTimer))
 .provider-main > div:first-child { display: flex; align-items: center; gap: 8px; }
 .provider-main .hint { margin-top: 3px; }
 .provider-actions { display: flex; gap: 8px; flex: none; }
+.provider-metrics { display: flex; gap: 18px; margin-top: 7px; }
+.metric {
+  display: flex; align-items: baseline; gap: 6px; padding: 0; border: 0;
+  background: none; cursor: pointer; font: inherit; color: inherit;
+}
+.metric:hover .metric-value { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.metric-label { color: var(--muted); font-size: var(--fs-xs); }
+.metric-value { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--ink-2); }
+.metric-value.err { color: var(--danger, #c0392b); }
+.dialog-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; }
+.dialog-grid label { display: block; margin-bottom: 4px; }
+.model-picker { margin-top: 12px; border: 1px solid var(--line); background: var(--surface-2); }
+.model-picker-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line-soft); }
+.model-picker-empty { padding: 22px 12px; text-align: center; color: var(--muted); font-size: var(--fs-sm); }
+.model-picker-list { display: block; max-height: 260px; overflow: auto; padding: 6px 0; }
+.model-picker-row { display: flex; align-items: center; gap: 8px; padding: 3px 12px; cursor: pointer; }
+.model-picker-row:hover { background: var(--surface); }
+.model-name { overflow-wrap: anywhere; }
 @media (max-width: 900px) {
   .xingsuan-strip { grid-template-columns: auto minmax(0, 1fr); }
   .xingsuan-actions { grid-column: 2; justify-content: space-between; }

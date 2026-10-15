@@ -550,6 +550,14 @@ class AiProvider(Base):
     last_test_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_test_status: Mapped[str] = mapped_column(String(16), default="")
     last_test_error: Mapped[str] = mapped_column(Text, default="")
+    # 余额与延迟：都只做**手动刷新**（点数字才打一次网），平时展示上次结果。
+    # 可空 = 从未刷新过，前端显示「—」；0 会被误读成真实值，所以不用 0 兜底。
+    balance_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    balance_error: Mapped[str] = mapped_column(String(200), default="")
+    balance_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_error: Mapped[str] = mapped_column(String(200), default="")
+    latency_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

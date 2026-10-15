@@ -68,6 +68,33 @@ class ModelImportBody(BaseModel):
     probe: ProbeSpec = Field(default_factory=ProbeSpec)
 
 
+class ProviderImportBody(BaseModel):
+    """一步式「填地址+密钥 → 勾模型 → 导入」。
+
+    供应商按 base_url 认领（同地址视为同一个供应商，更新其密钥/协议），
+    避免用户每点一次导入就多出一个重复供应商。
+    """
+
+    protocol: str = "openai"
+    base_url: str
+    api_key: str = ""
+    name: str = ""
+    preset_key: str = "custom"
+    provider_id: int | None = None
+    models: list[ModelImportItem]
+    probe: ProbeSpec = Field(default_factory=ProbeSpec)
+
+
+class PreviewModelsBody(BaseModel):
+    protocol: str = "openai"
+    base_url: str
+    api_key: str = ""
+    provider_id: int | None = None
+    # 仅用于给临时探测对象起名/记预设，不落库。
+    name: str = ""
+    preset_key: str = "custom"
+
+
 class ModelPatch(BaseModel):
     display_name: str | None = None
     enabled: bool | None = None
@@ -124,6 +151,13 @@ def _mask_provider(row: AiProvider) -> dict:
         "last_test_status": row.last_test_status,
         "last_test_at": row.last_test_at.isoformat() if row.last_test_at else None,
         "last_test_error": row.last_test_error,
+        # 余额与延迟：只做手动刷新，展示上次结果。null = 从未刷新过（前端显示「—」）。
+        "balance_amount": row.balance_amount,
+        "balance_error": row.balance_error,
+        "balance_updated_at": row.balance_updated_at.isoformat() if row.balance_updated_at else None,
+        "latency_ms": row.latency_ms,
+        "latency_error": row.latency_error,
+        "latency_updated_at": row.latency_updated_at.isoformat() if row.latency_updated_at else None,
     }
 
 
@@ -372,6 +406,191 @@ async def discover_models(
         raise HTTPException(status_code=502, detail=f"无法读取模型清单: {safe}") from exc
 
 
+@router.post("/providers/{provider_id}/refresh-balance")
+async def refresh_balance(
+    provider_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(_sensitive("operate")),
+):
+    """手动刷新供应商余额（星算等 OpenAI 兼容网关）。
+
+    只读、只手动——前端点数字才触发一次，结果落库供下次直接展示。
+    网关不提供这两个端点时如实回写错误，不猜数字。
+    """
+    started = time.time()
+    row = db.get(AiProvider, provider_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="供应商不存在")
+    key = ""
+    try:
+        key = str(crypto.decrypt_credential(row.api_key_encrypted or "").get("api_key") or "")
+    except Exception:  # noqa: BLE001 旧密文/换钥不可读时给出可读错误
+        row.balance_error = "访问密钥无法解密，请重新填写"
+        row.balance_updated_at = datetime.utcnow()
+        db.commit()
+        _api_log(db, actor, "model_access.refresh_balance", "error", started)
+        return _mask_provider(row)
+
+    requests = model_protocols.balance_requests(row, api_key=key)
+    if not requests:
+        row.balance_error = "该协议不支持查询余额"
+        row.balance_updated_at = datetime.utcnow()
+        db.commit()
+        _api_log(db, actor, "model_access.refresh_balance", "error", started)
+        return _mask_provider(row)
+
+    try:
+        payloads: dict[str, dict] = {}
+        for kind, request in requests:
+            payloads[kind] = await model_protocols.send_request(request, timeout=15)
+        row.balance_amount = model_protocols.parse_balance(
+            payloads.get("subscription", {}), payloads.get("usage", {})
+        )
+        row.balance_error = ""
+    except Exception as exc:  # noqa: BLE001 查询失败要回写供 UI 展示
+        row.balance_error = crypto.redact_text(str(exc), extra_secrets=(key,))[:200]
+    row.balance_updated_at = datetime.utcnow()
+    db.commit()
+    _api_log(db, actor, "model_access.refresh_balance", "ok", started)
+    return _mask_provider(row)
+
+
+@router.post("/providers/{provider_id}/refresh-latency")
+async def refresh_latency(
+    provider_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(_sensitive("operate")),
+):
+    """手动测一次供应商连通延迟（就是「拉模型清单」那一跳的耗时）。
+
+    复用 list_models_request：它是最轻、最不产生计费的读取型调用，
+    拿来量网络往返最合适；同时顺带验证密钥可用。
+    """
+    started = time.time()
+    row = db.get(AiProvider, provider_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="供应商不存在")
+    key = ""
+    try:
+        key = str(crypto.decrypt_credential(row.api_key_encrypted or "").get("api_key") or "")
+        request = model_protocols.list_models_request(row, api_key=key)
+        t0 = time.perf_counter()
+        await model_protocols.send_request(request, timeout=20)
+        row.latency_ms = int((time.perf_counter() - t0) * 1000)
+        row.latency_error = ""
+    except Exception as exc:  # noqa: BLE001 测速失败要回写供 UI 展示
+        row.latency_ms = None
+        row.latency_error = crypto.redact_text(str(exc), extra_secrets=(key,))[:200]
+    row.latency_updated_at = datetime.utcnow()
+    db.commit()
+    _api_log(db, actor, "model_access.refresh_latency", "ok", started)
+    return _mask_provider(row)
+
+
+@router.post("/providers/preview-models")
+async def preview_models(
+    body: PreviewModelsBody,
+    db: Session = Depends(get_db),
+    actor=Depends(_sensitive("operate")),
+):
+    """按「地址 + 密钥 + 协议」临时拉一次模型清单——**不落库、不建供应商**。
+
+    单页弹窗要先让用户看到并勾选模型，此时还没有供应商实体；用这个端点
+    试连并把清单拿回来。密钥优先用请求里填的，没填则回退到已有供应商的密文
+    （编辑场景：用户不改密钥就重新拉一次）。
+    """
+    started = time.time()
+    key = body.api_key.strip()
+    if not key and body.provider_id is not None:
+        existing = db.get(AiProvider, body.provider_id)
+        if existing is not None:
+            try:
+                key = str(crypto.decrypt_credential(existing.api_key_encrypted or "").get("api_key") or "")
+            except Exception:  # noqa: BLE001 旧密文不可读时按「没填密钥」处理
+                key = ""
+    if not key:
+        raise HTTPException(status_code=422, detail="请先填写访问密钥")
+    protocol, base_url = _validate_provider_fields(body.protocol, body.base_url)
+    probe_row = AiProvider(
+        name=body.name.strip() or "preview",
+        preset_key=body.preset_key.strip() or "custom",
+        protocol=protocol,
+        base_url=base_url,
+        credential_source="api_key",
+        api_key_encrypted="",
+        config_revision=1,
+        enabled=True,
+    )
+    try:
+        data = await model_protocols.send_request(
+            model_protocols.list_models_request(probe_row, api_key=key), timeout=30
+        )
+        names = model_protocols.parse_models(protocol, data)
+    except Exception as exc:  # noqa: BLE001 清单失败允许前端手输
+        _api_log(db, actor, "model_access.preview_models", "error", started)
+        safe = crypto.redact_text(str(exc), extra_secrets=(key,))
+        raise HTTPException(status_code=502, detail=f"无法读取模型清单: {safe}") from exc
+    _api_log(db, actor, "model_access.preview_models", "ok", started)
+    return {"models": names}
+
+
+@router.post("/providers/import-models")
+def provider_import_models(
+    body: ProviderImportBody,
+    db: Session = Depends(get_db),
+    actor=Depends(_sensitive("operate")),
+):
+    """一步式导入：认领/更新供应商，然后按勾选**覆盖**它的模型清单。
+
+    与 ``/models/import`` 同一套覆盖语义（勾选之外的模型下线删除，仍被工作
+    分配引用的改为停用）。区别只在于供应商可以在这里顺带创建/更新密钥。
+    """
+    started = time.time()
+    protocol, base_url = _validate_provider_fields(body.protocol, body.base_url)
+
+    provider = db.get(AiProvider, body.provider_id) if body.provider_id else None
+    if provider is None:
+        provider = db.scalar(select(AiProvider).where(AiProvider.base_url == base_url))
+    if provider is None:
+        if not body.api_key.strip():
+            raise HTTPException(status_code=422, detail="访问密钥不能为空")
+        provider = AiProvider(
+            name=(body.name.strip() or base_url),
+            preset_key=body.preset_key.strip() or "custom",
+            protocol=protocol,
+            base_url=base_url,
+            credential_source="api_key",
+            api_key_encrypted=crypto.encrypt_credential({"api_key": body.api_key.strip()}),
+            config_revision=1,
+            enabled=True,
+        )
+        db.add(provider)
+        db.flush()
+    else:
+        changed = False
+        if body.name.strip() and body.name.strip() != provider.name:
+            provider.name = body.name.strip()
+        if protocol != provider.protocol:
+            provider.protocol = protocol
+            changed = True
+        if base_url != provider.base_url:
+            provider.base_url = base_url
+            changed = True
+        if body.api_key.strip():
+            provider.api_key_encrypted = crypto.encrypt_credential({"api_key": body.api_key.strip()})
+            changed = True
+        if changed:
+            provider.config_revision = int(provider.config_revision or 1) + 1
+    db.flush()
+
+    result = import_models(
+        ModelImportBody(provider_id=provider.id, models=body.models, probe=body.probe), db, actor
+    )
+    db.commit()
+    _api_log(db, actor, "model_access.provider_import_models", "ok", started)
+    return {"provider": _mask_provider(provider), **result}
+
+
 # ---------------- 模型 ----------------
 @router.get("/models")
 def list_models(
@@ -402,29 +621,67 @@ def import_models(
     provider = db.get(AiProvider, body.provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail="供应商不存在")
-    created: list[AiModel] = []
+    # 覆盖式导入：以本次勾选为准，该供应商名下**不在勾选内**的模型一律删除。
+    # 场景是「供应商下线了某些模型」——旧行为只增不减，会把已下线的模型永远留在
+    # 库里、还在工作分配里被选中，调用时才失败。
+    wanted: list[str] = []
     for item in body.models:
         model_key = item.model_key.strip()
-        if not model_key:
-            continue
-        existing = db.scalar(
-            select(AiModel).where(
-                AiModel.provider_id == provider.id, AiModel.model_key == model_key
-            )
+        if model_key and model_key not in wanted:
+            wanted.append(model_key)
+    wanted_set = set(wanted)
+
+    existing_rows = db.scalars(
+        select(AiModel).where(AiModel.provider_id == provider.id)
+    ).all()
+    by_key = {row.model_key: row for row in existing_rows}
+    removed = [row for row in existing_rows if row.model_key not in wanted_set]
+
+    # 仍被工作分配引用的模型不能直接删（外键 SET NULL 会静默清空分配，
+    # 让用户在不知情的情况下失去主/备模型）。改为停用并保留，由用户在
+    # 「已导入模型」里显式处理；其余（未被引用的）真删除。
+    removed_ids = [row.id for row in removed]
+    referenced: set[int] = set()
+    if removed_ids:
+        referenced = set(
+            db.scalars(
+                select(ModelAssignment.primary_model_id).where(
+                    ModelAssignment.primary_model_id.in_(removed_ids)
+                )
+            ).all()
+        ) | set(
+            db.scalars(
+                select(ModelAssignment.fallback_model_id).where(
+                    ModelAssignment.fallback_model_id.in_(removed_ids)
+                )
+            ).all()
         )
-        if existing is not None:
-            created.append(existing)
+        referenced.discard(None)
+
+    created: list[AiModel] = []
+    for model_key in wanted:
+        row = by_key.get(model_key)
+        if row is not None:
+            created.append(row)
             continue
         row = AiModel(
             provider_id=provider.id,
             model_key=model_key,
-            display_name=item.display_name.strip() or model_key,
+            display_name=model_key,
             import_source="discovered",
             capabilities={},
         )
         db.add(row)
         db.flush()
         created.append(row)
+
+    kept_in_use: list[str] = []
+    for row in removed:
+        if row.id in referenced:
+            row.enabled = False
+            kept_in_use.append(row.model_key)
+        else:
+            db.delete(row)
     db.commit()
     if any(body.probe.model_dump().values()):
         for row in created:
@@ -432,6 +689,8 @@ def import_models(
     _api_log(db, actor, "model_access.import_models", "ok", started)
     return {
         "models": [_model_payload(db, row) for row in created],
+        "removed": [row.model_key for row in removed if row.id not in referenced],
+        "kept_in_use": kept_in_use,
         "probe_requested": body.probe.model_dump(),
     }
 
