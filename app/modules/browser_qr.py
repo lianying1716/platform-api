@@ -480,6 +480,17 @@ def _attach_qr_status_listener(page, conf: dict, state: dict) -> None:
             data = await resp.json()
         except Exception:  # noqa: BLE001 非 JSON/已关闭，忽略
             return
+        # 记下页面自己轮询用的 token（来自请求体）——与"二维码里的 token"比对，
+        # 能直接暴露"手机确认的是旧 token、页面却在轮询新 token"这类错位。
+        try:
+            body = resp.request.post_data or ""
+            for part in body.split("&"):
+                if part.startswith("token="):
+                    state.setdefault("poll_tokens", [])
+                    state["poll_tokens"].append(part.split("=", 1)[1][:12])
+                    break
+        except Exception:  # noqa: BLE001
+            pass
         inner = (data or {}).get("data") or {}
         st = inner.get("status")
         if st:
@@ -597,23 +608,33 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
         # 页面已经在轮询新 token，就只会一直回 new —— 这正是"扫了没反应"的形态。
         # 另外把 cookie 全名与 localStorage 全键也记上，避免"信号存在但没被识别"。
         _rotated = bool(st.get("dbg_last_page_hash")) and st.get("dbg_last_page_hash") != page_hash
+        _seen = st.get("qr_seen_at")
+        _age = (time.time() - _seen) if _seen else -1
+        # 心跳：每 30s 至少记一条，用来区分「页面还在轮询但抖音不回 confirmed」
+        # 与「页面自己停了轮询」——只看状态变化日志分不出这两者。
+        _hb = (time.time() - st.get("dbg_last_beat", 0)) > 30
         if (
             st.get("qr_status") != st.get("dbg_last_status")
             or _rotated
+            or _hb
             or st.get("dbg_logged", 0) == 0
         ):
             st["dbg_logged"] = st.get("dbg_logged", 0) + 1
             st["dbg_last_status"] = st.get("qr_status")
             st["dbg_last_page_hash"] = page_hash
+            st["dbg_last_beat"] = time.time()
             conf_c = _PLATFORM_CONF.get(platform, {})
-            _seen = st.get("qr_seen_at")
+            _toks = st.get("poll_tokens") or []
             logger.info(
-                "qr_poll[%s] status=%s age=%.0fs raw=%s url=%s cookie_names=%s ls_keys=%s "
-                "login_cookies_hit=%s page_hash=%s shown_hash=%s",
+                "qr_poll[%s] status=%s age=%.0fs polls=%d raw=%s poll_tokens=%s "
+                "url=%s cookie_names=%s ls_keys=%s login_cookies_hit=%s "
+                "page_hash=%s shown_hash=%s",
                 platform,
                 st.get("qr_status", ""),
-                (time.time() - _seen) if _seen else -1,
+                _age,
+                len(_toks),
                 st.get("qr_raw", {}),
+                sorted(set(_toks))[-3:],
                 (page.url or "")[:70],
                 sorted(cookie_map.keys()),
                 sorted(local_storage.keys())[:20],
