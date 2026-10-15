@@ -94,3 +94,70 @@ async def test_poll_unknown_session_expires():
     """不存在的会话立刻返回 expired（不触碰浏览器）。"""
     poll = await browser_qr.browser_qr_poll("zhihu", {"browser_session": "nope"})
     assert poll.status == "expired"
+
+
+# ---------- 引擎选择：Mac 用真实浏览器，NAS 必须照旧 ----------
+# 背景：抖音对无头/自动化特征敏感。无头 Chromium 得靠 stealth 把 webdriver 抹成 false、
+# 伪造 plugins、并把 UA 谎称成 "Windows Chrome 126"（真实环境其实是 macOS 无头）——
+# 这组自相矛盾本身就是风控特征。真实 Chrome 有头模式天然自洽（实测 Mac 上
+# webdriver=false / plugins=5 / UA=真实 Chrome 155）。
+# 硬约束：NAS 是无桌面的 Docker 容器（有 Xvfb、没有 Chrome），必须继续走无头 Chromium。
+
+
+def test_nas_container_falls_back_to_chromium(monkeypatch):
+    """NAS 场景：容器里没有真实 Chrome、也没有桌面 -> 必须落回 chromium。
+
+    这条是本次改动最关键的回归：Mac 上的改进绝不能改变 NAS 的行为。
+    """
+    monkeypatch.setattr(browser_qr, "_find_real_browser", lambda: None)
+    monkeypatch.setattr(browser_qr, "_can_open_window", lambda: False)
+    monkeypatch.setattr(browser_qr.settings, "qr_browser_engine", "auto", raising=False)
+    assert browser_qr._resolve_engine({}) == "chromium"
+
+
+def test_mac_desktop_uses_real_chrome(monkeypatch):
+    """Mac 场景：有真实 Chrome + 有桌面 -> 用 chrome（有头真实浏览器）。"""
+    monkeypatch.setattr(browser_qr, "_find_real_browser", lambda: "/Applications/Google Chrome.app/...")
+    monkeypatch.setattr(browser_qr, "_can_open_window", lambda: True)
+    monkeypatch.setattr(browser_qr.settings, "qr_browser_engine", "auto", raising=False)
+    assert browser_qr._resolve_engine({}) == "chrome"
+
+
+def test_explicit_chromium_always_wins(monkeypatch):
+    """显式关掉真实浏览器时必须听配置（排障/回滚用）。"""
+    monkeypatch.setattr(browser_qr, "_find_real_browser", lambda: "/Applications/Google Chrome.app/...")
+    monkeypatch.setattr(browser_qr, "_can_open_window", lambda: True)
+    monkeypatch.setattr(browser_qr.settings, "qr_browser_engine", "chromium", raising=False)
+    assert browser_qr._resolve_engine({}) == "chromium"
+
+
+def test_chrome_requested_without_desktop_degrades(monkeypatch):
+    """配了 chrome 但没桌面（如容器）：降级而不是硬报错，扫码仍可用。"""
+    monkeypatch.setattr(browser_qr, "_find_real_browser", lambda: "/usr/bin/google-chrome")
+    monkeypatch.setattr(browser_qr, "_can_open_window", lambda: False)
+    monkeypatch.setattr(browser_qr.settings, "qr_browser_engine", "chrome", raising=False)
+    assert browser_qr._resolve_engine({}) == "chromium"
+
+
+def test_chrome_requested_without_binary_degrades(monkeypatch):
+    """配了 chrome 但机器上没装：降级，别让用户彻底没法登录。"""
+    monkeypatch.setattr(browser_qr, "_find_real_browser", lambda: None)
+    monkeypatch.setattr(browser_qr, "_can_open_window", lambda: True)
+    monkeypatch.setattr(browser_qr.settings, "qr_browser_engine", "chrome", raising=False)
+    assert browser_qr._resolve_engine({}) == "chromium"
+
+
+def test_real_browser_probe_finds_nothing_in_container():
+    """容器里不该误判出真实 Chrome（用不存在的路径清单验证探测逻辑本身）。"""
+    import os
+    import sys as _sys
+
+    real_exists = os.path.isfile
+    try:
+        os.path.isfile = lambda p: False  # 模拟干净容器
+        assert browser_qr._find_real_browser() is None
+    finally:
+        os.path.isfile = real_exists
+    # 探测清单必须覆盖三个平台，否则某平台会静默永远走 chromium
+    for plat in ("darwin", "win32", "linux"):
+        assert browser_qr._REAL_BROWSER_PATHS.get(plat), f"{plat} 缺少真实浏览器探测路径"

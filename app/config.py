@@ -46,6 +46,21 @@ class Settings(BaseSettings):
     # 扫码会话有效期（秒）。抖音扫码后常有"手机上二次确认"步骤，180s 偏紧，
     # 用户还没点确认就超时了，所以给到 5 分钟。
     qr_session_ttl: int = 300
+    # 扫码用哪个浏览器引擎（抖音风控敏感，实测差异很大）：
+    #   "auto"（默认）—— 有真实 Chrome 且能开图形界面时用它（有头），否则退回
+    #                    Playwright 自带 Chromium（无头 + 指纹伪装）。
+    #   "chrome"      —— 强制真实 Chrome（须已安装；无图形界面时会自动降级或报错）
+    #   "chromium"    —— 强制 Playwright Chromium（NAS/容器等无桌面环境走这条）
+    #
+    # 背景（Mac 真机实测）：无头 Chromium 得靠 stealth 把 navigator.webdriver 抹成
+    # false、伪造 plugins、并把 UA 谎称成 "Windows Chrome 126"——而真实环境是
+    # macOS 无头，这组矛盾本身就是风控特征。真实 Chrome 有头模式天然
+    # webdriver=false / plugins=5 / UA 与系统一致，抖音侧明显更顺。
+    # NAS 是无桌面的 Docker 容器（只有 Xvfb、没有 Chrome），必须继续走 chromium。
+    qr_browser_engine: str = "auto"
+    # 真实 Chrome 的持久化用户目录（登录态/指纹留存在此，跨会话复用）。
+    # 空 = data_dir/qr-chrome-profile。只有走 chrome 引擎时才用得到。
+    qr_chrome_profile_dir: Path | None = None
     # worker 并发槽数（下载/转录重活，单机几十条/天，低并发即可）
     worker_concurrency: int = 2
     # 连续下载之间的最小间隔（秒）。抖音/CDN 对密集直链请求敏感，批量同步会一次入队

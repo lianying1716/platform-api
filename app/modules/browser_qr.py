@@ -124,6 +124,88 @@ class BrowserQrUnavailable(RuntimeError):
     pass
 
 
+# 真实 Chrome/Edge 的常见安装位置（Windows/macOS/Linux 三平台）。
+# 只做"路径探测"，不引入 CDP 依赖：我们用自己的 Playwright 启动真实浏览器。
+_REAL_BROWSER_PATHS = {
+    "darwin": [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+        "/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev",
+        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ],
+    "win32": [
+        r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe",
+        r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe",
+        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+        r"%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe",
+        r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe",
+    ],
+    "linux": [
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/microsoft-edge",
+        "/usr/bin/microsoft-edge-stable",
+    ],
+}
+
+
+def _find_real_browser() -> str | None:
+    """找本机真实安装的 Chrome/Edge；找不到返回 None（容器里通常就是 None）。
+
+    NAS 的 Docker 镜像只装了 Playwright 自带的 Chromium，没有系统级 Chrome，
+    这里会返回 None，于是自动落回无头 Chromium —— 这正是「改 Mac 不能弄坏 NAS」的关键。
+    """
+    for raw in _REAL_BROWSER_PATHS.get(sys.platform, []):
+        candidate = os.path.expandvars(raw)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _can_open_window() -> bool:
+    """当前进程能不能真的弹出一个窗口。
+
+    macOS / Windows 由系统窗口服务提供；Linux 需要 DISPLAY（真桌面）或我们自己起的
+    Xvfb。容器里没有 DISPLAY 也没有 Xvfb 时会返回 False，调用方据此降级。
+    """
+    if sys.platform in ("darwin", "win32"):
+        return True
+    return bool(os.environ.get("DISPLAY")) or shutil.which("Xvfb") is not None
+
+
+def _resolve_engine(conf: dict) -> str:
+    """决定本次扫码用哪个引擎，返回 "chrome" 或 "chromium"。
+
+    规则（严格保证 NAS 不受影响）：
+      - 显式配置优先：qr_browser_engine = chrome / chromium 时就用它（chrome 不可用时
+        降级并在日志里说明，不报错中断扫码）。
+      - auto：**只有**本机有真实 Chrome **且**能开窗口时才用 chrome，否则 chromium。
+        NAS 容器两条都不满足，永远走 chromium，行为与改动前完全一致。
+    """
+    want = (settings.qr_browser_engine or "auto").strip().lower()
+    if want == "chromium":
+        return "chromium"
+    has_browser = _find_real_browser() is not None
+    can_window = _can_open_window()
+    if want == "chrome":
+        if not has_browser:
+            logger.warning("qr_browser_engine=chrome 但未找到真实 Chrome，降级为 chromium")
+            return "chromium"
+        if not can_window:
+            # 有 Chrome 但没桌面：无头跑真实 Chrome 反而比自带 Chromium 更显眼，
+            # 直接降级，避免"配置写了 chrome 结果更糟"。
+            logger.warning("qr_browser_engine=chrome 但没有可用图形界面，降级为 chromium")
+            return "chromium"
+        return "chrome"
+    # auto
+    if has_browser and can_window:
+        return "chrome"
+    return "chromium"
+
+
 def _cookie_hit(cookie_map: dict, rules: list[dict]) -> bool:
     """cookie 规则：命中任一即算（value 未声明时只要存在即可）。"""
     for rule in rules:
@@ -235,13 +317,21 @@ async def _close(session_id: str) -> None:
     sess = _live.pop(session_id, None)
     if not sess:
         return
-    for key in ("browser", "pw"):
+    # 真实浏览器走的是 persistent context（没有独立 browser 对象），
+    # 必须显式关 context，否则 Chrome 进程会残留、下次启动还会撞 profile 锁。
+    for key in ("context", "browser", "pw"):
         try:
             obj = sess.get(key)
             if obj is None:
                 continue
-            await (obj.close() if key == "browser" else obj.stop())
+            await (obj.close() if key in ("browser", "context") else obj.stop())
         except Exception:
+            pass
+    # 一次性 profile 目录回收；共享 profile 保留（登录态/设备指纹在里面）。
+    if sess.get("temp_profile") and sess.get("user_data_dir"):
+        try:
+            shutil.rmtree(sess["user_data_dir"], ignore_errors=True)
+        except Exception:  # noqa: BLE001
             pass
     await _stop_xvfb(sess)
 
@@ -378,8 +468,27 @@ async def browser_qr_start(platform: str) -> QrStart:
             # 只注入本次 Chromium 启动的环境，不改全局 os.environ（避免并发扫码串扰）。
             launch_env = {**os.environ, "DISPLAY": display}
 
-    headless = not needs_display
+    # 引擎选择：Mac/Win 有真实 Chrome + 桌面时走"真实浏览器有头"（反检测最好，
+    # 实测 webdriver=false / plugins=5 / UA 与系统自洽）；NAS 容器两者都不满足，
+    # 永远落回下面的无头 Chromium，行为与本次改动前完全一致。
+    engine = _resolve_engine(conf)
+    if engine == "chrome":
+        # 真实浏览器要"看得见"才有意义：抖音对无头/自动化的判定主要靠窗口与渲染特征。
+        headless = False
+        if sys.platform == "linux" and not os.environ.get("DISPLAY") and xvfb_proc is None:
+            xvfb_proc, display = _start_xvfb()
+            if display:
+                launch_env = {**os.environ, "DISPLAY": display}
+    else:
+        headless = not needs_display
+    logger.info("qr_login[%s] 使用引擎 %s（headless=%s）", platform, engine, headless)
+
     pw = await async_playwright().start()
+    # 先绑定，保证异常分支里引用它们一定安全（真实浏览器路线要用来关 context）。
+    browser = None
+    context = None
+    user_data_dir = None
+    throwaway = None
     try:
         launch_kwargs = {
             "headless": headless,
@@ -395,30 +504,79 @@ async def browser_qr_start(platform: str) -> QrStart:
         proxy = outbound.proxy_for(platform)
         if proxy:
             launch_kwargs["proxy"] = {"server": proxy}
-        browser = await pw.chromium.launch(
-            **launch_kwargs,
-        )
-        context = await browser.new_context(
-            user_agent=_UA,
-            viewport={"width": 1400, "height": 900},
-            locale="zh-CN",
-            # UA 声明的是中国 Windows 用户，时区/语言必须跟着一致：UA 说 Windows、
-            # 时区却是 UTC、语言只有 en-US —— 这是风控最典型的"非真人"指纹组合。
-            timezone_id="Asia/Shanghai",
-            extra_http_headers={"Accept-Language": "zh-CN,zh;q=0.9"},
-        )
-        try:
-            from playwright_stealth import Stealth
+        if engine == "chrome":
+            launch_kwargs["channel"] = "chrome"
+            # 持久化 profile：登录态/设备指纹跨会话留存，是真实浏览器路线的关键收益——
+            # 同一设备反复登录会被平台当成老用户，而不是每次都像新装机器。
+            shared_profile = settings.qr_chrome_profile_dir or (settings.data_dir / "qr-chrome-profile")
+            # 同一个 profile 目录同时只能被一个 Chrome 占用。并发扫码（或上次异常退出
+            # 留下锁）会让共享目录启动失败；这时退到一次性目录——仍然是真实 Chrome
+            # （反检测收益保留），只是不带跨会话状态，远好过直接掉回无头 Chromium。
+            import tempfile as _tempfile
 
-            await Stealth().apply_stealth_async(context)
-        except ImportError:
-            # 反检测是增强项：没装 browser extra 时仍可继续扫码流程。
-            pass
-        # ⚠️ stealth 会把 navigator.languages 覆盖成 ["en-US","en"]（实测），把一个
-        # "中文 Windows 用户"变成"英文 Windows 用户"——与 UA/时区矛盾，反而更像机器人。
-        # 在 stealth 之后纠正回来，并补齐无头环境缺失的指纹（deviceMemory 为 null、
-        # 插件为空等，都是无头特征）。
-        await _apply_consistent_fingerprint(context)
+            # 第二候选：一次性临时目录（每次全新，绝无锁冲突）。
+            throwaway = _tempfile.mkdtemp(prefix="qr-chrome-")
+            candidates = [str(shared_profile), throwaway]
+            for idx, candidate in enumerate(candidates):
+                try:
+                    Path(candidate).mkdir(parents=True, exist_ok=True)
+                except Exception:  # noqa: BLE001 建不出来就换下一个候选
+                    continue
+                try:
+                    context = await pw.chromium.launch_persistent_context(
+                        user_data_dir=candidate, **launch_kwargs
+                    )
+                    user_data_dir = candidate
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    level = logger.warning if idx == len(candidates) - 1 else logger.info
+                    level(
+                        "真实 Chrome 启动失败（profile=%s）：%s",
+                        candidate,
+                        str(exc)[:110],
+                    )
+            if context is None:
+                # 真实 Chrome 彻底起不来：降级 Chromium，别让用户没法登录。
+                logger.warning("真实 Chrome 均启动失败，降级为 chromium")
+                engine = "chromium"
+                headless = not needs_display
+                launch_kwargs.pop("channel", None)
+                user_data_dir = None
+        if context is None:
+            # 无头 Chromium 路线（NAS 走这条）：先起浏览器，再建一个可定制指纹的 context。
+            browser = await pw.chromium.launch(**launch_kwargs)
+            context = await browser.new_context(
+                user_agent=_UA,
+                viewport={"width": 1400, "height": 900},
+                locale="zh-CN",
+                # UA 声明的是中国 Windows 用户，时区/语言必须跟着一致：UA 说 Windows、
+                # 时区却是 UTC、语言只有 en-US —— 这是风控最典型的"非真人"指纹组合。
+                timezone_id="Asia/Shanghai",
+                extra_http_headers={"Accept-Language": "zh-CN,zh;q=0.9"},
+            )
+            try:
+                from playwright_stealth import Stealth
+
+                await Stealth().apply_stealth_async(context)
+            except ImportError:
+                # 反检测是增强项：没装 browser extra 时仍可继续扫码流程。
+                pass
+            # ⚠️ stealth 会把 navigator.languages 覆盖成 ["en-US","en"]（实测），把一个
+            # "中文 Windows 用户"变成"英文 Windows 用户"——与 UA/时区矛盾，反而更像机器人。
+            # 在 stealth 之后纠正回来，并补齐无头环境缺失的指纹（deviceMemory 为 null、
+            # 插件为空等，都是无头特征）。
+            await _apply_consistent_fingerprint(context)
+        else:
+            # 真实浏览器路线：**不要**覆盖 UA，也**不要**注入指纹/stealth。
+            # 它的原生特征（webdriver=false、真实 plugins、与系统一致的 UA）本身就是
+            # 最好的伪装；拿脚本去改反而会制造出新的矛盾（实测 plugins 5 -> 伪造 3）。
+            logger.info("真实浏览器已就绪，保留原生指纹（不注入 UA / stealth）")
+            try:
+                await context.add_init_script(
+                    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
+                )
+            except Exception:  # noqa: BLE001 增强项，失败不影响
+                pass
         page = await context.new_page()
         await page.goto(conf["url"], wait_until="domcontentloaded", timeout=30_000)
 
@@ -462,6 +620,10 @@ async def browser_qr_start(platform: str) -> QrStart:
             "created": time.time(),
             "xvfb": xvfb_proc,
             "state": state,
+            "engine": engine,
+            "user_data_dir": user_data_dir,
+            # 一次性 profile 目录用完要删；共享 profile 必须留着（登录态在里面）。
+            "temp_profile": bool(throwaway and user_data_dir == throwaway),
         }
         _attach_qr_status_listener(page, conf, state)
         # 单张码寿命：抖音登录页的码只活 59s 就自动换新（实测）。前端倒计时按它走，
@@ -473,10 +635,22 @@ async def browser_qr_start(platform: str) -> QrStart:
             qr_image_expires_in=int(ttl) if ttl else None,
         )
     except BrowserQrUnavailable:
+        # 真实浏览器路线下 context 是自己起的，异常退出也要关掉，别留下 Chrome 进程
+        # 和 profile 锁（下次启动会直接失败）。
+        if context is not None:
+            try:
+                await context.close()
+            except Exception:  # noqa: BLE001
+                pass
         if xvfb_proc is not None:
             await _stop_xvfb({"xvfb": xvfb_proc})
         raise
     except Exception:
+        if context is not None:
+            try:
+                await context.close()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             await pw.stop()
         except Exception:
