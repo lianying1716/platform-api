@@ -26,9 +26,9 @@
 
 <!-- GitHub 只对 user-attachments 资源渲染内嵌播放器：指向 raw.githubusercontent 的
      <video> 会被过滤掉，点开只会下载文件。 -->
-<video src="https://github.com/user-attachments/assets/b1712f76-5b14-494a-a576-aaf10b782687" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/74c0f1e5-51b7-445c-a19e-fc190a4a0ac0" controls width="100%"></video>
 
-<sub>约 60 秒（默认静音，点播放器右下角开声音）· [1080p 全片](https://github.com/user-attachments/assets/b0172e09-dea4-41a9-bf11-cf9ed5f0d67e) · [封面帧](https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-poster.jpg) · [接触表](https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-contact-sheet.jpg)</sub>
+<sub>约 60 秒（默认静音，点播放器右下角开声音）· [1080p 全片](https://github.com/user-attachments/assets/c530eae8-9e23-4acf-8b7b-1d1b5776fe3e) · [封面帧](https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-poster.jpg) · [接触表](https://raw.githubusercontent.com/lianying1716/platform-api/assets/promo/stargather-promo-v9-contact-sheet.jpg)</sub>
 
 </div>
 
