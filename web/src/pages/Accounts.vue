@@ -221,7 +221,12 @@ const qrStatus = ref('pending')
 const qrBlocked = ref(false)
 let pollTimer: number | undefined
 let pollErrors = 0
-// 二维码倒计时：后端 qr_session_ttl（默认 300s）为准，前端只负责展示。
+// 当前正在轮询的会话 id。轮询回调靠它丢弃"上一轮会话"的迟到响应——
+// 否则用户点两次「获取二维码」后，旧会话的定时器会把「会话不存在或已过期」
+// 写回同一个界面，盖掉正在正常推进的新会话（真机：扫了、确认了，界面却报会话不存在）。
+let activeSessionId = ''
+// 二维码倒计时。**展示的是屏幕上那张码的寿命**，不是会话总时长：后端换码时随新图
+// 回传 qr_image_expires_in（抖音实测 ~59s），拿不到才退回会话 TTL。
 const qrRemaining = ref(0)
 let countdownTimer: number | undefined
 
@@ -335,6 +340,9 @@ async function submit() {
 }
 
 async function startQr() {
+  // 先清掉上一轮：否则旧定时器会继续轮询已销毁的会话，
+  // 每 3 秒把「会话不存在或已过期」写回界面，盖掉新会话的进度。
+  stopPolling()
   submitting.value = true
   try {
     const { data } = await api.post('/api/accounts/qr-login', {
@@ -348,17 +356,31 @@ async function startQr() {
     qrBlocked.value = false
     qrDialog.value = true
     pollErrors = 0
-    startCountdown(data.expires_in)
-    pollTimer = window.setInterval(() => poll(data.session_id), 3000)
+    // 倒计时按"这张码的寿命"走（抖音 ~59s）；后端没给就退回会话 TTL。
+    startCountdown(data.qr_image_expires_in ?? data.expires_in)
+    activeSessionId = data.session_id
+    scheduleNextPoll(data.session_id)
   } finally {
     submitting.value = false
   }
 }
 
+// 串行轮询：每次都等上一轮响应回来再排下一轮。
+// 用 setInterval 的话，后端一轮最多要等 3s（抓二维码有超时窗口），会与下一次请求
+// 重叠——同一个会话被并发轮询时结果会乱序落地，用户看到的消息会来回跳（真机症状：
+// 明明已确认，界面却弹出"会话不存在或已过期"）。
+function scheduleNextPoll(sessionId: string) {
+  if (pollTimer) window.clearTimeout(pollTimer)
+  pollTimer = window.setTimeout(() => void poll(sessionId), 3000)
+}
+
 async function poll(sessionId: string) {
+  // 迟到的旧会话响应直接丢弃：它的结果已经和当前界面无关。
+  if (sessionId !== activeSessionId) return
   // 连续失败才停：偶发一次网络抖动不该中断整个扫码流程
   try {
     const { data } = await api.get(`/api/accounts/qr-login/${sessionId}`)
+    if (sessionId !== activeSessionId) return
     pollErrors = 0
     qrMessage.value = data.message
     qrStatus.value = data.status
@@ -371,34 +393,44 @@ async function poll(sessionId: string) {
     // 后端正在等登录态落盘（此时别当成"没反应"，页面会显示对应提示）。
     if (data.qr_image_base64) {
       qrImage.value = data.qr_image_base64
+      // 换码 = 屏幕上换了一张新码，倒计时必须跟着重置，否则显示的还是旧码的剩余时间。
+      if (data.qr_image_expires_in) startCountdown(data.qr_image_expires_in)
     }
     if (data.status === 'success') {
       stopPolling()
       qrDialog.value = false
       ElMessage.success('扫码登录成功')
       await load()
+      return
     } else if (data.status === 'expired' || data.status === 'error') {
       stopPolling()
       if (data.status === 'expired') {
         qrRemaining.value = 0
         ElMessage.warning('二维码已超时，请重新获取')
       }
+      return
     }
   } catch (e: any) {
+    if (sessionId !== activeSessionId) return
     pollErrors += 1
     if (pollErrors >= 3) {
       stopPolling()
       qrStatus.value = 'error'
       qrMessage.value = e?.response?.data?.detail || '轮询失败，请关闭后重新获取二维码'
+      return
     }
   }
+  // 非终态：排下一轮（在响应之后，保证串行）。
+  if (sessionId === activeSessionId) scheduleNextPoll(sessionId)
 }
 
 function stopPolling() {
   if (pollTimer) {
-    clearInterval(pollTimer)
+    clearTimeout(pollTimer)
     pollTimer = undefined
   }
+  // 停掉就把当前会话标记作废：任何已在途的响应回来时都会被丢弃。
+  activeSessionId = ''
   stopCountdown()
 }
 

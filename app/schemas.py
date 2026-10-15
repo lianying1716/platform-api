@@ -99,6 +99,9 @@ class QrLoginSession(BaseModel):
     platform: str
     qr_image_base64: str
     expires_in: int
+    # 屏幕上这张码**本身**的寿命（秒）。抖音单张码只活 ~59s 就会被登录页换新，
+    # 与会话 TTL（expires_in，300s）不是一回事；前端倒计时应优先用它。
+    qr_image_expires_in: int | None = None
 
 
 class QrLoginStatus(BaseModel):
@@ -107,3 +110,5 @@ class QrLoginStatus(BaseModel):
     account_id: int | None = None
     # 轮询遇到平台二维码自然过期时回传的新二维码（抖音约 60s 一换），前端直接换图继续。
     qr_image_base64: str | None = None
+    # 随新图一起回传的"这张码还能活多久"，前端据此重置倒计时（抖音 ~59s）。
+    qr_image_expires_in: int | None = None

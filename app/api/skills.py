@@ -272,6 +272,7 @@ async def skill_start_qr_login(
         "platform": platform,
         "qr_image_base64": start.qr_image_b64,
         "expires_in": settings.qr_session_ttl,
+        "qr_image_expires_in": start.qr_image_expires_in,
     }
 
 

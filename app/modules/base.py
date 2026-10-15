@@ -23,6 +23,9 @@ class QrStart:
 
     session_data: dict  # 模块自用的会话上下文（qrcode_key、cookie 等）
     qr_image_b64: str
+    # 屏幕上这张码**本身**的有效期（秒）；None = 该平台不区分，前端沿用会话 TTL。
+    # 与 qr_session_ttl 是两件事：抖音单张码只活 59s，会话却有 300s。
+    qr_image_expires_in: int | None = None
 
 
 @dataclass
@@ -35,6 +38,11 @@ class QrPoll:
     # 平台自带的二维码会过期（抖音约 60s）并由登录页自动换新；轮询遇到这种自然过期时，
     # 若能从页面抓到新码就随本轮结果回传，前端直接换图继续扫——避免用户稍慢就扫到死码。
     qr_image_b64: str | None = None
+    # 这批二维码**本身**的有效期（秒），与「登录会话存活多久」是两件事。
+    # 抖音实测单张码只活 59s（check_qrconnect 换码响应里 expire_time 恒为 now+59），
+    # 而会话 TTL 是 300s。前端倒计时必须按前者展示，否则用户看到"还剩 4 分多钟"，
+    # 屏幕上那张码其实早已作废。换码时随新图一起回传，前端据此重置倒计时。
+    qr_image_expires_in: int | None = None
 
 
 class PlatformAdapter(Protocol):

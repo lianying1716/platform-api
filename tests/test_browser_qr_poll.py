@@ -414,3 +414,122 @@ async def test_api_poll_ends_session_on_error(monkeypatch, client):
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "error"
     assert qr_sessions.get(sid) is None, "真失败应结束会话"
+
+
+# ---------- 真机回归：扫码后界面报"会话不存在或已过期" ----------
+# 用户实测（Mac 生产实例）：手机已扫码并点了确认，界面却弹「会话不存在或已过期，请重新发起」。
+# 根因不在抖音，而在**我们回放终态的方式**：会话一旦结束就被从内存里彻底删掉，
+# 于是任何迟到的轮询（前端 3s 一次，且换码/失败时可能并发；用户手快再点一次也会重叠）
+# 都只会拿到一句与事实无关的"会话不存在或已过期"，把真实原因盖掉。
+
+
+@pytest.mark.asyncio
+async def test_ended_session_replays_real_reason_not_generic_expired(monkeypatch, client):
+    """会话结束后，轮询必须如实回放真实原因（风控/确认超时），不能一律说"会话不存在"。
+
+    旧行为：`qr_sessions.remove()` 直接 pop，第二次轮询 => "会话不存在或已过期"。
+    真机上这会把「抖音要求去 App 验证」这类真实原因盖掉，用户被误导成"二维码过期"。
+    """
+    from app.api import accounts as accounts_api
+    from app.services import qr_sessions
+
+    sid = qr_sessions.create("douyin", {"browser_session": "x"})
+
+    class _Poll:
+        status = "error"
+        message = "为保障你的账号安全，请前往抖音APP完成验证后再进行登录"
+        qr_image_b64 = None
+
+    class _Adapter:
+        async def qr_poll(self, data):
+            return _Poll()
+
+    monkeypatch.setattr(accounts_api, "get_adapter", lambda p: _Adapter())
+
+    first = client.get(f"/api/accounts/qr-login/{sid}").json()
+    assert first["status"] == "error"
+
+    # 迟到的第二轮：必须回放同一个真因，而不是"会话不存在或已过期"。
+    second = client.get(f"/api/accounts/qr-login/{sid}").json()
+    assert second["status"] == "error", second
+    assert "验证" in second["message"], second
+    assert "会话不存在" not in second["message"], "真因被通用的'会话不存在'盖掉了"
+
+    qr_sessions.remove(sid)
+
+
+def test_ended_success_replays_success_not_expired(client):
+    """成功同样是终态：浏览器已关闭后若还有一轮在途轮询，不能把界面从成功打回失败。"""
+    from app.services import qr_sessions
+
+    sid = qr_sessions.create("douyin", {"browser_session": "x"})
+    qr_sessions.finish_success(sid, account_id=7, message="登录成功，已自动提取 Cookie")
+
+    r = client.get(f"/api/accounts/qr-login/{sid}").json()
+    assert r["status"] == "success", r
+    assert r["account_id"] == 7, r
+
+    qr_sessions.remove(sid)
+
+
+def test_ended_sessions_are_gc_ed():
+    """终态只留一小会儿：不能在内存里无限堆积。"""
+    from app.services import qr_sessions
+
+    sid = qr_sessions.create("douyin", {"browser_session": "x"})
+    qr_sessions.finish(sid, "error", "风控")
+    assert qr_sessions.terminal_status(sid) is not None
+
+    # 手工把结束时间拨到 TTL 之前
+    qr_sessions._sessions[sid].ended_at = time.time() - qr_sessions._ENDED_TTL - 1
+    qr_sessions.create("douyin", {"browser_session": "y"})  # create 会触发 GC
+    assert qr_sessions.terminal_status(sid) is None, "过期终态应被回收"
+
+
+def test_finished_session_is_not_handed_to_adapter():
+    """已结束的会话不能再交给适配器轮询：浏览器上下文早就关了，再查会拿到假状态。"""
+    from app.services import qr_sessions
+
+    sid = qr_sessions.create("douyin", {"browser_session": "x"})
+    qr_sessions.finish(sid, "error", "风控")
+    assert qr_sessions.get(sid) is None, "已结束会话不该再返回给适配器"
+    assert qr_sessions.terminal_status(sid) == ("error", "风控", None)
+
+    qr_sessions.remove(sid)
+
+
+def test_qr_ttl_uses_platform_expire_time():
+    """倒计时用"这张码的寿命"，而不是会话 TTL(300s)。
+
+    真机症状：界面显示"还剩 4 分多钟"，可屏幕上那张码其实只剩几十秒就作废了。
+    """
+    conf = {"qr_ttl": 60}
+    # 平台给了权威的 expire_time -> 用它
+    assert browser_qr._qr_remaining_ttl(conf, {"qr_expire_at": time.time() + 42}) in (41, 42)
+    # 没有 expire_time -> 退回配置的单张码寿命
+    assert browser_qr._qr_remaining_ttl(conf, {}) == 60
+    # 平台不区分单张码寿命 -> None，前端沿用会话 TTL
+    assert browser_qr._qr_remaining_ttl({}, {}) is None
+
+
+def test_douyin_declares_short_qr_ttl():
+    """抖音单张码实测只活 ~59s，配置里必须声明，否则前端又会拿 300s 骗用户。"""
+    assert browser_qr._PLATFORM_CONF["douyin"].get("qr_ttl") == 60
+
+
+def test_claim_is_single_winner():
+    """并发轮询只能有一个抢到处理权：否则一次扫码会建出两个账号（真机出现过）。"""
+    from app.services import qr_sessions
+
+    sid = qr_sessions.create("douyin", {"browser_session": "x"})
+    assert qr_sessions.claim(sid, "success", "ok") is True
+    assert qr_sessions.claim(sid, "success", "ok") is False, "第二次必须抢不到"
+
+    # 抢到的那一轮落库后补上 account_id，回放要带上它
+    qr_sessions.finish_success(sid, account_id=11, message="登录成功")
+    assert qr_sessions.terminal_status(sid) == ("success", "登录成功", 11)
+
+    # 已结束的会话不再交给适配器（浏览器上下文已关）
+    assert qr_sessions.get(sid) is None
+
+    qr_sessions.remove(sid)

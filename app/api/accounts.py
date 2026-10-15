@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,6 +24,8 @@ from app.modules.browser_qr import BrowserQrUnavailable
 from app.services import qr_sessions
 
 router = APIRouter(prefix="/api", tags=["accounts"], dependencies=[Depends(security.require_admin)])
+
+logger = logging.getLogger("platform.accounts.qr")
 
 # 微信公众号登录态经验有效期（wechat-article-exporter 的 KV TTL 为 4 天）
 _WECHAT_TTL = timedelta(days=4)
@@ -137,13 +140,25 @@ async def qr_login_create(body: schemas.QrLoginCreate):
         platform=body.platform,
         qr_image_base64=start.qr_image_b64,
         expires_in=settings.qr_session_ttl,
+        qr_image_expires_in=start.qr_image_expires_in,
     )
 
 
 @router.get("/accounts/qr-login/{session_id}", response_model=schemas.QrLoginStatus)
 async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
+    # 已结束的会话：如实回放终态（成功/风控/确认超时…），而不是一律说"会话不存在"。
+    # 前端每 3s 一次、失败时还可能并发，迟到的轮询撞上"已删除"很常见；回错原因会把
+    # 真因盖掉，让用户和排查都往"二维码过期"这个与事实无关的方向走。
+    terminal = qr_sessions.terminal_status(session_id)
+    if terminal is not None:
+        status, message, account_id = terminal
+        logger.info("qr_poll_replay session=%s status=%s", session_id[:12], status)
+        return schemas.QrLoginStatus(status=status, message=message, account_id=account_id)
     sess = qr_sessions.get(session_id)
     if sess is None:
+        # 走到这里 = 会话真的不存在（从未创建 / 已被 GC / 进程重启丢了内存态）。
+        # 真机排查时这条最关键：它证明失败与"二维码过期"无关。
+        logger.warning("qr_poll_unknown_session session=%s", session_id[:12])
         return schemas.QrLoginStatus(status="expired", message="会话不存在或已过期，请重新发起")
     adapter = get_adapter(sess.platform)
     poll = await adapter.qr_poll(sess.data)
@@ -154,19 +169,29 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
         # 自己已经收口。API 层再删一次，会把"正在换码"误判成"整次扫码失败"，
         # 表现为用户刚扫码就弹"二维码已过期"，而手机端其实已确认。
         if poll.status == "error":
-            # error 是真正的失败（如风控拦截），此时才结束会话，避免继续空转。
-            qr_sessions.remove(session_id)
+            # error 是真正的失败（如风控拦截）：结束会话，但**记住原因**。
+            qr_sessions.finish(session_id, poll.status, poll.message)
         return schemas.QrLoginStatus(
             status=poll.status,
             message=poll.message,
             qr_image_base64=poll.qr_image_b64,
+            # 用 getattr：适配器可能返回旧结构的 QrPoll（无此字段），别因此 500。
+            qr_image_expires_in=getattr(poll, "qr_image_expires_in", None),
         )
 
     # 登录成功 → 决定"更新哪个账号 / 要不要新建"：
+    # 先占位，防止两个并发轮询同时走到这里各建一个账号；真正结果在落库后再记。
+    if not qr_sessions.claim(session_id, "success", poll.message):
+        # 已有并发的一轮在处理（或刚结束）：回放终态，绝不重复落库。
+        status, message, account_id = qr_sessions.terminal_status(session_id) or (
+            "success",
+            poll.message,
+            None,
+        )
+        return schemas.QrLoginStatus(status=status, message=message, account_id=account_id)
     #   1. 有身份标识：按 (platform, external_id) 精确匹配并更新；匹配不到则新建
     #   2. 无身份标识：仅当该平台没有任何真实账号时允许创建首个无身份账号；
     #      已有任何真实账号则 409，绝不靠“只有一个”覆盖或猜身份
-    qr_sessions.remove(session_id)
     account = None
     if poll.external_id:
         account = db.scalar(
@@ -186,13 +211,14 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
             .order_by(PlatformAccount.id)
         ).all()
         if existing:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"{adapter.label} 已有账号，且本次登录未返回可唯一识别的身份，"
-                    "无法安全判断归属。请手动录入或在账号中心处理。"
-                ),
+            detail = (
+                f"{adapter.label} 已有账号，且本次登录未返回可唯一识别的身份，"
+                "无法安全判断归属。请手动录入或在账号中心处理。"
             )
+            # 会话到此为止（浏览器上下文适配层已关）；记下原因，免得后续轮询
+            # 又回一句与事实无关的"会话不存在或已过期"。
+            qr_sessions.finish(session_id, "error", detail)
+            raise HTTPException(status_code=409, detail=detail)
     if account is None:
         account = PlatformAccount(
             platform=sess.platform,
@@ -214,6 +240,9 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
     account.status, account.status_message = "active", poll.message or "登录成功"
     account.last_checked_at = datetime.utcnow()
     db.commit()
+    # 成功也是终态：浏览器关闭后若前端还有一轮在途轮询回来，要回放"成功"，
+    # 而不是让它撞上"会话不存在"、把界面从成功打回失败。
+    qr_sessions.finish_success(session_id, account.id, poll.message)
     return schemas.QrLoginStatus(status="success", message=poll.message, account_id=account.id)
 
 

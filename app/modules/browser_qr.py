@@ -31,9 +31,10 @@ from app.modules.base import QrPoll, QrStart
 logger = logging.getLogger("platform.browser_qr")
 
 # 手机确认（check_qrconnect=confirmed）到登录状态落盘的宽限期（秒）。
-# 实测确认与写 cookie/localStorage 之间约 1~2s；给足余量但别无限等——
-# 超时如实报错，好过永远停在 pending 让用户干等。
-_CONFIRMED_GRACE_SECONDS = 15
+# 确认与写 cookie/localStorage 之间通常 1~2s，但登录页还要走一跳回调，实测偶有
+# 明显更慢的情况；真机反馈里 15s 偏紧，用户刚点完确认就被判失败。放宽到 45s：
+# 这段只影响"失败消息出现得早晚"，一旦 cookie 落盘会立刻走 success 分支。
+_CONFIRMED_GRACE_SECONDS = 45
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -73,6 +74,9 @@ _PLATFORM_CONF = {
         "self_id_cookies": ["sid_tt"],
         "self_name_fields": ["nickname"],
         "needs_display": False,
+        # 单张二维码的寿命（秒）。实测抖音登录页的码活 59s 就换新；换码响应里的
+        # expire_time 也是 now+59。用它做前端倒计时，别拿会话 TTL(300s) 冒充。
+        "qr_ttl": 60,
     },
     "xhs": {
         "url": "https://www.xiaohongshu.com",
@@ -296,6 +300,19 @@ async def _qr_image_b64(page, selector: str) -> str:
     return base64.b64encode(await el.screenshot()).decode()
 
 
+def _qr_remaining_ttl(conf: dict, st: dict) -> int | None:
+    """当前这批二维码还能活多久（秒）。
+
+    平台（抖音）在换码响应里给了权威的 ``expire_time``；拿不到就退回配置里的
+    ``qr_ttl``。返回 None 表示这个平台不区分"单张码寿命"，由前端沿用会话 TTL。
+    """
+    exp = st.get("qr_expire_at")
+    if exp:
+        return max(0, int(float(exp) - time.time()))
+    ttl = conf.get("qr_ttl")
+    return int(ttl) if ttl else None
+
+
 async def _read_qr_image_wait(page, selector: str, timeout_ms: int = 3_000) -> str | None:
     """读当前二维码，容忍短暂的空窗（换码时元素会消失 1~2s）。
 
@@ -447,7 +464,14 @@ async def browser_qr_start(platform: str) -> QrStart:
             "state": state,
         }
         _attach_qr_status_listener(page, conf, state)
-        return QrStart(session_data={"browser_session": session_id}, qr_image_b64=qr_b64)
+        # 单张码寿命：抖音登录页的码只活 59s 就自动换新（实测）。前端倒计时按它走，
+        # 而不是拿 300s 的会话 TTL 冒充 —— 否则用户看到"还剩4分多钟"，那张码其实早废了。
+        ttl = conf.get("qr_ttl")
+        return QrStart(
+            session_data={"browser_session": session_id},
+            qr_image_b64=qr_b64,
+            qr_image_expires_in=int(ttl) if ttl else None,
+        )
     except BrowserQrUnavailable:
         if xvfb_proc is not None:
             await _stop_xvfb({"xvfb": xvfb_proc})
@@ -495,6 +519,14 @@ def _attach_qr_status_listener(page, conf: dict, state: dict) -> None:
         st = inner.get("status")
         if st:
             state["qr_status"] = str(st)
+        # 抖音在换码响应里给出新码的 expire_time（实测恒为 now+59s）。这是二维码**本身**
+        # 的寿命，和会话 TTL(300s) 是两件事：前端倒计时要按它走，否则用户看到"还剩4分多钟"。
+        et = inner.get("expire_time")
+        if et:
+            try:
+                state["qr_expire_at"] = float(et)
+            except (TypeError, ValueError):
+                pass
         # 抖音在需要二次验证时会丢掉 status、改回 error_code=2046 + 文案
         # （"为保障你的账号安全，请前往抖音APP完成验证后再进行登录"）。
         # 只认 status 会把这个错误吞掉，界面继续显示"已扫码待确认"，误导用户。
@@ -693,6 +725,9 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
             st["qr_hash"] = page_hash
             st["shown_hash"] = page_hash
             st.pop("qr_status", None)
+            # 码换了，之前那次"手机已确认"就作废了——它确认的是上一张码。
+            # 不清掉的话，下一轮若再看到 confirmed，宽限期会从旧时间点起算。
+            st.pop("confirmed_at", None)
             was_expired = remote in ("expired", "canceled", "cancelled")
             return QrPoll(
                 status="pending",
@@ -702,6 +737,8 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
                     else "二维码已更新，请以当前页面上的码为准"
                 ),
                 qr_image_b64=page_now,
+                # 换码同时重置前端倒计时：新码的寿命由平台给出（抖音 59s）。
+                qr_image_expires_in=_qr_remaining_ttl(conf, st),
             )
         if remote in ("expired", "canceled", "cancelled"):
             # 页面当前码与屏幕上一致、但平台说它已过期：等下一轮换码（约 1~2s），
