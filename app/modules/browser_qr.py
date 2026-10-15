@@ -296,6 +296,20 @@ async def _qr_image_b64(page, selector: str) -> str:
     return base64.b64encode(await el.screenshot()).decode()
 
 
+async def _read_qr_image_wait(page, selector: str, timeout_ms: int = 3_000) -> str | None:
+    """读当前二维码，容忍短暂的空窗（换码时元素会消失 1~2s）。
+
+    与 ``_read_qr_image_now`` 的区别：那个是"立刻返回、没有就 None"，适合判定
+    "这一轮有没有变化"；本函数会小等一下，适合**自愈换图**——否则恰好撞上换码
+    空白期就会误判成"页面没码"，把用户屏幕上的好码也判成失效。
+    """
+    try:
+        await page.wait_for_selector(selector, timeout=timeout_ms)
+    except Exception:  # noqa: BLE001 超时就当这一轮没有，交给调用方保持现状
+        return None
+    return await _read_qr_image_now(page, selector)
+
+
 async def _read_qr_image_now(page, selector: str) -> str | None:
     """同步读取当前二维码（不等待）。
 
@@ -368,7 +382,13 @@ async def browser_qr_start(platform: str) -> QrStart:
             **launch_kwargs,
         )
         context = await browser.new_context(
-            user_agent=_UA, viewport={"width": 1400, "height": 900}, locale="zh-CN"
+            user_agent=_UA,
+            viewport={"width": 1400, "height": 900},
+            locale="zh-CN",
+            # UA 声明的是中国 Windows 用户，时区/语言必须跟着一致：UA 说 Windows、
+            # 时区却是 UTC、语言只有 en-US —— 这是风控最典型的"非真人"指纹组合。
+            timezone_id="Asia/Shanghai",
+            extra_http_headers={"Accept-Language": "zh-CN,zh;q=0.9"},
         )
         try:
             from playwright_stealth import Stealth
@@ -377,6 +397,11 @@ async def browser_qr_start(platform: str) -> QrStart:
         except ImportError:
             # 反检测是增强项：没装 browser extra 时仍可继续扫码流程。
             pass
+        # ⚠️ stealth 会把 navigator.languages 覆盖成 ["en-US","en"]（实测），把一个
+        # "中文 Windows 用户"变成"英文 Windows 用户"——与 UA/时区矛盾，反而更像机器人。
+        # 在 stealth 之后纠正回来，并补齐无头环境缺失的指纹（deviceMemory 为 null、
+        # 插件为空等，都是无头特征）。
+        await _apply_consistent_fingerprint(context)
         page = await context.new_page()
         await page.goto(conf["url"], wait_until="domcontentloaded", timeout=30_000)
 
@@ -478,6 +503,63 @@ def _attach_qr_status_listener(page, conf: dict, state: dict) -> None:
         pass
 
 
+# 与 UA（Windows Chrome）自洽的指纹。无头 Chromium 默认缺这些，
+# 缺得越多越像机器人；stealth 又会把语言改成 en-US，所以要在这里统一收口。
+_FINGERPRINT_JS = """
+(() => {
+  try {
+    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+    Object.defineProperty(navigator, 'language', { get: () => 'zh-CN' });
+  } catch (e) {}
+  try {
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+  } catch (e) {}
+  try {
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+  } catch (e) {}
+  try {
+    // 无头环境 plugins 常为空；伪造几个常见项，避免"零插件"这个显眼特征。
+    if (!navigator.plugins || navigator.plugins.length === 0) {
+      const fake = [
+        { name: 'PDF Viewer', filename: 'internal-pdf-viewer' },
+        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer' },
+        { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer' },
+      ];
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => Object.assign(fake, { length: fake.length }),
+      });
+    }
+  } catch (e) {}
+  try {
+    if (!navigator.mimeTypes || navigator.mimeTypes.length === 0) {
+      const mime = [{ type: 'application/pdf', suffixes: 'pdf' }];
+      Object.defineProperty(navigator, 'mimeTypes', {
+        get: () => Object.assign(mime, { length: mime.length }),
+      });
+    }
+  } catch (e) {}
+})();
+"""
+
+
+async def _apply_consistent_fingerprint(context) -> None:
+    """给整个浏览器上下文注入与 UA 自洽的指纹（语言/内存/插件）。
+
+    必须**在 stealth 之后**调用：stealth 会把 languages 覆盖成 en-US，
+    与 UA 声称的"中国 Windows 用户"矛盾。注入失败不影响主流程。
+    """
+    try:
+        await context.add_init_script(_FINGERPRINT_JS)
+        # 对当前已打开的页面也立即生效（add_init_script 只影响之后的导航）。
+        for page in context.pages:
+            try:
+                await page.evaluate(_FINGERPRINT_JS)
+            except Exception:  # noqa: BLE001 页面还没导航完成时忽略
+                pass
+    except Exception:  # noqa: BLE001 指纹是增强项，失败不该挡住扫码
+        pass
+
+
 async def _read_local_storage(page) -> dict:
     """读页面 localStorage；页面正在跳转/跨域时可能失败，失败当空处理。"""
     try:
@@ -506,15 +588,23 @@ async def browser_qr_poll(platform: str, session_data: dict) -> QrPoll:
     if not _is_logged_in(platform, cookie_map, local_storage, page.url):
         st = sess.setdefault("state", {})
         # 页面当前活跃的码只读一次，诊断与"自愈换图"共用（避免一轮里重复截两次图）。
-        page_now = await _read_qr_image_now(page, conf["qr_selector"])
+        page_now = await _read_qr_image_wait(page, conf["qr_selector"])
         page_hash = hashlib.md5(page_now.encode()).hexdigest() if page_now else ""
         shown = st.get("shown_hash") or ""
-        # 诊断快照：**只在状态变化时记录**（而不是每轮都记）—— 否则上限会被
-        # 一串重复的 new 吃光，真正关键的 scanned→confirmed 那一步反而看不到。
+        # 诊断快照：状态变化**或二维码轮换**时各记一条（而不是每轮都记）——
+        # 否则上限会被一串重复的 new 吃光，关键的 scanned→confirmed 那一步反而看不到。
+        # 二维码轮换必须记：抖音约 60s 换一张，若用户扫的是换掉前的那张，
+        # 页面已经在轮询新 token，就只会一直回 new —— 这正是"扫了没反应"的形态。
         # 另外把 cookie 全名与 localStorage 全键也记上，避免"信号存在但没被识别"。
-        if st.get("qr_status") != st.get("dbg_last_status") or st.get("dbg_logged", 0) == 0:
+        _rotated = bool(st.get("dbg_last_page_hash")) and st.get("dbg_last_page_hash") != page_hash
+        if (
+            st.get("qr_status") != st.get("dbg_last_status")
+            or _rotated
+            or st.get("dbg_logged", 0) == 0
+        ):
             st["dbg_logged"] = st.get("dbg_logged", 0) + 1
             st["dbg_last_status"] = st.get("qr_status")
+            st["dbg_last_page_hash"] = page_hash
             conf_c = _PLATFORM_CONF.get(platform, {})
             _seen = st.get("qr_seen_at")
             logger.info(

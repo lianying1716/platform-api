@@ -145,6 +145,9 @@ class _RefreshPage:
         self.url = url
     async def query_selector(self, sel):
         return _Elt(self._src)
+    async def wait_for_selector(self, sel, timeout=None):
+        # 假页面里二维码总在同一张：自愈用的"等待版"读取立即返回即可。
+        return _Elt(self._src)
     async def evaluate(self, script, *_args):
         if _args:
             return None
