@@ -92,8 +92,12 @@ def test_platforms_listing(client):
 
 
 def test_qr_login_flow(client, monkeypatch):
-    """扫码闭环：create 拿二维码 → poll 返回 success → 账号入库。全程 mock 适配器。"""
-    from app.modules.base import QrPoll, QrStart
+    """扫码闭环：create 拿二维码 → poll 成功 → **真实验证通过** → 账号入库为 active。
+
+    注意本用例锁的是"登录后必须真探活"这个契约：扫码本身只说明平台写了登录态，
+    不代表账号能用。所以这里必须把 check() 也 mock 成通过，否则账号会如实标异常。
+    """
+    from app.modules.base import CheckResult, QrPoll, QrStart
 
     async def fake_start(self):
         return QrStart(session_data={"qrcode_key": "k"}, qr_image_b64="ZmFrZQ==")
@@ -107,8 +111,13 @@ def test_qr_login_flow(client, monkeypatch):
             display_name="扫码昵称",
         )
 
+    async def fake_check_ok(self, credential):
+        # 登录后的真实探活（这一步以前是缺的）
+        return CheckResult(ok=True, message="在线", display_name="扫码昵称", external_id="999")
+
     monkeypatch.setattr("app.modules.bilibili.BilibiliAdapter.qr_start", fake_start)
     monkeypatch.setattr("app.modules.bilibili.BilibiliAdapter.qr_poll", fake_poll)
+    monkeypatch.setattr("app.modules.bilibili.BilibiliAdapter.check", fake_check_ok)
 
     r = client.post("/api/accounts/qr-login", json={"platform": "bilibili"})
     assert r.status_code == 200
@@ -123,3 +132,5 @@ def test_qr_login_flow(client, monkeypatch):
     r = client.get(f"/api/accounts/{aid}")
     assert r.json()["external_id"] == "999"
     assert r.json()["status"] == "active"
+    # 状态必须是"探活验证过"的，不能是凭空写的
+    assert "已通过真实验证" in r.json()["status_message"], r.json()["status_message"]

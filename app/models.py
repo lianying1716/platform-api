@@ -84,7 +84,8 @@ class CredentialAuditLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     account_id: Mapped[int] = mapped_column(Integer, index=True)
-    action: Mapped[str] = mapped_column(String(32))  # create/update/read/check/delete
+    # create/update/read/check/delete/verify（verify = 登录后/更新凭证后的真实探活）
+    action: Mapped[str] = mapped_column(String(32))
     actor: Mapped[str] = mapped_column(String(64), default="admin")  # admin / api_key:<id> / scheduler
     detail: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

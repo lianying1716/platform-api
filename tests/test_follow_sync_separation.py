@@ -448,14 +448,31 @@ def test_master_switch_off_rejects_manual_sync(session):
     assert "沉默期" in (run.error or "")
 
 
-def test_master_switch_off_rejects_check(client, session):
-    """沉默期账号：手动体检也禁止（用户明确要求"停"）。"""
+def test_master_switch_off_allows_manual_check(client, session, monkeypatch):
+    """沉默期账号：**手动**体检放行（用户后来明确要求"可以"）。
+
+    原规则是"沉默期禁止一切平台调用，含体检"，一刀切。但实测发现两个漏洞叠加：
+    自动巡检跳过沉默期 + 手动体检被 409 堵死 => 沉默期账号的假"在线"永远没人发现，
+    开关一打开就报一堆错。现在改成：自动巡检仍跳过（不替用户发请求），手动体检放行。
+    """
+    from app.modules.base import CheckResult
+
     acc = _account(session)
     acc.sync_enabled = False
     session.commit()
+
+    # 体检要真去平台，这里 mock 掉，避免测试打真接口。
+    async def _ok(self, credential):
+        return CheckResult(ok=True, message="在线")
+
+    cls = __import__(f"app.modules.{acc.platform}", fromlist=["x"]).__dict__[
+        {"douyin": "DouyinAdapter", "bilibili": "BilibiliAdapter"}.get(acc.platform, "")
+    ] if acc.platform in ("douyin", "bilibili") else None
+    if cls is not None:
+        monkeypatch.setattr(cls, "check", _ok)
+
     r = client.post(f"/api/accounts/{acc.id}/check")
-    assert r.status_code == 409
-    assert "沉默期" in r.json()["detail"]
+    assert r.status_code == 200, f"沉默期手动体检应放行：{r.status_code} {r.text}"
 
 
 def test_master_switch_toggle_roundtrip(client, session):

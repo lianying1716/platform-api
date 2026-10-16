@@ -16,6 +16,10 @@ class QrSession:
     platform: str
     data: dict
     display_name: str = ""
+    # 「重新扫码」用：显式指定要覆盖哪个账号。扫码失败过的账号常常**根本没有
+    # external_id**（探活没过），靠身份匹配会走成"已有账号但身份不明 -> 409"，
+    # 用户就没法原地重试。带上 account_id 就能精确覆盖那一个。
+    account_id: int | None = None
     created: float = field(default_factory=time.time)
     # 会话结束后的**终态**（status/message）。会话本身会被移除，但终态要留一小会儿：
     # 否则任何迟到的轮询（同一 tick 的第二发请求、用户手快再点一次）都会撞上
@@ -47,11 +51,15 @@ def _gc_ended() -> None:
         _sessions.pop(sid, None)
 
 
-def create(platform: str, data: dict, display_name: str = "") -> str:
+def create(
+    platform: str, data: dict, display_name: str = "", account_id: int | None = None
+) -> str:
     _gc()
     _gc_ended()
     session_id = uuid.uuid4().hex
-    _sessions[session_id] = QrSession(platform=platform, data=data, display_name=display_name)
+    _sessions[session_id] = QrSession(
+        platform=platform, data=data, display_name=display_name, account_id=account_id
+    )
     return session_id
 
 

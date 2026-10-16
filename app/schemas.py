@@ -92,6 +92,9 @@ class CheckResponse(BaseModel):
 class QrLoginCreate(BaseModel):
     platform: str
     display_name: str = ""
+    # 「重新扫码」：显式指定要覆盖的账号（扫码失败过的账号常没有 external_id，
+    # 靠身份匹配会 409，用户就没法原地重试）。
+    account_id: int | None = None
 
 
 class QrLoginSession(BaseModel):

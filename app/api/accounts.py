@@ -58,11 +58,81 @@ def _account_out(account: PlatformAccount, root: StorageRoot | None = None) -> s
     return out
 
 
-async def _run_check(db: Session, account: PlatformAccount, actor: str = "admin") -> schemas.CheckResponse:
+async def _verify_after_login(db: Session, account: PlatformAccount) -> bool:
+    """扫码/更新凭证后**立刻**真去平台探一次活，把结果写进 account。
+
+    返回是否通过（account.status == "active"）。
+
+    为什么要这一步：扫码成功只说明"平台把登录态写进了浏览器"，不代表账号能用——
+    Cookie 可能不完整、接口要签名、也可能立刻被风控。没有这一步，"导入成功"只是
+    我们自己的想象，问题会推迟到用户真正同步时才爆出来（那时更难定位）。
+
+    失败**不删账号**：多数是临时风控或凭证不全，用户可以在卡片上重试/重新扫码。
+    但状态必须如实标异常，绝不冒充"在线"。
+    """
+    from app.services.account_health import check_account
+
+    if account.credential is None:
+        account.status, account.status_message = "error", "未获取到凭证，请重新扫码或手动录入"
+        account.last_checked_at = datetime.utcnow()
+        db.commit()
+        _audit(db, account.id, "verify", account.status_message)
+        db.commit()
+        return False
+
+    before = account.external_id
+    try:
+        await check_account(account)
+    except Exception as exc:  # noqa: BLE001 探活本身炸了也要如实反映，不能泄成"在线"
+        account.status = "error"
+        account.status_message = f"登录后验证失败：{str(exc)[:200]}"
+        account.last_checked_at = datetime.utcnow()
+        db.commit()
+        _audit(db, account.id, "verify", account.status_message)
+        db.commit()
+        return False
+
+    ok = account.status == "active"
+    if ok:
+        # 探活通过才是真的"在线"——这条 status 有平台返回值背书，不是我们编的。
+        account.status_message = f"在线（已通过真实验证）：{account.status_message or '探活成功'}"
+    else:
+        # 探活没通过：把原因说清楚，并指明下一步（重新扫码 / 手动配置）。
+        reason = account.status_message or "平台未返回有效登录态"
+        account.status = account.status if account.status in ("expired", "error") else "error"
+        account.status_message = (
+            f"{reason}。请重新扫码登录，或在「更新凭证」里手动粘贴 Cookie 后重试"
+        )
+    # 身份冲突保护：探活可能带回 external_id，若已被别的账号占用则不覆盖（与 _run_check 同口径）。
+    if account.external_id and account.external_id != before:
+        conflict = db.scalar(
+            select(PlatformAccount).where(
+                PlatformAccount.platform == account.platform,
+                PlatformAccount.external_id == account.external_id,
+                PlatformAccount.id != account.id,
+                PlatformAccount.is_system.is_(False),
+            )
+        )
+        if conflict is not None:
+            account.external_id = before
+            account.status = "error"
+            account.status_message = f"账号身份已被 #{conflict.id} 占用，未自动覆盖，请人工确认"
+            ok = False
+    db.commit()
+    _audit(db, account.id, "verify", account.status_message)
+    db.commit()
+    return ok
+
+
+async def _run_check(
+    db: Session, account: PlatformAccount, actor: str = "admin", manual: bool = False
+) -> schemas.CheckResponse:
     if account.status == "deleted":
         raise HTTPException(status_code=409, detail="账号已停用，不能体检；请重新登录或恢复账号")
-    if not bool(account.sync_enabled):
-        # 沉默期：体检也是平台调用，一并禁止（用户明确要求"停"）。
+    if not bool(account.sync_enabled) and not manual:
+        # 沉默期：**自动**体检仍然禁止（不替用户产生平台调用）。
+        # 但用户手动点「体检」要放行：那是他主动想验证账号，正是这次要修的场景——
+        # 沉默期账号永远不体检，假"在线"就永远留在库里没人发现。
         from app.services.account_state import SILENT_MESSAGE
 
         raise HTTPException(status_code=409, detail=SILENT_MESSAGE)
@@ -134,7 +204,10 @@ async def qr_login_create(body: schemas.QrLoginCreate):
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"发起扫码失败: {exc}")
-    session_id = qr_sessions.create(body.platform, start.session_data, body.display_name)
+    # 带上 account_id：这是「重新扫码」在覆盖已有账号，而不是新建。
+    session_id = qr_sessions.create(
+        body.platform, start.session_data, body.display_name, account_id=body.account_id
+    )
     return schemas.QrLoginSession(
         session_id=session_id,
         platform=body.platform,
@@ -193,11 +266,24 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
             None,
         )
         return schemas.QrLoginStatus(status=status, message=message, account_id=account_id)
+    #   0. 「重新扫码」带了 account_id：直接覆盖那一个，不猜身份
+    #      （扫码失败过的账号往往没有 external_id，靠身份匹配必然 409，用户无法原地重试）
     #   1. 有身份标识：按 (platform, external_id) 精确匹配并更新；匹配不到则新建
     #   2. 无身份标识：仅当该平台没有任何真实账号时允许创建首个无身份账号；
     #      已有任何真实账号则 409，绝不靠“只有一个”覆盖或猜身份
     account = None
-    if poll.external_id:
+    if sess.account_id is not None:
+        account = db.get(PlatformAccount, sess.account_id)
+        if account is None or account.status == "deleted":
+            account = None  # 目标账号没了/已停用：退回按身份处理
+        elif account.platform != sess.platform:
+            # 平台对不上就不敢覆盖，退回常规路径（防止前端传错 id）
+            logger.warning(
+                "qr_relogin_account_mismatch account=%s want=%s got=%s",
+                sess.account_id, sess.platform, account.platform,
+            )
+            account = None
+    if account is None and poll.external_id:
         account = db.scalar(
             select(PlatformAccount).where(
                 PlatformAccount.platform == sess.platform,
@@ -205,6 +291,9 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
                 PlatformAccount.is_system.is_(False),
             )
         )
+    # 注意：只有当**这次没有指定目标账号**、且平台没给身份、而库里确实已有该平台
+    # 账号时才 409。若用户点了「重新扫码」并带了 account_id，即使这次没拿到身份，
+    # 目标账号也已经确定，不该再拦（否则扫码失败过的账号永远无法原地重试）。
     if account is None and not poll.external_id:
         existing = db.scalars(
             select(PlatformAccount)
@@ -241,13 +330,34 @@ async def qr_login_poll(session_id: str, db: Session = Depends(get_db)):
             account.display_name = poll.display_name
         _audit(db, account.id, "update", "扫码登录更新凭证")
     _save_credential(db, account, poll.credential or {})
-    account.status, account.status_message = "active", poll.message or "登录成功"
-    account.last_checked_at = datetime.utcnow()
+    # ⚠️ 关键：扫码成功只代表"平台把登录态写进了浏览器"，**不等于账号能用**。
+    # Cookie 可能不完整（抖音登录态分散在 sessionid/sid_tt/LOGIN_STATUS/localStorage，
+    # 缺一项就调不通）、web 接口还要签名、也可能立刻被风控。
+    # 旧实现直接写 status="active" + last_checked_at=now()，等于**凭空编了一个"在线"**，
+    # 比手动粘 Cookie 那条路（会真去探活）还松——于是"导入成功"的账号可能在同步时才炸。
+    # 这里改成：先落凭证，再**真去平台探一次活**，用真实结果决定状态。
+    db.flush()
+    account.status, account.status_message = "unchecked", "登录成功，正在验证账号可用性…"
+    account.last_checked_at = None
     db.commit()
+    verified = await _verify_after_login(db, account)
+    if not verified:
+        # 验证没通过：凭证保留（可能只是临时风控，用户可原地重试），
+        # 但状态必须如实标异常，绝不冒充"在线"。
+        qr_sessions.finish(session_id, "error", account.status_message)
+        return schemas.QrLoginStatus(
+            status="error",
+            message=account.status_message,
+            account_id=account.id,
+        )
     # 成功也是终态：浏览器关闭后若前端还有一轮在途轮询回来，要回放"成功"，
     # 而不是让它撞上"会话不存在"、把界面从成功打回失败。
-    qr_sessions.finish_success(session_id, account.id, poll.message)
-    return schemas.QrLoginStatus(status="success", message=poll.message, account_id=account.id)
+    qr_sessions.finish_success(session_id, account.id, account.status_message)
+    return schemas.QrLoginStatus(
+        status="success",
+        message=account.status_message,
+        account_id=account.id,
+    )
 
 
 # ---------- 账号 CRUD ----------
@@ -344,11 +454,13 @@ async def update_credential(account_id: int, body: schemas.CredentialUpdate, db:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     _save_credential(db, account, plain)
-    account.status, account.status_message = "unchecked", ""
+    account.status, account.status_message = "unchecked", "凭证已更新，正在验证…"
+    account.last_checked_at = None
     _audit(db, account.id, "update", "手动更新凭证")
     db.commit()
     if not body.skip_check:
-        await _run_check(db, account)
+        # 用户主动更新凭证 = 主动要验证，沉默期也放行（manual=True）。
+        await _run_check(db, account, manual=True)
     db.refresh(account)
     return _account_out(account)
 
@@ -401,10 +513,11 @@ def update_account_storage(
 
 @router.post("/accounts/{account_id}/check", response_model=schemas.CheckResponse)
 async def check_account(account_id: int, db: Session = Depends(get_db)):
+    """手动体检：**沉默期也放行**（用户主动要验证账号，不是我们替他发请求）。"""
     account = db.get(PlatformAccount, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
-    return await _run_check(db, account)
+    return await _run_check(db, account, manual=True)
 
 
 @router.delete("/accounts/{account_id}")

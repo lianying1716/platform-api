@@ -64,6 +64,22 @@
             </div>
           </dl>
           <p v-if="row.status_message" class="acc-msg" :title="row.status_message">{{ row.status_message }}</p>
+          <!-- 登录后没通过真实探活：给出明确的下一步（重新扫码 / 手动更新凭证），
+               而不是让用户自己去猜"为什么导入成功却不能用"。 -->
+          <div v-if="needsReverify(row)" class="acc-reverify">
+            <p class="acc-reverify-text">该账号登录后未通过可用性验证，请重新扫码或手动配置凭证</p>
+            <div class="acc-reverify-acts">
+              <button
+                v-if="supportsQr(row.platform)"
+                class="ui-btn sm primary"
+                :disabled="submitting"
+                @click="rescan(row)"
+              >
+                重新扫码登录
+              </button>
+              <button class="ui-btn sm" @click="openUpdate(row)">手动配置凭证</button>
+            </div>
+          </div>
           <div class="acc-acts">
             <button class="ui-btn sm" :disabled="checking === row.id" @click="check(row)">
               {{ checking === row.id ? '体检中…' : '体检' }}
@@ -317,6 +333,26 @@ function openUpdate(row: Account) {
 function onPlatformChange() {
   form.credential = {}
   mode.value = currentPlatform.value?.supports_qr ? 'qr' : 'manual'
+}
+
+// 该平台是否支持扫码（决定"重新扫码"按钮要不要出现）。
+function supportsQr(platform: string) {
+  return !!platforms.value.find((p) => p.platform === platform)?.supports_qr
+}
+
+// 需要用户重新处理凭证的账号：登录/更新后没通过真实探活。
+// "unchecked" 是探活进行中（正常中间态），不催用户。
+function needsReverify(row: Account) {
+  return (row.status === 'error' || row.status === 'expired') && row.status !== 'deleted'
+}
+
+// 重新扫码：复用现有扫码弹窗，后端按 external_id 认到同一账号并覆盖凭证。
+function rescan(row: Account) {
+  editing.value = row
+  form.platform = row.platform
+  form.credential = {}
+  mode.value = 'qr'
+  dialog.value = true
 }
 
 async function submit() {
@@ -624,6 +660,15 @@ onUnmounted(stopPolling)
   -webkit-box-orient: vertical; overflow: hidden;
 }
 .acc-acts { display: flex; gap: 6px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line-soft); flex-wrap: wrap; }
+/* 登录后未通过验证：给一个显眼的处置区，别让用户对着"导入成功却不能用"发愣 */
+.acc-reverify {
+  margin: 6px 0 2px; padding: 8px 10px;
+  border: 1px solid var(--warn-border, #f0c36d);
+  background: var(--warn-bg, #fff8e6);
+  border-radius: 6px;
+}
+.acc-reverify-text { margin: 0 0 8px; font-size: var(--fs-xs); color: var(--warn, #b45309); line-height: 1.5; }
+.acc-reverify-acts { display: flex; gap: 6px; flex-wrap: wrap; }
 .acc-id { margin: 0; font-size: var(--fs-xs); color: var(--muted); font-family: var(--font-mono); }
 .storage-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .storage-cell .storage-path { max-width: 150px; font-size: var(--fs-xs); color: var(--muted); }
