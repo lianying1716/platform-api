@@ -38,6 +38,17 @@ from app.models import (
 router = APIRouter(prefix="/api", tags=["assets"], dependencies=[Depends(security.require_admin)])
 
 
+def _ai_schedule_hold(db: Session) -> dict:
+    """入队 AI 任务时，若当前不在运行时段，返回给前端的等待信息。"""
+    from app.core.ai_schedule import ai_schedule_status, get_ai_schedule
+
+    status = ai_schedule_status(get_ai_schedule(db))
+    return {
+        "ai_schedule_held": not status["is_open"],
+        "ai_next_open_at": status.get("next_open_at"),
+    }
+
+
 class ExportRequest(BaseModel):
     asset_ids: list[int]
     format: str = "md"  # md / json
@@ -557,7 +568,7 @@ def enqueue_analyze(asset_id: int, db: Session = Depends(get_db)):
     asset.analyze_status = "pending"
     db.commit()
     job = enqueue(db, "analyze", {"asset_id": asset_id})
-    return {"job_id": job.id}
+    return {"job_id": job.id, **_ai_schedule_hold(db)}
 
 
 @router.post("/assets/{asset_id}/download")
@@ -662,7 +673,7 @@ def enqueue_breakdown(
         row.error = ""
     db.commit()
     job = enqueue(db, "breakdown", {"asset_id": asset_id, "force": force})
-    return {"job_id": job.id, "status": "queued"}
+    return {"job_id": job.id, "status": "queued", **_ai_schedule_hold(db)}
 
 
 @router.get("/assets/{asset_id}/breakdown")
@@ -717,7 +728,7 @@ def enqueue_process(asset_id: int, body: ProcessRequest, db: Session = Depends(g
     asset.understand_status = "pending"
     db.commit()
     job = enqueue(db, "understand_video", payload)
-    return {"job_id": job.id, "tier": tier}
+    return {"job_id": job.id, "tier": tier, **_ai_schedule_hold(db)}
 
 
 @router.post("/assets/{asset_id}/reclassify")
@@ -740,7 +751,7 @@ def enqueue_reclassify(
     asset.understand_status = "pending"
     db.commit()
     job = enqueue(db, "understand_video", payload)
-    return {"job_id": job.id}
+    return {"job_id": job.id, **_ai_schedule_hold(db)}
 
 
 @router.post("/assets/export")

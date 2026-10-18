@@ -2,7 +2,7 @@
   <div class="ui-page">
     <div class="ui-head">
       <h1>系统设置</h1>
-      <span class="sub">存储目录 · 加工分档 · 类型提示词 · 依赖诊断</span>
+      <span class="sub">存储目录 · AI 时段 · 加工分档 · 类型提示词 · 依赖诊断</span>
     </div>
 
     <!-- 页签头用 V3 样式；el-tabs 只保留内容切换能力（导航条由 CSS 隐藏） -->
@@ -113,6 +113,86 @@
             <el-button type="primary" @click="saveCommentSettings">保存</el-button>
           </el-form-item>
         </el-form>
+      </el-tab-pane>
+
+      <!-- AI 任务时段 -->
+      <el-tab-pane label="AI 时段" name="ai-schedule">
+        <p class="tip">限制需要调用大模型的任务在哪些时段开始执行。窗口外的任务会留在队列里，到时段自动继续；已经开始的调用会跑完。</p>
+        <section class="ui-panel">
+          <div class="ui-panel-head">
+            <div>
+              <h2>AI 任务可运行时段</h2>
+              <div class="tip" style="margin: 4px 0 0">适用于 AI 速览、视频理解（含判类）和爆款拆解；下载、转录、采集不受影响。</div>
+            </div>
+            <span class="grow" />
+            <span class="ui-badge" :class="aiSchedule.is_open ? 'ok' : 'warn'">
+              {{ aiSchedule.is_open ? '当前开放' : '当前等待' }}
+            </span>
+          </div>
+          <div class="ui-panel-body">
+            <el-form label-width="140px" style="max-width: 760px">
+              <el-form-item label="启用时段限制">
+                <el-switch v-model="aiSchedule.enabled" />
+                <span class="detail">关闭时不限制，AI 任务随时开始</span>
+              </el-form-item>
+              <el-form-item label="时区">
+                <el-select v-model="aiSchedule.timezone" style="width: 220px">
+                  <el-option label="Asia/Shanghai（北京时间）" value="Asia/Shanghai" />
+                  <el-option label="UTC" value="UTC" />
+                </el-select>
+              </el-form-item>
+            </el-form>
+
+            <div class="ai-window-head">
+              <span class="strong">时段</span>
+              <span class="grow" />
+              <button class="ui-btn sm" type="button" @click="addAiWindow">新增时段</button>
+            </div>
+            <div v-if="!aiSchedule.windows.length" class="ui-empty ai-window-empty">
+              <div class="big">还没有时段</div>
+              <p>启用限制前先添加一个时段。</p>
+            </div>
+            <div v-else class="ai-window-list">
+              <div v-for="(w, idx) in aiSchedule.windows" :key="idx" class="ai-window-row">
+                <div class="ai-window-days">
+                  <button
+                    v-for="(d, di) in WEEKDAYS"
+                    :key="d.value"
+                    type="button"
+                    class="ai-day"
+                    :class="{ on: w.days.includes(d.value) }"
+                    @click="toggleAiDay(w, d.value)"
+                  >{{ d.label }}</button>
+                </div>
+                <span class="ai-window-sep">从</span>
+                <el-time-select v-model="w.start" start="00:00" step="00:30" end="23:30" style="width: 110px" />
+                <span class="ai-window-sep">到</span>
+                <el-time-select v-model="w.end" start="00:00" step="00:30" end="23:30" style="width: 110px" />
+                <span v-if="w.start >= w.end" class="ui-badge warn">跨午夜</span>
+                <span class="grow" />
+                <button class="ui-btn sm ghost danger" type="button" @click="removeAiWindow(idx)">删除</button>
+              </div>
+            </div>
+
+            <p class="tip ai-window-note">
+              跨午夜时，后半天仍算在开始日：例如周一 23:00–07:00 包含周二凌晨。
+              <span v-if="aiSchedule.summary?.length">当前规则：{{ aiSchedule.summary.join('；') }}（{{ aiSchedule.timezone }}）。</span>
+              {{ aiSchedule.next_open_at ? `下一次开放：${aiSchedule.next_open_local || fmtAiTime(aiSchedule.next_open_at)}` : '' }}
+            </p>
+            <el-alert
+              v-if="aiSchedule.enabled && aiSchedule.windows.length === 0"
+              type="warning"
+              :closable="false"
+              show-icon
+              title="启用限制前请至少添加一个时段，否则保存会失败。"
+              style="margin-bottom: 14px"
+            />
+            <div class="ui-bar">
+              <button class="ui-btn primary" type="button" :disabled="!aiScheduleDirty" @click="saveAiSchedule">保存</button>
+              <span class="detail">队列页会同步显示当前开放状态。</span>
+            </div>
+          </div>
+        </section>
       </el-tab-pane>
 
       <!-- 视频理解 -->
@@ -502,6 +582,7 @@ const tabs = [
   { k: 'storage', label: '存储目录' },
   { k: 'llm', label: '模型接入' },
   { k: 'comments', label: '评论抓取' },
+  { k: 'ai-schedule', label: 'AI 时段' },
   { k: 'process', label: '视频理解' },
   { k: 'breakdown', label: '爆款拆解' },
   { k: 'sync', label: '同步频率' },
@@ -630,6 +711,96 @@ const commentSettings = reactive({
   interval: 1,
   with_sub_comments: false,
 })
+
+// ---- AI 任务时段 ----
+const WEEKDAYS = [
+  { value: 0, label: '一' },
+  { value: 1, label: '二' },
+  { value: 2, label: '三' },
+  { value: 3, label: '四' },
+  { value: 4, label: '五' },
+  { value: 5, label: '六' },
+  { value: 6, label: '日' },
+]
+const aiSchedule = reactive<any>({
+  enabled: false,
+  timezone: 'Asia/Shanghai',
+  windows: [],
+  summary: [],
+  next_open_local: null,
+  is_open: true,
+  next_open_at: null,
+})
+const aiScheduleSaved = ref('')
+const aiScheduleDirty = computed(() => JSON.stringify(aiScheduleSnapshot()) !== aiScheduleSaved.value)
+
+function aiScheduleSnapshot() {
+  return {
+    enabled: !!aiSchedule.enabled,
+    timezone: aiSchedule.timezone,
+    windows: (aiSchedule.windows || []).map((w: any) => ({
+      days: [...(w.days || [])].sort((a: number, b: number) => a - b),
+      start: w.start,
+      end: w.end,
+    })),
+  }
+}
+
+function addAiWindow() {
+  aiSchedule.windows.push({ days: [0, 1, 2, 3, 4], start: '09:00', end: '18:00' })
+}
+
+function removeAiWindow(idx: number) {
+  aiSchedule.windows.splice(idx, 1)
+}
+
+function toggleAiDay(w: any, day: number) {
+  const at = w.days.indexOf(day)
+  if (at >= 0) w.days.splice(at, 1)
+  else w.days.push(day)
+}
+
+function fmtAiTime(value: string | null) {
+  if (!value) return ''
+  const d = new Date(value)
+  return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+async function loadAiSchedule() {
+  try {
+    const { data } = await api.get('/api/system/ai-schedule')
+    aiSchedule.enabled = !!data.enabled
+    aiSchedule.timezone = data.timezone || 'Asia/Shanghai'
+    aiSchedule.windows = (data.windows || []).map((w: any) => ({ days: [...(w.days || [])], start: w.start, end: w.end }))
+    aiSchedule.summary = data.summary || []
+    aiSchedule.next_open_local = data.next_open_local || null
+    aiSchedule.is_open = !!data.is_open
+    aiSchedule.next_open_at = data.next_open_at || null
+    aiScheduleSaved.value = JSON.stringify(aiScheduleSnapshot())
+  } catch { /* 设置暂不可用时保留当前表单 */ }
+}
+
+async function saveAiSchedule() {
+  if (aiSchedule.enabled && !aiSchedule.windows.length) {
+    return ElMessage.warning('启用限制前请先添加时段')
+  }
+  if (aiSchedule.windows.some((w: any) => !w.days.length)) {
+    return ElMessage.warning('每个时段至少要选择一天')
+  }
+  if (aiSchedule.windows.some((w: any) => w.start === w.end)) {
+    return ElMessage.warning('时段的开始和结束不能相同')
+  }
+  try {
+    const { data } = await api.put('/api/system/ai-schedule', aiScheduleSnapshot())
+    aiSchedule.is_open = !!data.schedule?.is_open
+    aiSchedule.next_open_at = data.schedule?.next_open_at || null
+    aiScheduleSaved.value = JSON.stringify(aiScheduleSnapshot())
+    ElMessage.success('已保存')
+    await loadAiSchedule()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  }
+}
 const proc = reactive<any>({
   min_heat: 1000,
   min_likes_floor: 100,
@@ -960,6 +1131,7 @@ onMounted(() => {
   loadSettings()
   loadDiag()
   loadCommentSettings()
+  loadAiSchedule()
   loadProcessSettings()
   loadBreakdownSettings()
   loadSyncSettings()
@@ -1030,5 +1202,30 @@ onUnmounted(stopPolling)
   color: #909399;
   font-size: 12px;
   margin-left: 8px;
+}
+
+/* AI 时段 */
+.ai-window-head { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; }
+.ai-window-head .grow { flex: 1; }
+.ai-window-list { display: flex; flex-direction: column; gap: 8px; }
+.ai-window-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid var(--line-soft); background: var(--surface-2);
+}
+.ai-window-row .grow { flex: 1; }
+.ai-window-days { display: flex; gap: 4px; }
+.ai-day {
+  width: 30px; height: 28px; padding: 0; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+  font: inherit; font-size: var(--fs-sm);
+}
+.ai-day.on { border-color: var(--ink); background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.ai-window-sep { color: var(--muted); font-size: var(--fs-sm); }
+.ai-window-note { margin: 12px 0 14px; }
+.ai-window-empty { padding: 24px 12px; border: 1px dashed var(--line); }
+
+@media (max-width: 720px) {
+  .ai-window-row { align-items: flex-start; }
+  .ai-window-days { flex-wrap: wrap; }
 }
 </style>

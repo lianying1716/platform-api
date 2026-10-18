@@ -61,12 +61,36 @@ def enqueue(
     return job
 
 
-def claim(db: Session, job_types: list[str] | None = None) -> JobQueue | None:
+def claim(
+    db: Session,
+    job_types: list[str] | None = None,
+    *,
+    schedule: dict | None = None,
+) -> JobQueue | None:
     """原子领取一个待执行任务并标记 running。无任务时返回 None。
 
     用 FOR UPDATE SKIP LOCKED 避免多 worker 抢同一行。SQLite 不支持该语法，
     测试环境降级为普通查询（单线程，无并发竞争）。
+
+    AI 时段关闭时，调用大模型的任务留在 queued，其它任务照常领取。任务在领取
+    前被门控，不会出现跑到一半被中断。
     """
+    from app.core.ai_schedule import AI_JOB_TYPES, get_ai_schedule, is_ai_allowed
+
+    schedule = schedule if schedule is not None else get_ai_schedule(db)
+    blocked_types: frozenset[str] = frozenset()
+    if not is_ai_allowed(schedule):
+        blocked_types = AI_JOB_TYPES
+        if job_types and set(job_types) <= blocked_types:
+            return None
+
+    if job_types:
+        effective_types = [t for t in job_types if t not in blocked_types]
+        if not effective_types:
+            return None
+    else:
+        effective_types = None
+
     is_sqlite = db.bind.dialect.name == "sqlite"
     stmt = (
         select(JobQueue)
@@ -77,8 +101,10 @@ def claim(db: Session, job_types: list[str] | None = None) -> JobQueue | None:
         .order_by(JobQueue.priority, JobQueue.id)
         .limit(1)
     )
-    if job_types:
-        stmt = stmt.where(JobQueue.job_type.in_(job_types))
+    if effective_types:
+        stmt = stmt.where(JobQueue.job_type.in_(effective_types))
+    elif blocked_types:
+        stmt = stmt.where(JobQueue.job_type.notin_(tuple(blocked_types)))
     if not is_sqlite:
         stmt = stmt.with_for_update(skip_locked=True)
 

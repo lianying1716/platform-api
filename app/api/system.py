@@ -220,6 +220,38 @@ def update_settings(body: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# ---------- AI 任务运行时段 ----------
+@router.get("/ai-schedule")
+def get_ai_schedule_api(db: Session = Depends(get_db)):
+    """AI 任务可运行的时段、当前是否开放以及下一次开放时间。"""
+    from app.core.ai_schedule import ai_schedule_status, get_ai_schedule
+
+    return ai_schedule_status(get_ai_schedule(db))
+
+
+@router.put("/ai-schedule")
+def update_ai_schedule_api(body: dict, db: Session = Depends(get_db)):
+    """保存 AI 时段。先完整校验再写入，非法配置返回 422。"""
+    from app.core.ai_schedule import (
+        SETTING_KEY,
+        ai_schedule_status,
+        normalize_ai_schedule,
+    )
+
+    try:
+        normalized = normalize_ai_schedule(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"非法 AI 时段配置：{exc}") from exc
+
+    row = db.get(SystemSetting, SETTING_KEY)
+    if row is None:
+        row = SystemSetting(key=SETTING_KEY)
+        db.add(row)
+    row.value = json.dumps(normalized, ensure_ascii=False)
+    db.commit()
+    return {"ok": True, "schedule": ai_schedule_status(normalized)}
+
+
 @router.post("/settings/test-llm")
 async def test_llm(db: Session = Depends(get_db), body: dict | None = None):
     """测试大模型连通性（"接入方法"的验证按钮）。

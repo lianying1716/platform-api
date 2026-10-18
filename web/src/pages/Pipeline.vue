@@ -24,6 +24,18 @@
       </div>
     </div>
 
+    <div v-if="aiSchedule.enabled" class="pq-ai" :class="aiSchedule.is_open ? 'open' : 'closed'">
+      <span class="ui-badge" :class="aiSchedule.is_open ? 'ok' : 'warn'">
+        AI {{ aiSchedule.is_open ? '运行时段开放' : '运行时段已关闭' }}
+      </span>
+      <span v-if="!aiSchedule.is_open && aiSchedule.next_open_at" class="pq-ai-next">
+        AI 任务暂缓，{{ aiSchedule.next_open_local || fmtAiTime(aiSchedule.next_open_at) }} 自动继续
+      </span>
+      <span v-else-if="!aiSchedule.is_open" class="pq-ai-next">AI 任务暂缓，等待下一个运行时段</span>
+      <span v-else class="pq-ai-next">AI 速览、视频理解、爆款拆解会在此窗口内开始</span>
+      <router-link class="pq-ai-link" to="/system">调整时段</router-link>
+    </div>
+
     <section class="ui-panel" v-loading="loading">
       <div v-if="!loading && !jobs.length" class="ui-empty">
         <div class="big">{{ filter ? '该状态下没有任务' : '队列是空的' }}</div>
@@ -59,6 +71,9 @@
               <span v-if="row.status === 'queued' && nextRun(row)">
                 <span class="pq-k">计划</span>{{ nextRun(row) }}
               </span>
+              <span v-if="row.ai_schedule_held" class="pq-held">
+                等待 {{ row.ai_next_open_local || fmtAiTime(row.ai_next_open_at) || 'AI 时段' }}
+              </span>
             </div>
 
             <!-- 失败原因：完整展示，不截断 -->
@@ -88,6 +103,7 @@ const loading = ref(false)
 const filter = ref('')
 const counts = ref({ queued: 0, running: 0, error: 0, done: 0 })
 const lastLoaded = ref('')
+const aiSchedule = ref<any>({ enabled: false, is_open: true, next_open_at: null })
 let timer: number | undefined
 
 const summaryCards = computed(() => [
@@ -142,7 +158,9 @@ function targetFallback(row: any) {
 /** 进度：用状态 + payload 里的阶段信息解释，而不是只给一个词。 */
 function stageText(row: any) {
   const p = row.payload || {}
-  if (row.status === 'queued') return '等待 worker 领取'
+  if (row.status === 'queued') {
+    return row.ai_schedule_held ? '等待 AI 运行时段' : '等待 worker 领取'
+  }
   if (row.status === 'running') return p.stage || '处理中…'
   if (row.status === 'done') return '已完成'
   return `失败（第 ${row.attempts} 次尝试）`
@@ -186,16 +204,25 @@ function nextRun(row: any) {
   return new Date(t).toLocaleTimeString('zh-CN', { hour12: false })
 }
 
+function fmtAiTime(value: string | null) {
+  if (!value) return ''
+  return new Date(value).toLocaleString('zh-CN', {
+    hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  })
+}
+
 async function load() {
   loading.value = true
   try {
     const q = filter.value ? `?status=${filter.value}` : ''
     // 列表按当前筛选取；计数始终基于全量，避免筛选后徽标互相矛盾
-    const [listResp, allResp] = await Promise.all([
+    const [listResp, allResp, scheduleResp] = await Promise.all([
       api.get(`/api/pipeline/jobs${q}`),
       filter.value ? api.get('/api/pipeline/jobs') : null,
+      api.get('/api/pipeline/ai-schedule'),
     ])
     jobs.value = listResp.data
+    aiSchedule.value = scheduleResp.data
     const all = (allResp?.data ?? listResp.data) as any[]
     counts.value = {
       queued: all.filter((j) => j.status === 'queued').length,
@@ -249,6 +276,21 @@ onUnmounted(() => timer && clearInterval(timer))
 .pq-stat.ok .pq-stat-n { color: var(--ok); }
 .pq-stat.on .pq-stat-l { color: var(--ink); }
 .pq-auto { margin-left: auto; align-self: center; display: flex; align-items: center; gap: 7px; font-size: var(--fs-sm); color: var(--muted); }
+
+/* AI 运行时段提示条 */
+.pq-ai {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 12px; border: 1px solid var(--line); background: var(--surface-2);
+  font-size: var(--fs-sm); color: var(--ink-2);
+}
+.pq-ai.closed { border-color: color-mix(in oklab, var(--warn) 45%, var(--line)); background: var(--warn-soft); }
+.pq-ai-next { min-width: 0; }
+.pq-ai-link { margin-left: auto; color: var(--accent-2); font-weight: 600; }
+.pq-held {
+  color: color-mix(in oklab, var(--warn) 70%, var(--ink));
+  border: 1px dashed color-mix(in oklab, var(--warn) 45%, var(--line));
+  padding: 0 6px;
+}
 
 /* 任务列表 */
 .pq-list { list-style: none; margin: 0; padding: 0; }

@@ -52,6 +52,10 @@ def list_jobs(
         content_titles = {cid: (title or "") for cid, title in rows}
 
     out = []
+    from app.core.ai_schedule import AI_JOB_TYPES, ai_schedule_status, get_ai_schedule
+
+    schedule_status = ai_schedule_status(get_ai_schedule(db))
+    ai_open = bool(schedule_status["is_open"])
     for j in jobs:
         payload = j.payload or {}
         title = ""
@@ -74,6 +78,12 @@ def list_jobs(
                 "created_at": j.created_at.isoformat() if j.created_at else None,
                 "locked_at": j.locked_at.isoformat() if j.locked_at else None,
                 "run_after": j.run_after.isoformat() if j.run_after else None,
+                # AI 任务在时段外保留 queued；给队列页一个明确的“等待窗口”标记。
+                "ai_schedule_held": bool(
+                    j.job_type in AI_JOB_TYPES and j.status == "queued" and not ai_open
+                ),
+                "ai_next_open_at": schedule_status.get("next_open_at"),
+                "ai_next_open_local": schedule_status.get("next_open_local"),
                 "updated_at": j.updated_at.isoformat() if j.updated_at else None,
             }
         )
@@ -90,6 +100,14 @@ def queue_summary(db: Session = Depends(get_db)):
     for job_type, status, count in rows:
         summary.setdefault(job_type, {})[status] = count
     return summary
+
+
+@router.get("/ai-schedule")
+def pipeline_ai_schedule(db: Session = Depends(get_db)):
+    """队列页展示的 AI 时段状态（与系统设置读写同一份配置）。"""
+    from app.core.ai_schedule import ai_schedule_status, get_ai_schedule
+
+    return ai_schedule_status(get_ai_schedule(db))
 
 
 @router.post("/jobs/{job_id}/retry")
