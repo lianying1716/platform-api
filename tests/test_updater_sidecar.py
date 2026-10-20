@@ -73,6 +73,64 @@ def test_accepts_valid_version_returns_accepted(monkeypatch):
     assert eng.started and eng.started[0][0] == "v1.2.3"
 
 
+def test_upgrade_uses_main_api_version_not_sidecar_version(monkeypatch):
+    """边车不会随升级重建，from_version 必须来自主 API。"""
+    import json
+    import urllib.request
+
+    client, eng = _client(monkeypatch)
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"app_version": "v1.0.9", "db_in_sync": True}).encode()
+
+    seen = []
+
+    def _urlopen(url, timeout):
+        seen.append((url, timeout))
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    r = client.post("/upgrade", json={"version": "v1.0.10"}, headers={"X-Updater-Token": "s3cr3t"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["from_version"] == "v1.0.9"
+    for _ in range(50):
+        if eng.started:
+            break
+        time.sleep(0.01)
+    assert eng.started == [("v1.0.10", "v1.0.9", True)]
+    assert seen
+
+
+def test_upgrade_reports_unknown_from_version_when_main_api_is_unreachable(monkeypatch):
+    import urllib.request
+
+    client, eng = _client(monkeypatch)
+
+    def _urlopen(*_args, **_kwargs):
+        raise OSError("not reachable")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    r = client.post("/upgrade", json={"version": "v1.0.10"}, headers={"X-Updater-Token": "s3cr3t"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["from_version"] == ""
+    for _ in range(50):
+        if eng.started:
+            break
+        time.sleep(0.01)
+    assert eng.started == [("v1.0.10", "", True)]
+
+
 def test_busy_returns_409(monkeypatch):
     """已有升级进行中 → 409。"""
     eng = _FakeEngine()

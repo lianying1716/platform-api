@@ -46,6 +46,94 @@ def test_article_images_use_server_proxy_and_private_sources_are_removed(client,
     assert "https://mmbiz.qpic.cn/a.jpg" not in html
 
 
+def test_avatar_proxy_serves_archive_avatar_without_remote_fetch(client, session, tmp_path, monkeypatch):
+    """Legacy archive avatars are same-origin files, not remote URLs."""
+    from PIL import Image
+
+    from app.config import settings
+    from app.models import CreatorProfile
+
+    archive = tmp_path / "archive_avatars"
+    archive.mkdir()
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(archive / "dy_local.jpg", format="JPEG")
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    profile = CreatorProfile(
+        platform="douyin",
+        author_id="archive-1",
+        author_name="归档头像",
+        avatar="/api/archive/avatar/dy_local.jpg",
+    )
+    session.add(profile)
+    session.commit()
+    session.refresh(profile)
+
+    import app.api.media as media_mod
+
+    async def refuse_remote(*_a, **_k):
+        raise AssertionError("local archive avatar must not use the remote egress client")
+
+    monkeypatch.setattr(media_mod, "fetch_image", refuse_remote)
+    response = client.get(f"/api/media/avatars/{profile.id}")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/")
+    assert response.content.startswith(b"\xff\xd8\xff")
+
+
+def test_avatar_proxy_rejects_archive_path_escape(client, session, tmp_path, monkeypatch):
+    from app.config import settings
+    from app.models import CreatorProfile
+
+    archive = tmp_path / "archive_avatars"
+    archive.mkdir()
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    profile = CreatorProfile(
+        platform="douyin",
+        author_id="archive-2",
+        author_name="越界",
+        avatar="/api/archive/avatar/../secret.jpg",
+    )
+    session.add(profile)
+    session.commit()
+    session.refresh(profile)
+    assert client.get(f"/api/media/avatars/{profile.id}").status_code == 422
+
+
+def test_avatar_proxy_rejects_encoded_archive_path_escape(client, session, tmp_path, monkeypatch):
+    from app.config import settings
+    from app.models import CreatorProfile
+
+    (tmp_path / "archive_avatars").mkdir()
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    profile = CreatorProfile(
+        platform="douyin",
+        author_id="archive-3",
+        author_name="编码越界",
+        avatar="/api/archive/avatar/%2e%2e%2fsecret.jpg",
+    )
+    session.add(profile)
+    session.commit()
+    session.refresh(profile)
+    assert client.get(f"/api/media/avatars/{profile.id}").status_code == 422
+
+
+def test_avatar_proxy_returns_404_for_missing_archive_avatar(client, session, tmp_path, monkeypatch):
+    from app.config import settings
+    from app.models import CreatorProfile
+
+    (tmp_path / "archive_avatars").mkdir()
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    profile = CreatorProfile(
+        platform="douyin",
+        author_id="archive-4",
+        author_name="缺失头像",
+        avatar="/api/archive/avatar/missing.jpg",
+    )
+    session.add(profile)
+    session.commit()
+    session.refresh(profile)
+    assert client.get(f"/api/media/avatars/{profile.id}").status_code == 404
+
+
 def test_article_image_proxy_rejects_private_target(client, session, tmp_path, monkeypatch):
     from app.models import ContentItem, MediaAsset, PlatformAccount
     import app.core.media_cache as media_cache_mod

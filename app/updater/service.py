@@ -130,12 +130,8 @@ def _do_recreate(version: str) -> dict:
     return {"ok": r.returncode == 0, "error": r.stderr[-300:]}
 
 
-def _do_health(version: str) -> dict:
-    """Probe the API's structured version endpoint.
-
-    A bare HTTP 200 is not enough: the container tag may not have switched, or
-    migrations may still be pending.  Return evidence so the engine can decide.
-    """
+def _probe_api_version() -> dict:
+    """Read the main API's structured version endpoint once."""
     import urllib.request
     import json
 
@@ -151,10 +147,18 @@ def _do_health(version: str) -> dict:
                 "db_in_sync": body.get("db_in_sync") is True,
                 "db_revision": body.get("db_revision") or "",
                 "db_head": body.get("db_head") or "",
-                "target_version": version,
             }
     except Exception:  # noqa: BLE001 探测失败即视为不健康，交由引擎回滚
         return {"reachable": False, "error": "version endpoint unreachable"}
+
+
+def _do_health(version: str) -> dict:
+    """Probe the API and attach the target version for the engine's decision.
+
+    A bare HTTP 200 is not enough: the container tag may not have switched, or
+    migrations may still be pending.  Return evidence so the engine can decide.
+    """
+    return {**_probe_api_version(), "target_version": version}
 
 
 def _do_pin(version: str) -> dict:
@@ -250,12 +254,17 @@ _engine = UpgradeEngine(
 
 
 def _current_version() -> str:
-    try:
-        from app.core.version import load_build_info
+    """Read the running platform version from the main API.
 
-        return load_build_info().version
-    except Exception:  # noqa: BLE001
+    The updater sidecar is intentionally not recreated during an upgrade, so its
+    own image version can be older than the platform.  Using it as
+    ``from_version`` would show a false upgrade path and give rollback the wrong
+    target; the main API's structured version endpoint is the source of truth.
+    """
+    probe = _probe_api_version()
+    if probe.get("reachable") is not True:
         return ""
+    return str(probe.get("app_version") or "").strip()
 
 
 class UpgradeIn(BaseModel):

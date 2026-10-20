@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import security
+from app.core.archive_avatar import ArchiveAvatarInvalid, resolve_archive_avatar
 from app.core.queue import enqueue
 from app.core import storage
 from app.core.egress import is_public_image_url
@@ -1063,14 +1064,12 @@ def export_assets(body: ExportRequest, db: Session = Depends(get_db)):
 @router.get("/archive/avatar/{name}")
 def archive_avatar(name: str):
     """服务索引阶段从 .actors 复制出的博主头像；name 已做安全化，限制在本目录内。"""
-    from pathlib import Path as _Path
-
     from app.config import settings
-    from fastapi.responses import FileResponse
 
-    safe = _Path(name).name
-    base = _Path(settings.data_dir) / "archive_avatars"
-    path = base / safe
-    if not path.is_file() or base not in path.resolve().parents:
+    try:
+        path = resolve_archive_avatar(name, settings.data_dir)
+    except ArchiveAvatarInvalid as exc:
+        raise HTTPException(status_code=404, detail="头像不存在") from exc
+    if not path.is_file():
         raise HTTPException(status_code=404, detail="头像不存在")
     return FileResponse(str(path), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
