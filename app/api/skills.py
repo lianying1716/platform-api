@@ -11,11 +11,12 @@
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.application.commands.crawl_task import CrawlTaskCommand, create_crawl_task
 from app.core.api_auth import require_scope
 from app.db import get_db
 from app.models import (
@@ -72,12 +73,13 @@ def skill_search_assets(
     account_id: int | None = None,
     keyword: str | None = None,
     transcribe_status: str | None = None,
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     key: ApiKey = Depends(require_scope("read", "operate", "admin")),
 ):
     t0 = time.time()
     stmt = select(MediaAsset, ContentItem).join(ContentItem, MediaAsset.content_id == ContentItem.id)
+    stmt = stmt.where(MediaAsset.deleted_at.is_(None))
     if platform:
         stmt = stmt.where(ContentItem.platform == platform)
     if account_id is not None:
@@ -86,7 +88,7 @@ def skill_search_assets(
         stmt = stmt.where(ContentItem.title.contains(keyword))
     if transcribe_status:
         stmt = stmt.where(MediaAsset.transcribe_status == transcribe_status)
-    stmt = stmt.order_by(MediaAsset.id.desc()).limit(min(limit, 100))
+    stmt = stmt.order_by(MediaAsset.id.desc()).limit(limit)
     rows = db.execute(stmt).all()
     out = [
         {
@@ -120,6 +122,7 @@ def skill_list_crawl_tasks(
             "sort": t.sort,
             "limit_per_run": t.limit_per_run,
             "enabled": t.enabled,
+            "comment_mode": t.comment_mode,
             "interval_minutes": t.interval_minutes,
             "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
         }
@@ -170,6 +173,11 @@ def skill_get_transcript(
     key: ApiKey = Depends(require_scope("read", "operate", "admin")),
 ):
     t0 = time.time()
+    from app.services.storage_lifecycle import get_live_asset
+
+    asset = get_live_asset(db, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在或已删除")
     transcript = db.scalar(select(Transcript).where(Transcript.asset_id == asset_id))
     if transcript is None:
         _log(db, key.id, "get_transcript", f"asset={asset_id}", "error", int((time.time() - t0) * 1000))
@@ -178,44 +186,18 @@ def skill_get_transcript(
     return {"language": transcript.language, "full_text": transcript.full_text, "segments": transcript.segments}
 
 
-# ---------- 操作类（operate scope） ----------
-class CreateCrawlBody(BaseModel):
-    platform: str
-    keyword: str
-    account_id: int | None = None
-    sort: str = "popular"
-    limit_per_run: int = 50
-    interval_minutes: int = 1440
-
-
 @router.post("/crawl-tasks")
 def skill_create_crawl_task(
-    body: CreateCrawlBody,
+    body: CrawlTaskCommand,
     db: Session = Depends(get_db),
     key: ApiKey = Depends(require_scope("operate", "admin")),
 ):
     t0 = time.time()
-    if body.account_id is not None:
-        account = db.get(PlatformAccount, body.account_id)
-        if (
-            account is None
-            or account.is_system
-            or account.platform != body.platform
-            or account.status != "active"
-        ):
-            _log(db, key.id, "create_crawl_task", "bad_account", "error", int((time.time() - t0) * 1000))
-            raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
-    task = CrawlTask(
-        platform=body.platform,
-        keyword=body.keyword,
-        account_id=body.account_id,
-        sort=body.sort,
-        limit_per_run=body.limit_per_run,
-        interval_minutes=body.interval_minutes,
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
+    try:
+        task = create_crawl_task(db, body)
+    except ValueError as exc:
+        _log(db, key.id, "create_crawl_task", "invalid", "error", int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     _log(db, key.id, "create_crawl_task", f"{body.platform}:{body.keyword}", "ok", int((time.time() - t0) * 1000))
     return {"task_id": task.id}
 
@@ -227,20 +209,21 @@ def skill_trigger_sync(
     key: ApiKey = Depends(require_scope("operate", "admin")),
 ):
     t0 = time.time()
-    from app.core.queue import enqueue
+    from app.application.commands.sync import SyncCommandError, enqueue_sync
 
-    sub = db.get(Subscription, subscription_id)
-    if sub is None or sub.deleted_at is not None:
+    try:
+        job = enqueue_sync(db, subscription_id, force=True)
+    except SyncCommandError as exc:
         _log(db, key.id, "trigger_sync", f"sub={subscription_id}", "error", int((time.time() - t0) * 1000))
-        raise HTTPException(status_code=404, detail="订阅不存在")
-    job = enqueue(db, "sync", {"subscription_id": subscription_id})
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     _log(db, key.id, "trigger_sync", f"sub={subscription_id}", "ok", int((time.time() - t0) * 1000))
-    return {"job_id": job.id}
+    return {"job_id": job.id, "status": "queued"}
 
 
 @router.post("/accounts/qr-login")
 async def skill_start_qr_login(
     platform: str,
+    account_id: int | None = None,
     db: Session = Depends(get_db),
     key: ApiKey = Depends(require_scope("operate", "admin")),
 ):
@@ -265,7 +248,7 @@ async def skill_start_qr_login(
     except Exception as exc:
         _log(db, key.id, "start_qr_login", platform, "error", int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail=f"发起扫码失败: {exc}") from exc
-    session_id = qr_sessions.create(platform, start.session_data)
+    session_id = qr_sessions.create(platform, start.session_data, account_id=account_id)
     _log(db, key.id, "start_qr_login", platform, "ok", int((time.time() - t0) * 1000))
     return {
         "session_id": session_id,
@@ -299,16 +282,31 @@ async def skill_poll_qr_login(
     return result.model_dump() if hasattr(result, "model_dump") else result
 
 
-@router.post("/accounts/cookie")
+class CookieUpdateBody(BaseModel):
+    platform: str
+    cookie: str
+    display_name: str = ""
+    account_id: int | None = None
+    external_id: str = ""
+
+
+class CookieUpdateOut(BaseModel):
+    account_id: int
+    platform: str
+    status: str
+
+
+@router.post("/accounts/cookie", response_model=CookieUpdateOut)
 def skill_update_cookie(
-    body: dict,
+    body: CookieUpdateBody,
     db: Session = Depends(get_db),
     key: ApiKey = Depends(require_scope("operate", "admin")),
 ):
     """手动用 Cookie 录入/更新账号（扫码不可用时的兜底，与前端录入等价）。
 
-    body: { platform, cookie, display_name? }
-    按 (platform) 找已有账号则更新凭证，否则新建。
+    body: { platform, cookie, display_name?, account_id?, external_id? }
+    Multi-account platforms require an explicit target; a single existing
+    account may be updated without one.
     """
     from datetime import datetime
 
@@ -316,28 +314,66 @@ def skill_update_cookie(
     from app.modules import get_adapter
 
     t0 = time.time()
-    platform = (body or {}).get("platform", "")
-    cookie = (body or {}).get("cookie", "")
-    display_name = (body or {}).get("display_name", "")
+    platform = body.platform
+    cookie = body.cookie
+    display_name = body.display_name
     try:
         adapter = get_adapter(platform)
     except ValueError as exc:
         _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        plain = adapter.parse_manual_input({"cookie": cookie})
+        # Skills accept a browser "Name=value; Name=value" cookie string, while
+        # adapters expose structured credential fields.  Parse at this boundary
+        # and let the adapter apply its own platform-specific validation.
+        raw = {"cookie": cookie}
+        if platform == "bilibili":
+            for part in cookie.split(";"):
+                key_name, sep, value = part.strip().partition("=")
+                if sep and key_name:
+                    raw[key_name.strip().lower()] = value.strip()
+            raw["cookie"] = cookie
+        plain = adapter.parse_manual_input(raw)
     except ValueError as exc:
         _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    account = db.scalar(
-        select(PlatformAccount)
-        .where(
-            PlatformAccount.platform == platform,
-            PlatformAccount.is_system.is_(False),
-            PlatformAccount.status != "deleted",
+    if body.account_id is not None:
+        account = db.get(PlatformAccount, body.account_id)
+        if account is None or account.is_system or account.status == "deleted":
+            _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
+            raise HTTPException(status_code=409, detail="目标账号不存在或已停用")
+        if account.platform != platform:
+            _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
+            raise HTTPException(status_code=409, detail="目标账号平台不匹配")
+    elif body.external_id:
+        account = db.scalar(
+            select(PlatformAccount).where(
+                PlatformAccount.platform == platform,
+                PlatformAccount.external_id == body.external_id,
+                PlatformAccount.is_system.is_(False),
+                PlatformAccount.status != "deleted",
+            )
         )
-        .order_by(PlatformAccount.id)
-    )
+        if account is None:
+            _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
+            raise HTTPException(status_code=409, detail="未找到指定 external_id 的账号")
+    else:
+        candidates = db.scalars(
+            select(PlatformAccount)
+            .where(
+                PlatformAccount.platform == platform,
+                PlatformAccount.is_system.is_(False),
+                PlatformAccount.status != "deleted",
+            )
+            .order_by(PlatformAccount.id)
+        ).all()
+        if len(candidates) > 1:
+            _log(db, key.id, "update_cookie", platform, "error", int((time.time() - t0) * 1000))
+            raise HTTPException(
+                status_code=409,
+                detail="该平台有多个账号，请显式提供 account_id 或 external_id，禁止隐式覆盖第一个",
+            )
+        account = candidates[0] if candidates else None
     if account is None:
         account = PlatformAccount(
             platform=platform, display_name=display_name, credential_kind=adapter.credential_kind
@@ -376,6 +412,20 @@ async def skill_check_account(
 class ExportBody(BaseModel):
     asset_ids: list[int]
     format: str = "md"
+
+    @field_validator("asset_ids")
+    @classmethod
+    def _bounded_asset_ids(cls, value: list[int]) -> list[int]:
+        if len(value) > 500:
+            raise ValueError("单次最多导出 500 条素材")
+        return value
+
+    @field_validator("format")
+    @classmethod
+    def _known_format(cls, value: str) -> str:
+        if value not in ("md", "json"):
+            raise ValueError("format 必须是 md 或 json")
+        return value
 
 
 @router.post("/assets/export")
@@ -422,26 +472,20 @@ def skill_delete_asset(
     db: Session = Depends(get_db),
     key: ApiKey = Depends(require_scope("operate", "admin")),
 ):
-    """外部 Agent 删除素材：必须 confirm=true，先写删除审计再物理删除。"""
-    from app.models import ContentItem, DeletionAudit, MediaAsset
+    """外部 Agent 删除素材：必须 confirm=true；软删除后由 worker 清理文件。"""
+    from app.services.storage_lifecycle import request_asset_deletion
 
     t0 = time.time()
     if (body or {}).get("confirm") is not True:
         raise HTTPException(status_code=422, detail="删除素材必须显式确认：confirm=true")
-    asset = db.get(MediaAsset, asset_id)
-    if asset is None:
-        raise HTTPException(status_code=404, detail="素材不存在")
-    content = db.get(ContentItem, asset.content_id)
-    db.add(
-        DeletionAudit(
-            asset_id=asset.id,
-            content_id=asset.content_id,
-            account_id=content.account_id if content else None,
+    try:
+        _asset, audit, job = request_asset_deletion(
+            db,
+            asset_id,
             actor=f"apikey:{key.id}",
-            reason=str((body or {}).get("reason") or "")[:500],
+            reason=str((body or {}).get("reason") or ""),
         )
-    )
-    db.delete(asset)
-    db.commit()
-    _log(db, key.id, "delete_asset", f"asset_id={asset_id}", "ok", int((time.time() - t0) * 1000))
-    return {"ok": True, "asset_id": asset_id, "confirmed": True}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="素材不存在或已删除") from exc
+    _log(db, key.id, "delete_asset", f"asset_id={asset_id} job={job.id}", "ok", int((time.time() - t0) * 1000))
+    return {"ok": True, "asset_id": asset_id, "confirmed": True, "audit_id": audit.id, "job_id": job.id}

@@ -75,7 +75,11 @@ class WechatMpAdapter:
             "f": "json",
             "ajax": "1",
         }
-        async with httpx.AsyncClient(headers=_headers(credential.get("cookie", "")), timeout=15) as client:
+        from app.core.egress import client_kwargs
+
+        async with httpx.AsyncClient(
+            headers=_headers(credential.get("cookie", "")), timeout=15, **client_kwargs("wechat_mp")
+        ) as client:
             resp = await client.get(f"{_MP}/cgi-bin/searchbiz", params=params)
             data = resp.json()
             ret = data.get("base_resp", {}).get("ret")
@@ -86,7 +90,9 @@ class WechatMpAdapter:
             return CheckResult(ok=False, message=f"异常返回 ret={ret}: {data.get('base_resp', {}).get('err_msg', '')}")
 
     async def qr_start(self) -> QrStart:
-        async with httpx.AsyncClient(headers=_headers(), timeout=15, follow_redirects=False) as client:
+        async with httpx.AsyncClient(
+            headers=_headers(), timeout=15, follow_redirects=False, **client_kwargs("wechat_mp")
+        ) as client:
             start = await client.post(
                 f"{_MP}/cgi-bin/bizlogin", params={"action": "startlogin"}, data=_LOGIN_PAYLOAD
             )
@@ -107,7 +113,9 @@ class WechatMpAdapter:
 
     async def qr_poll(self, session_data: dict) -> QrPoll:
         session_cookie = session_data["cookie"]
-        async with httpx.AsyncClient(headers=_headers(session_cookie), timeout=15) as client:
+        async with httpx.AsyncClient(
+            headers=_headers(session_cookie), timeout=15, **client_kwargs("wechat_mp")
+        ) as client:
             ask = await client.get(
                 f"{_MP}/cgi-bin/scanloginqrcode",
                 params={"action": "ask", "token": "", "lang": "zh_CN", "f": "json", "ajax": "1"},

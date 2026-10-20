@@ -1,16 +1,18 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import Layout from './layout/Layout.vue'
-import Accounts from './pages/Accounts.vue'
-import AiAccess from './pages/AiAccess.vue'
-import Assets from './pages/Assets.vue'
-import Crawl from './pages/Crawl.vue'
-import DesignPreview from './pages/DesignPreview.vue'
-import FollowedCreators from './pages/FollowedCreators.vue'
-import Login from './pages/Login.vue'
-import ModelAccess from './pages/ModelAccess.vue'
-import Overview from './pages/Overview.vue'
-import Pipeline from './pages/Pipeline.vue'
-import Settings from './pages/Settings.vue'
+// 路由级懒加载：首屏只下载登录后的壳与当前页，避免把九个页面、图表和
+// 模型接入表单一次性塞进主包。Layout 保持同步加载，它是所有子路由的外框。
+const Accounts = () => import('./pages/Accounts.vue')
+const AiAccess = () => import('./pages/AiAccess.vue')
+const Assets = () => import('./pages/Assets.vue')
+const Crawl = () => import('./pages/Crawl.vue')
+const DesignPreview = () => import('./pages/DesignPreview.vue')
+const FollowedCreators = () => import('./pages/FollowedCreators.vue')
+const Login = () => import('./pages/Login.vue')
+const ModelAccess = () => import('./pages/ModelAccess.vue')
+const Overview = () => import('./pages/Overview.vue')
+const Pipeline = () => import('./pages/Pipeline.vue')
+const Settings = () => import('./pages/Settings.vue')
 import { DEMO_MODE } from './demo/runtime'
 
 export const router = createRouter({

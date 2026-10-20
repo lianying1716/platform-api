@@ -23,6 +23,9 @@ from app.services.model_access_service import ModelCallResult
 @pytest.fixture(autouse=True)
 def _workdir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    import app.core.storage as storage_mod
+
+    monkeypatch.setattr(storage_mod, "get_default_root", lambda _db: type("Root", (), {"path": str(tmp_path), "id": 1})())
     yield
 
 
@@ -66,7 +69,10 @@ def _seed_asset(db, *, with_video=False):
     db.add(content)
     db.flush()
     asset = MediaAsset(
-        content_id=content.id, relative_path="douyin/a/1", video_file="v.mp4" if with_video else "",
+        content_id=content.id,
+        relative_path="douyin/a/1",
+        video_file="v.mp4" if with_video else "",
+        download_status="done",
     )
     db.add(asset)
     db.flush()
@@ -179,6 +185,16 @@ def test_run_understand_classify_best_effort(monkeypatch, session):
 def test_run_breakdown_uses_gateway(monkeypatch, session):
     _seed_models(session)
     _content, asset = _seed_asset(session)
+    session.add(
+        VideoUnderstanding(
+            asset_id=asset.id,
+            category="other",
+            summary="视频理解结果",
+            status="done",
+            model="primary",
+        )
+    )
+    session.commit()
     from app.services import breakdown_service as svc
 
     captured = {}
@@ -198,3 +214,51 @@ def test_run_breakdown_uses_gateway(monkeypatch, session):
     assert out.score == 88
     assert captured["work_type"] == "text_analysis"
     assert out.routing["text_analysis"]["used_model_key"] == "primary"
+
+
+def test_legacy_claim_enables_all_three_business_paths(monkeypatch, session):
+    """Claimed legacy config must remain runnable and still pass through the gateway."""
+    from app.models import SystemSetting
+    from app.services.legacy_llm_migration import claim_legacy_llm_settings
+    from app.services import breakdown_service, understand_service
+    from app.workers import handlers
+
+    session.add_all(
+        [
+            SystemSetting(key="llm_base_url", value="https://legacy.example/v1"),
+            SystemSetting(key="llm_api_key", value="sk-legacy"),
+            SystemSetting(key="llm_model", value="legacy-text"),
+            SystemSetting(key="process_classify_model", value="legacy-classify"),
+            SystemSetting(key="process_vision_model", value="legacy-vision"),
+        ]
+    )
+    session.commit()
+    assert claim_legacy_llm_settings(session).status == "claimed"
+
+    _content, asset = _seed_asset(session, with_video=True)
+    Path("douyin/a/1").mkdir(parents=True, exist_ok=True)
+    Path("douyin/a/1/v.mp4").write_bytes(b"video")
+    seen: list[str] = []
+
+    async def fake_call(self, db, *, work_type, request, parse_result, **kwargs):
+        seen.append(work_type)
+        if work_type == "cover_classify":
+            return _result(
+                {"type": "commerce", "confidence": 0.9, "reason": "x", "signals": []},
+                model="legacy-classify",
+            )
+        if work_type == "video_understanding":
+            return _result({"summary": "legacy video", "dimensions": {}, "timeline": []}, model="legacy-vision")
+        if request["messages"][-1]["content"].startswith("标题："):
+            return _result({"summary": "legacy summary", "tags": ["legacy"]}, model="legacy-text")
+        return _result({"score": 77, "verdict": "legacy report", "comment_insights": {}}, model="legacy-text")
+
+    monkeypatch.setattr(
+        "app.services.model_access_service.ModelAccessService.call_with_fallback", fake_call
+    )
+    asyncio.run(handlers.handle_analyze(session, {"asset_id": asset.id}))
+    understanding = asyncio.run(understand_service.run_understand(session, asset.id))
+    report = asyncio.run(breakdown_service.run_breakdown(session, asset.id, force=True))
+    assert understanding.summary == "legacy video"
+    assert report.verdict == "legacy report"
+    assert {"text_analysis", "cover_classify", "video_understanding"} <= set(seen)

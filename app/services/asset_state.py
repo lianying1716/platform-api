@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import JobQueue, MediaAsset
+from app.models import AiModel, CrawlRun, JobQueue, MediaAsset, SyncRun
 
 # 进行中状态 → 负责推进它的 job_type
 _IN_PROGRESS = {
@@ -60,6 +60,7 @@ def clear_success_error(db: Session) -> int:
         select(MediaAsset).where(
             MediaAsset.download_status == "done",
             MediaAsset.error != "",
+            MediaAsset.deleted_at.is_(None),
         )
     ).all()
     for asset in rows:
@@ -67,6 +68,94 @@ def clear_success_error(db: Session) -> int:
     if rows:
         db.commit()
     return len(rows)
+
+
+def reconcile_job_terminal(db: Session, job_type: str, payload: dict, *, failed: bool) -> None:
+    """任务进入终态时立即对账对应领域状态，避免 UI 等 30 分钟 janitor。
+
+    handler 正常返回 ``JobOutcome`` 失败时由 runner 调用；handler 抛异常时同样必须
+    走这里，否则 asset 会停在 downloading/transcribing/analyzing。
+    """
+    if not failed:
+        return
+    asset_id = (payload or {}).get("asset_id")
+    try:
+        asset_id = int(asset_id)
+    except (TypeError, ValueError):
+        return
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        return
+    column, status = {
+        "download": ("download_status", "downloading"),
+        "transcribe": ("transcribe_status", "transcribing"),
+        "analyze": ("analyze_status", "analyzing"),
+    }.get(job_type, ("", ""))
+    if not column:
+        return
+    if getattr(asset, column) == status:
+        setattr(asset, column, "error")
+        if not (asset.error or "").strip():
+            asset.error = "任务失败，可重新触发"
+        asset.updated_at = datetime.utcnow()
+        db.commit()
+
+
+def reconcile_model_probe_terminal(
+    db: Session, payload: dict, *, error: str = "模型探测失败，可重新检测"
+) -> None:
+    """探测任务失败后把 testing 收敛到 failed；成功路径由 probe_model 自己写入。"""
+    model_id = (payload or {}).get("model_id")
+    try:
+        model_id = int(model_id)
+    except (TypeError, ValueError):
+        return
+    model = db.get(AiModel, model_id)
+    if model is not None and model.probe_status == "testing":
+        model.probe_status = "failed"
+        if not (model.probe_error or "").strip():
+            model.probe_error = error
+        model.probe_started_at = None
+        db.commit()
+
+
+def refresh_asset_after_step(
+    db: Session,
+    job_type: str,
+    payload: dict,
+    *,
+    failed: bool = False,
+    error: str = "",
+) -> None:
+    """把工作流终态同步到素材的状态投影。
+
+    下载仍由 handler 自己维护；加工步骤完成后，即使结果行已写好，也要把对应
+    ``*_status`` 从 pending 收敛为 done/error，避免详情页显示“排队中”而实际已完成。
+    A retryable step must stay in its in-progress projection until it succeeds or
+    reaches a terminal error.
+    """
+    asset_id = (payload or {}).get("asset_id")
+    try:
+        asset_id = int(asset_id)
+    except (TypeError, ValueError):
+        return
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None:
+        return
+    column = {
+        "transcribe": "transcribe_status",
+        "analyze": "analyze_status",
+        "understand_video": "understand_status",
+    }.get(job_type)
+    if column is None:
+        return
+    setattr(asset, column, "error" if failed else "done")
+    # Video understanding has its own error column; keep the shared asset error
+    # slot clean so a failed understand does not make a successfully downloaded
+    # video look like a failed download.
+    if failed and job_type != "understand_video" and not (asset.error or "").strip():
+        asset.error = (error or "任务失败，可重新触发")[:500]
+    db.commit()
 
 
 def reset_stale_assets(
@@ -81,6 +170,7 @@ def reset_stale_assets(
             select(MediaAsset).where(
                 getattr(MediaAsset, column) == in_progress,
                 MediaAsset.updated_at < cutoff,
+                MediaAsset.deleted_at.is_(None),
             )
         ).all()
         count = 0

@@ -15,15 +15,6 @@ import pytest
 SERVER_PY = Path(__file__).resolve().parents[1] / "mcp_server" / "server.py"
 
 
-@pytest.fixture(autouse=True)
-def _reset_rate_window():
-    from app.core import api_auth
-
-    api_auth._rate_window.clear()
-    yield
-    api_auth._rate_window.clear()
-
-
 def _make_key(client, scopes=("read", "operate")):
     r = client.post("/api/ai/keys", json={"name": "surface-test", "scopes": list(scopes)})
     assert r.status_code == 200, r.text
@@ -98,3 +89,13 @@ def test_every_skill_route_reachable_with_key(client):
         else:
             r = client.post(path, json=body, headers=H, params=params)
         assert r.status_code != 405, f"{method} {path} -> 405（路由不存在或方法不匹配）"
+
+
+def test_mcp_cookie_and_qr_tools_expose_target_parameters():
+    source = SERVER_PY.read_text(encoding="utf-8")
+    assert "def update_cookie(" in source
+    start = source.index("def update_cookie(")
+    end = source.index("# ---------- 采集/同步 ----------", start)
+    signature = source[start:end]
+    assert "account_id" in signature and "external_id" in signature
+    assert "def start_qr_login(platform: str, account_id:" in source

@@ -178,7 +178,6 @@ def test_cover_proxy_returns_404_without_cover(client, session):
 
 def test_cover_proxy_sends_referer_and_streams_image(client, session, monkeypatch, tmp_path):
     """封面走服务端代理并带 Referer（抖音/B站封面防盗链+签名会过期）。"""
-    import httpx
     from app.models import ContentItem, MediaAsset, PlatformAccount
 
     acc = PlatformAccount(platform="douyin", display_name="d")
@@ -194,25 +193,12 @@ def test_cover_proxy_sends_referer_and_streams_image(client, session, monkeypatc
 
     seen = {}
 
-    class _Resp:
-        status_code = 200
-        content = b"\xff\xd8\xff\xe0jpegdata"
-        headers = {"content-type": "image/jpeg"}
+    from app.core import egress
 
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def get(self, url, headers=None):
-            seen["url"] = url
-            seen["headers"] = headers or {}
-            return _Resp()
+    async def fake_fetch(url, *, purpose, platform, headers, timeout):
+        seen["url"] = url
+        seen["headers"] = headers or {}
+        return egress.ImageResponse(url, 200, "image/jpeg", b"\xff\xd8\xff\xe0jpegdata")
 
     # 封面缓存目录隔离到 tmp，避免上一次运行留下的缓存把请求短路掉。
     import app.api.assets as assets_mod
@@ -221,7 +207,7 @@ def test_cover_proxy_sends_referer_and_streams_image(client, session, monkeypatc
     cache_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(assets_mod, "_cover_cache_dir", lambda: cache_dir)
 
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(egress, "fetch_image", fake_fetch)
     r = client.get(f"/api/assets/{a.id}/cover")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/jpeg")
@@ -233,3 +219,46 @@ def test_cover_proxy_sends_referer_and_streams_image(client, session, monkeypatc
     r2 = client.get(f"/api/assets/{a.id}/cover")
     assert r2.status_code == 200 and r2.content == r.content
     assert not seen, "第二次应命中缓存，不该再请求 CDN"
+
+
+def test_cover_proxy_ignores_legacy_cache_with_non_image_bytes(client, session, monkeypatch, tmp_path):
+    """A pre-fix cover cache entry must be revalidated, not served as same-origin HTML."""
+    from app.models import ContentItem, MediaAsset, PlatformAccount
+    import app.api.assets as assets_mod
+
+    account = PlatformAccount(platform="douyin", display_name="legacy-cache")
+    session.add(account)
+    session.flush()
+    content = ContentItem(
+        account_id=account.id,
+        platform="douyin",
+        external_id="legacy-cover",
+        cover_url="https://p3.douyinpic.com/legacy.jpeg",
+    )
+    session.add(content)
+    session.flush()
+    asset = MediaAsset(content_id=content.id)
+    session.add(asset)
+    session.commit()
+
+    cache_dir = tmp_path / "cover_cache"
+    cache_dir.mkdir()
+    (cache_dir / f"{asset.id}.json").write_text(
+        f'{{"file": "{asset.id}.bin", "type": "image/jpeg"}}', "utf-8"
+    )
+    (cache_dir / f"{asset.id}.bin").write_bytes(b"<html><script>alert(1)</script></html>")
+    monkeypatch.setattr(assets_mod, "_cover_cache_dir", lambda: cache_dir)
+    import app.core.egress as egress_mod
+
+    async def refuse_network(*_args, **_kwargs):
+        raise egress_mod.EgressBlocked("测试中不回源")
+
+    monkeypatch.setattr(egress_mod, "fetch_image", refuse_network)
+
+    response = client.get(f"/api/assets/{asset.id}/cover")
+    # Rejected cache entry falls through to the controlled egress boundary,
+    # which is explicitly refused here; the key contract is that no cached
+    # script bytes are ever returned from this origin.
+    assert response.status_code in (422, 502)
+    assert response.headers["content-type"].startswith("application/json")
+    assert b"<script>" not in response.content

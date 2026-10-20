@@ -2,34 +2,32 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core import security
-from app.core.queue import enqueue
+from app.application.commands.crawl import CrawlCommandError, enqueue_crawl
+from app.application.commands.crawl_task import (
+    CrawlTaskCommand,
+    apply_crawl_task_command,
+    create_crawl_task,
+)
 from app.db import get_db
-from app.models import CrawlRun, CrawlTask, PlatformAccount
-from app.modules import REGISTRY
+from app.models import CrawlRun, CrawlTask
 
 router = APIRouter(prefix="/api/crawl-tasks", tags=["crawl"], dependencies=[Depends(security.require_admin)])
 
-# 关键词采集支持的平台
-_CRAWL_PLATFORMS = {"xhs", "douyin", "bilibili", "kuaishou", "zhihu"}
 
-
-class CrawlTaskIn(BaseModel):
-    platform: str
-    keyword: str
-    account_id: int | None = None  # 空 = 自动轮换
-    sort: str = "popular"
-    limit_per_run: int = 50
-    with_comments: bool = False
-    to_candidate: bool = True
-    min_play: int = 0
-    interval_minutes: int = 1440
-    enabled: bool = True
+class CrawlTaskIn(CrawlTaskCommand):
+    @model_validator(mode="before")
+    @classmethod
+    def _translate_legacy_comment_bool(cls, data):
+        if isinstance(data, dict) and "with_comments" in data and "comment_mode" not in data:
+            data = dict(data)
+            data["comment_mode"] = "force" if data.pop("with_comments") else "off"
+        return data
 
 
 def _out(t: CrawlTask) -> dict:
@@ -40,12 +38,13 @@ def _out(t: CrawlTask) -> dict:
         "keyword": t.keyword,
         "sort": t.sort,
         "limit_per_run": t.limit_per_run,
-        "with_comments": t.with_comments,
+        "comment_mode": t.comment_mode,
         "to_candidate": t.to_candidate,
         "min_play": t.min_play,
         "interval_minutes": t.interval_minutes,
         "enabled": t.enabled,
         "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
+        "last_attempt_at": t.last_attempt_at.isoformat() if t.last_attempt_at else None,
     }
 
 
@@ -57,24 +56,10 @@ def list_tasks(db: Session = Depends(get_db)):
 
 @router.post("")
 def create_task(body: CrawlTaskIn, db: Session = Depends(get_db)):
-    if body.platform not in _CRAWL_PLATFORMS:
-        raise HTTPException(status_code=422, detail=f"不支持的采集平台: {body.platform}")
-    if not body.keyword.strip():
-        raise HTTPException(status_code=422, detail="关键词不能为空")
-    if body.account_id is not None:
-        account = db.get(PlatformAccount, body.account_id)
-        if (
-            account is None
-            or account.is_system
-            or account.platform != body.platform
-            or account.status != "active"
-            or not bool(account.sync_enabled)
-        ):
-            raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
-    task = CrawlTask(**body.model_dump())
-    db.add(task)
-    db.commit()
-    db.refresh(task)
+    try:
+        task = create_crawl_task(db, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _out(task)
 
 
@@ -83,19 +68,10 @@ def update_task(task_id: int, body: CrawlTaskIn, db: Session = Depends(get_db)):
     task = db.get(CrawlTask, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if body.account_id is not None:
-        account = db.get(PlatformAccount, body.account_id)
-        if (
-            account is None
-            or account.is_system
-            or account.platform != body.platform
-            or account.status != "active"
-            or not bool(account.sync_enabled)
-        ):
-            raise HTTPException(status_code=422, detail="指定账号不存在、平台不匹配或不是可用账号")
-    for k, v in body.model_dump().items():
-        setattr(task, k, v)
-    db.commit()
+    try:
+        task = apply_crawl_task_command(db, task, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _out(task)
 
 
@@ -111,27 +87,29 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{task_id}/run")
 def run_task(task_id: int, db: Session = Depends(get_db)):
-    task = db.get(CrawlTask, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    job = enqueue(db, "crawl", {"task_id": task_id})
-    return {"job_id": job.id}
+    try:
+        job = enqueue_crawl(db, task_id)
+    except CrawlCommandError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"job_id": job.id, "status": "queued"}
 
 
 @router.get("/{task_id}/runs")
-def list_runs(task_id: int, db: Session = Depends(get_db), limit: int = 20):
+def list_runs(task_id: int, db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=100)):
     runs = db.scalars(
-        select(CrawlRun).where(CrawlRun.task_id == task_id).order_by(CrawlRun.id.desc()).limit(min(limit, 100))
+        select(CrawlRun).where(CrawlRun.task_id == task_id).order_by(CrawlRun.id.desc()).limit(limit)
     ).all()
     return [
         {
             "id": r.id,
+            "job_id": r.job_id,
             "status": r.status,
             "account_id": r.account_id,
             "fetched": r.fetched,
             "added": r.added,
             "error": r.error,
             "started_at": r.started_at.isoformat() if r.started_at else None,
+            "heartbeat_at": r.heartbeat_at.isoformat() if r.heartbeat_at else None,
             "finished_at": r.finished_at.isoformat() if r.finished_at else None,
         }
         for r in runs

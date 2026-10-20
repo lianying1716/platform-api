@@ -28,6 +28,11 @@
     </aside>
 
     <div class="ui-main">
+      <nav class="ui-mobile-nav" aria-label="主导航">
+        <router-link v-for="item in menu" :key="item.path" :to="item.path" class="ui-mobile-link">
+          {{ item.title }}
+        </router-link>
+      </nav>
       <header class="ui-top">
         <span class="ui-crumb"><b>{{ route.meta.title }}</b></span>
         <span v-if="DEMO_MODE" class="ui-badge acc">演示数据 · 只读展示</span>
@@ -52,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { DEMO_MODE } from '../demo/runtime'
@@ -60,6 +65,49 @@ import '../styles/ui.css'
 
 const route = useRoute()
 const router = useRouter()
+let eventSource: EventSource | null = null
+let reconnectTimer: number | undefined
+let lastEventId = ''
+let fallbackTimer: number | undefined
+
+// The browser's EventSource cannot set Authorization headers, so SSE relies on
+// the httpOnly session cookie issued at login. Last-Event-ID lets the server
+// replay outbox rows that arrived while the connection was down.
+function connectEvents() {
+  if (DEMO_MODE || typeof EventSource === 'undefined' || !localStorage.getItem('token')) return
+  eventSource?.close()
+  // EventSource retries natively and sends Last-Event-ID. Keep the cursor in
+  // the URL too so a page reload can replay missed events explicitly.
+  const url = lastEventId
+    ? `/api/events/stream?last_event_id=${encodeURIComponent(lastEventId)}`
+    : '/api/events/stream'
+  eventSource = new EventSource(url)
+  eventSource.onopen = () => { window.clearTimeout(reconnectTimer) }
+  eventSource.onmessage = (event) => {
+    if (event.lastEventId) lastEventId = event.lastEventId
+  }
+  for (const name of ['asset_status', 'sync_done', 'crawl_done', 'pipeline_status', 'breakdown_status', 'job_alert']) {
+    eventSource.addEventListener(name, (event) => {
+      const id = (event as MessageEvent).lastEventId
+      if (id) lastEventId = id
+      refreshCurrentPage()
+    })
+  }
+  eventSource.onerror = () => {
+    // Do not reconnect on the initial 401; login will mount this layout again.
+    if (!localStorage.getItem('token')) return
+    eventSource?.close()
+    eventSource = null
+    window.clearTimeout(reconnectTimer)
+    reconnectTimer = window.setTimeout(connectEvents, 2000)
+  }
+}
+
+// Pages own their data loading. A lightweight custom event lets the active
+// keep-alive page refresh incrementally without coupling Layout to every page.
+function refreshCurrentPage() {
+  window.dispatchEvent(new CustomEvent('xsai:events-changed'))
+}
 
 // keep-alive 的 include 用组件名匹配；只缓存显式声明 meta.keepAlive 的页面。
 // 注意：router.getRoutes() 返回的是**扁平化**后的路由（子路由 path 已拼成完整路径），
@@ -96,14 +144,42 @@ function isActive(path: string) {
 }
 
 function logout() {
+  eventSource?.close()
+  eventSource = null
   localStorage.removeItem('token')
   // 清掉服务端会话 Cookie，避免 <video> 等标签仍能访问受保护资源
   api.post('/api/auth/logout').catch(() => {})
   router.push('/login')
 }
+
+onMounted(connectEvents)
+onUnmounted(() => {
+  eventSource?.close()
+  eventSource = null
+  window.clearTimeout(reconnectTimer)
+  window.clearInterval(fallbackTimer)
+})
 </script>
 
 <style scoped>
+.ui-main, .ui-content { min-width: 0; }
+.ui-mobile-nav { display: none; }
+@media (max-width: 820px) {
+  .ui-app { grid-template-columns: 1fr; }
+  .ui-app .ui-side { display: none; }
+  .ui-mobile-nav {
+    display: flex; align-items: center; gap: 4px; overflow-x: auto;
+    padding: 8px 12px; margin: 0; background: var(--surface);
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  .ui-mobile-link {
+    flex: none; padding: 5px 9px; color: var(--ink-2); text-decoration: none;
+    font-size: var(--fs-sm); border: 1px solid var(--line); border-radius: 4px;
+  }
+  .ui-mobile-link.router-link-active { color: var(--accent); border-color: var(--accent); }
+  .ui-content { padding: 14px 12px; }
+  .ui-top { height: auto; flex-wrap: wrap; padding: 8px 12px; }
+}
 .ui-brand .bt { white-space: nowrap; font-size: 16px; }
 .ui-brand .bt-en {
   font-size: 10px;

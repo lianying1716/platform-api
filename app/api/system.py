@@ -2,12 +2,11 @@ import json
 import platform as py_platform
 import shutil
 import sys
-import time
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -146,10 +145,17 @@ def list_storage_roots(db: Session = Depends(get_db)):
 
 @router.post("/storage-roots")
 def create_storage_root(body: StorageRootIn, db: Session = Depends(get_db)):
+    try:
+        path = storage.validate_root_path(body.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    wanted = storage.normalize_root_key(path)
+    if any(storage.normalize_root_key(r.path) == wanted for r in db.scalars(select(StorageRoot)).all()):
+        raise HTTPException(status_code=409, detail="该存储根路径已存在")
     if body.is_default:
         for r in db.scalars(select(StorageRoot).where(StorageRoot.is_default.is_(True))).all():
             r.is_default = False
-    root = StorageRoot(name=body.name, path=body.path, is_default=body.is_default)
+    root = StorageRoot(name=(body.name or "").strip(), path=path, is_default=body.is_default)
     db.add(root)
     db.commit()
     db.refresh(root)
@@ -159,14 +165,25 @@ def create_storage_root(body: StorageRootIn, db: Session = Depends(get_db)):
     return {"id": root.id, "available": ok, "detail": detail}
 
 
-@router.delete("/storage-roots/{root_id}")
+@router.delete("/storage-roots/{root_id}", status_code=200)
 def delete_storage_root(root_id: int, db: Session = Depends(get_db)):
-    root = db.get(StorageRoot, root_id)
-    if root is None:
-        raise HTTPException(status_code=404, detail="存储根不存在")
-    db.delete(root)
-    db.commit()
+    from app.services.storage_lifecycle import StorageRootInUse, delete_root
+
+    try:
+        delete_root(db, root_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="存储根不存在") from exc
+    except StorageRootInUse as exc:
+        raise HTTPException(status_code=409, detail=f"存储根仍被引用，无法删除：{exc}") from exc
     return {"ok": True}
+
+
+@router.get("/storage-roots/orphans")
+def storage_orphans(root_id: int | None = None, db: Session = Depends(get_db)):
+    """只读孤儿文件报告；管理员据此决定是否人工清理。"""
+    from app.services.storage_lifecycle import scan_orphan_files
+
+    return scan_orphan_files(db, root_id=root_id)
 
 
 # ---------- 目录浏览（存储根可视化选择；只读） ----------
@@ -191,26 +208,41 @@ def list_fs_dir(path: str = ""):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-# ---------- 通用设置（大模型/代理等，存 system_setting 键值） ----------
-_PUBLIC_SETTINGS = ("llm_base_url", "llm_model", "proxy_url")  # llm_api_key 写入但不回显
+# ---------- 通用设置（非秘密运行配置，存 system_setting 键值） ----------
+# Generic settings are read-only. Credentials and model routing belong to the
+# model-access surface; the old llm_* writer is kept rejected so clients get an
+# actionable error instead of silently storing a second source of truth.
+_PUBLIC_SETTINGS = ()
+_REJECTED_SECRET_SETTINGS = {"llm_api_key", "llm_base_url", "llm_model"}
 
 
 @router.get("/settings")
 def get_settings(db: Session = Depends(get_db)):
+    from app.core import crypto
+
     rows = {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
     out = {k: rows.get(k, "") for k in _PUBLIC_SETTINGS}
-    out["llm_api_key_set"] = bool(rows.get("llm_api_key"))
+    out["credential_key_configured"] = bool(crypto.key_is_configured())
     return out
 
 
 @router.put("/settings")
 def update_settings(body: dict, db: Session = Depends(get_db)):
-    allowed = set(_PUBLIC_SETTINGS) | {"llm_api_key"}
+    rejected = _REJECTED_SECRET_SETTINGS & set(body)
+    if rejected:
+        raise HTTPException(
+            status_code=422,
+            detail="凭证不能写入普通系统设置，请在「模型接入」中配置供应商密钥",
+        )
+    allowed = set(_PUBLIC_SETTINGS)
+    if body:
+        raise HTTPException(
+            status_code=422,
+            detail="通用系统设置中没有可写字段；代理请在部署环境配置，模型请在「模型接入」配置",
+        )
     for key, value in body.items():
         if key not in allowed:
             continue
-        if key == "llm_api_key" and not value:
-            continue  # 空值不覆盖已存的密钥
         row = db.get(SystemSetting, key)
         if row is None:
             row = SystemSetting(key=key)
@@ -250,51 +282,6 @@ def update_ai_schedule_api(body: dict, db: Session = Depends(get_db)):
     row.value = json.dumps(normalized, ensure_ascii=False)
     db.commit()
     return {"ok": True, "schedule": ai_schedule_status(normalized)}
-
-
-@router.post("/settings/test-llm")
-async def test_llm(db: Session = Depends(get_db), body: dict | None = None):
-    """测试大模型连通性（"接入方法"的验证按钮）。
-
-    用系统设置里的 Base URL / Key / 模型（未保存的字段也可经 body 临时覆盖），
-    发一个最小 chat/completions 请求，返回是否通、耗时、回复片段。
-    只做连通性探测，不写库、不产生费用之外的副作用。
-    """
-    rows = {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
-    body = body or {}
-    base = (body.get("llm_base_url") or rows.get("llm_base_url") or settings.llm_base_url or "").rstrip("/")
-    key = body.get("llm_api_key") or rows.get("llm_api_key") or settings.llm_api_key or ""
-    model = body.get("llm_model") or rows.get("llm_model") or settings.llm_model or ""
-    if not base:
-        raise HTTPException(status_code=422, detail="未填 Base URL")
-    if not model:
-        raise HTTPException(status_code=422, detail="未填模型名")
-
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 8,
-    }
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
-    t0 = time.time()
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(f"{base}/chat/completions", headers=headers, json=payload)
-    except httpx.HTTPError as exc:
-        return {"ok": False, "message": f"连接失败: {exc}", "elapsed_ms": int((time.time() - t0) * 1000)}
-    ms = int((time.time() - t0) * 1000)
-    if resp.status_code >= 400:
-        return {
-            "ok": False,
-            "message": f"HTTP {resp.status_code}: {resp.text[:300]}",
-            "elapsed_ms": ms,
-        }
-    try:
-        data = resp.json()
-        snippet = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-    except Exception:
-        snippet = ""
-    return {"ok": True, "message": "连接成功", "model": model, "reply": str(snippet)[:100], "elapsed_ms": ms}
 
 
 # ---------- 评论抓取配置（抖音评论富集门控/抓取参数） ----------
@@ -517,18 +504,6 @@ def _as_bool(value) -> bool:
     raise ValueError("需要布尔值")
 
 
-def _as_provider(value) -> str:
-    if not isinstance(value, str) or value not in ("qwen", "gemini"):
-        raise ValueError("provider 仅支持 qwen / gemini")
-    return value
-
-
-def _as_nonempty_str(value) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("需要非空字符串")
-    return value.strip()
-
-
 # 短名 -> 校验器。范围/枚举写死在这里（配置值本身不写死，可在线改）。
 _PROCESS_SPECS = {
     "min_heat": lambda v: _as_int(v, lo=0),
@@ -543,9 +518,6 @@ _PROCESS_SPECS = {
     "low_confidence_threshold": lambda v: _as_float(v, lo=0.0, hi=1.0),
     "classify_enabled": _as_bool,
     "use_cover": _as_bool,
-    "provider": _as_provider,
-    "vision_model": _as_nonempty_str,
-    "classify_model": _as_nonempty_str,
     # 全局自动加工默认（新素材下载完成后是否自动转录/分析）。
     "auto_transcribe": _as_bool,
     "auto_analyze": _as_bool,
@@ -627,7 +599,17 @@ def diagnostics(db: Session = Depends(get_db)):
     except Exception as exc:
         add("数据库", False, str(exc))
     add("数据目录", settings.data_dir.exists(), str(settings.data_dir))
-    add("密钥文件", (settings.data_dir / "secret.key").exists(), "凭证加密密钥（迁移机器必须随行备份）")
+    from app.core import crypto
+
+    key_ok = crypto.key_is_configured()
+    key_source = (
+        "环境变量 PLATFORM_CREDENTIAL_ENC_KEY"
+        if settings.credential_enc_key
+        else "credential_key_file"
+        if settings.credential_key_file is not None
+        else "data/secret.key"
+    )
+    add("加密密钥", key_ok, f"来源：{key_source}（迁移机器必须随行备份）" if key_ok else "未配置或无法加载")
     ffmpeg = shutil.which("ffmpeg")
     add("FFmpeg", ffmpeg is not None, ffmpeg or "未找到，P2 视频下载/转码需要")
     try:

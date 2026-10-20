@@ -26,6 +26,38 @@ from app.modules import get_adapter
 
 router = APIRouter(prefix="/api", tags=["sync-switches"], dependencies=[Depends(security.require_admin)])
 
+
+class SwitchIn(BaseModel):
+    enabled: bool
+    only_new: bool | None = None
+
+
+class SwitchListOut(BaseModel):
+    account_id: int
+    platform: str
+    switches: list[dict]
+
+
+class SwitchUpdateOut(BaseModel):
+    key: str
+    enabled: bool
+    subscription_id: int | None = None
+    only_new: bool | None = None
+    affected: int | None = None
+
+
+def _platform_switch_keys(platform: str) -> list[str]:
+    supported = getattr(get_adapter(platform), "singleton_sync_sources", ())
+    return [key for key in ("favorite", "watch_later") if key in supported] + ["creator"]
+
+
+@router.get("/sync-switches/capabilities")
+def switch_capabilities():
+    """Return the account-level switch keys that exist for each platform."""
+    from app.modules import REGISTRY
+
+    return {platform: _platform_switch_keys(platform) for platform in REGISTRY}
+
 # 账号级开关的稳定 key（前端按 key 渲染，不靠顺序）
 _KIND_LABELS = {
     "favorite": ("收藏同步", "把「我的收藏」里的作品同步入库"),
@@ -78,7 +110,7 @@ def _switch_view(db: Session, account: PlatformAccount, source_type: str) -> dic
     return None
 
 
-@router.get("/accounts/{account_id}/sync-switches")
+@router.get("/accounts/{account_id}/sync-switches", response_model=SwitchListOut)
 def list_switches(account_id: int, db: Session = Depends(get_db)):
     """列出账号的同步开关。收藏/稍后再看默认关闭，关注列表默认开启。"""
     account = db.get(PlatformAccount, account_id)
@@ -112,12 +144,7 @@ def list_switches(account_id: int, db: Session = Depends(get_db)):
     return {"account_id": account.id, "platform": account.platform, "switches": switches}
 
 
-class SwitchIn(BaseModel):
-    enabled: bool
-    only_new: bool | None = None
-
-
-@router.put("/accounts/{account_id}/sync-switches/{key}")
+@router.put("/accounts/{account_id}/sync-switches/{key}", response_model=SwitchUpdateOut)
 async def update_switch(account_id: int, key: str, body: SwitchIn, db: Session = Depends(get_db)):
     """打开/关闭一类同步开关。打开收藏/稍后再看时按需创建订阅（幂等）。"""
     account = db.get(PlatformAccount, account_id)
@@ -162,6 +189,10 @@ async def update_switch(account_id: int, key: str, body: SwitchIn, db: Session =
             source_type=key,
             remote_id=remote_id,
             title=str(sources[0].get("title") or _KIND_LABELS[key][0]),
+            # Account-level sources must remain independently switchable.  If a
+            # user just turned one off and the row is later recreated, opening it
+            # must mean enabled; otherwise the UI reports success while the next
+            # scheduler scan skips it.
             enabled=body.enabled,
         )
         db.add(sub)

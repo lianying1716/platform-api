@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     updater_token: str = ""
     # 检查更新用的 GitHub 仓库。
     update_repo: str = "lianying1716/platform-api"
+    # 可选 GitHub token：未认证 API 按出口 IP 每小时仅 60 次，多个实例共享
+    # 同一 NAT 时很容易耗尽，导致版本页无法检查更新。只读公开仓库的 fine-grained
+    # token（或无权限 PAT）即可；token 只随 Authorization 头发给 api.github.com。
+    update_github_token: str = ""
     host: str = "0.0.0.0"
     port: int = 9100
     # 是否由后端托管前端构建产物（app/static）。
@@ -83,10 +87,11 @@ class Settings(BaseSettings):
     whisper_model: str = "base"
     whisper_device: str = "auto"  # auto / cpu / cuda
     whisper_compute_type: str = "int8"
-    # 外部大模型分析（P6）
+    # 旧版 LLM 环境变量仅用于一次性认领（见 legacy_llm_migration）。新部署请在
+    # 「模型接入」里配置 AiProvider；业务运行期不再读取这些值。
     llm_base_url: str = ""
     llm_api_key: str = ""
-    llm_model: str = "gpt-4o-mini"
+    llm_model: str = ""
     # 关键词采集（P5）：单次抓取超时（各平台均为仓库内实现）
     crawl_timeout_seconds: int = 600
 

@@ -5,8 +5,8 @@
 对外被 AI 调用的高层能力在 api/skills.py。
 """
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,7 +22,8 @@ _VALID_SCOPES = {"read", "operate", "admin"}
 class KeyCreate(BaseModel):
     name: str
     scopes: list[str] = ["read", "operate"]
-    rate_limit_per_min: int = 60
+    # 0 would make the key permanently unusable; cap protects the shared table.
+    rate_limit_per_min: int = Field(default=60, ge=1, le=10000)
 
 
 @router.get("/keys")
@@ -74,9 +75,13 @@ def revoke_key(key_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/call-logs")
-def call_logs(db: Session = Depends(get_db), limit: int = 100, offset: int = 0):
+def call_logs(
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
     logs = db.scalars(
-        select(ApiCallLog).order_by(ApiCallLog.id.desc()).limit(min(limit, 500)).offset(offset)
+        select(ApiCallLog).order_by(ApiCallLog.id.desc()).limit(limit).offset(offset)
     ).all()
     return [
         {

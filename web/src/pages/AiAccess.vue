@@ -242,9 +242,10 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
+import { parseUtc } from '../utils/time'
 
 const tab = ref('keys')
 const keys = ref<any[]>([])
@@ -324,7 +325,7 @@ const agentPrompt = computed(() => [
 ].join('\n'))
 
 function fmt(v: string | null) {
-  return v ? new Date(v.endsWith('Z') ? v : v + 'Z').toLocaleString('zh-CN', { hour12: false }) : '—'
+  return parseUtc(v)?.toLocaleString('zh-CN', { hour12: false }) ?? '—'
 }
 
 async function load() {

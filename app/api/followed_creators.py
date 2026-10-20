@@ -32,7 +32,7 @@ from app.db import get_db
 from app.models import CreatorProfile, PlatformAccount, Subscription
 from app.modules import get_adapter
 from app.services.foundation import follower_count_of, upsert_creator
-from app.services.sync_service import run_subscription_sync
+from app.application.commands.sync import SyncCommandError, enqueue_sync
 
 router = APIRouter(
     prefix="/api/followed-creators", tags=["followed-creators"],
@@ -69,13 +69,17 @@ def _out(sub: Subscription, profile: CreatorProfile | None) -> dict:
         "platform": sub.platform,
         "author_id": sub.remote_id,
         "author_name": (profile.author_name if profile else "") or sub.title,
+        # Keep the historical remote field for API clients; browsers use the
+        # same-origin proxy field so they never issue cross-origin image calls.
         "avatar": profile.avatar if profile else "",
+        "avatar_url": f"/api/media/avatars/{profile.id}" if profile and profile.avatar else "",
         "home_url": profile.homepage_url if profile else "",
         "signature": profile.bio if profile else "",
         "verified": bool(profile.verified) if profile else False,
         # 列值为 0 时回退原始快照：历史行不必等下次刷新就能显示真实粉丝数。
         "follower_count": follower_count_of(profile),
         "like_count": 0,
+        "profile_id": profile.id if profile else None,
         # 关系状态：全部来自 subscription（唯一真相）
         "sync_enabled": sub.enabled,
         "sync_videos": sub.sync_videos,
@@ -316,24 +320,20 @@ def update_followed_creator(fc_id: int, body: ToggleIn, db: Session = Depends(ge
     return _out(sub, profiles.get((sub.platform, sub.remote_id)))
 
 
-@router.post("/{fc_id}/sync")
+@router.post("/{fc_id}/sync", status_code=202)
 async def sync_now(fc_id: int, db: Session = Depends(get_db)):
-    """立即同步该博主：先确保同步开启，再跑一次订阅同步。"""
+    """立即同步该博主：先确保同步开启，再提交一个同步任务。"""
     sub = _get_creator_sub(fc_id, db)
     # 立即同步等于是用户显式要这个博主的视频：把两个开关都打开，再跑一次。
     sub.enabled = True
     sub.sync_videos = True
     db.commit()
     db.refresh(sub)
-    run = await run_subscription_sync(db, sub)
-    return {
-        "run_id": run.id,
-        "status": run.status,
-        "fetched": run.fetched,
-        "added": run.added,
-        "updated": run.updated,
-        "error": run.error,
-    }
+    try:
+        job = enqueue_sync(db, sub.id, force=True)
+    except SyncCommandError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"job_id": job.id, "status": "queued"}
 
 
 @router.delete("/{fc_id}")

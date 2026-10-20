@@ -52,7 +52,13 @@ def _as_dir(out_dir) -> Path | None:
     return Path(text) if text else None
 
 
-def _build_opts(out_dir: Path, audio_only: bool, cookie: str = "") -> dict:
+def _build_opts(
+    out_dir: Path,
+    audio_only: bool,
+    cookie: str = "",
+    max_height: int | None = None,
+    proxy: str | None = None,
+) -> dict:
     opts = dict(_SAFE_OPTS)
     opts["outtmpl"] = str(out_dir / "%(id)s.%(ext)s")
     opts["paths"] = {"home": str(out_dir)}
@@ -62,14 +68,29 @@ def _build_opts(out_dir: Path, audio_only: bool, cookie: str = "") -> dict:
             {"key": "FFmpegExtractAudio", "preferredcodec": "wav", "preferredquality": "192"}
         ]
     else:
-        opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        if max_height:
+            opts["format"] = (
+                f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/"
+                f"best[height<={max_height}][ext=mp4]/"
+                f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]"
+            )
+        else:
+            opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
         opts["merge_output_format"] = "mp4"
     if cookie:
         opts["http_headers"] = {"Cookie": cookie}
+    if proxy:
+        opts["proxy"] = proxy
     return opts
 
 
-def _run_download(url: str, out_dir: Path, audio_only: bool, cookie: str) -> DownloadResult:
+def _run_download(
+    url: str,
+    out_dir: Path,
+    audio_only: bool,
+    cookie: str,
+    max_height: int | None = None,
+) -> DownloadResult:
     try:
         import yt_dlp
     except ImportError:
@@ -79,7 +100,9 @@ def _run_download(url: str, out_dir: Path, audio_only: bool, cookie: str) -> Dow
     if out_dir is None:
         return DownloadResult(ok=False, message="未指定下载目录（存储根未配置）")
     out_dir.mkdir(parents=True, exist_ok=True)
-    opts = _build_opts(out_dir, audio_only, cookie)
+    from app.core.egress import proxy_for
+
+    opts = _build_opts(out_dir, audio_only, cookie, max_height=max_height, proxy=proxy_for("media"))
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -107,12 +130,19 @@ def _run_download(url: str, out_dir: Path, audio_only: bool, cookie: str) -> Dow
     )
 
 
-async def download(url: str, out_dir: "Path | str", audio_only: bool = False, cookie: str = "") -> DownloadResult:
+async def download(
+    url: str,
+    out_dir: "Path | str",
+    audio_only: bool = False,
+    cookie: str = "",
+    *,
+    max_height: int | None = None,
+) -> DownloadResult:
     """异步包装：yt-dlp 是同步阻塞的，丢到线程池执行。
 
     ``out_dir`` 允许是 str（``resolve_asset_dir`` 的返回值），内部会归一化成 Path。
     """
-    return await asyncio.to_thread(_run_download, url, out_dir, audio_only, cookie)
+    return await asyncio.to_thread(_run_download, url, out_dir, audio_only, cookie, max_height)
 
 async def download_direct(
     url: str,
@@ -170,26 +200,47 @@ async def download_direct(
     return DownloadResult(ok=False, message=last_message or "直链下载失败")
 
 
+def _platform_of(url: str) -> str:
+    host = (url or "").lower()
+    if "bilibili" in host or "biliapi" in host:
+        return "bilibili"
+    if "douyin" in host or "douyinpic" in host:
+        return "douyin"
+    if "xiaohongshu" in host or "xhscdn" in host:
+        return "xhs"
+    return "media"
+
+
 async def _download_one(url: str, out_dir: Path, name: str, headers: dict) -> DownloadResult:
     """单次直链下载尝试：流式落盘、按 Content-Type 修正扩展名。"""
     import httpx
+    from app.core.egress import client_kwargs
 
-    target = out_dir / f"{name}.mp4"
-    async with httpx.AsyncClient(headers=headers, timeout=300, follow_redirects=True) as c:
+    safe = _safe_name(name)
+    target = out_dir / f"{safe}.mp4"
+    part = out_dir / f".{safe}.mp4.part"
+    async with httpx.AsyncClient(
+        headers=headers, timeout=300, follow_redirects=True, **client_kwargs(_platform_of(url))
+    ) as c:
         async with c.stream("GET", url) as r:
             if r.status_code != 200:
                 return DownloadResult(ok=False, message=f"直链下载失败：HTTP {r.status_code}")
             ctype = (r.headers.get("content-type") or "").lower()
-            if "video/mp4" in ctype or "octet-stream" in ctype or not ctype:
-                target = out_dir / f"{name}.mp4"
-            elif "audio" in ctype:
-                target = out_dir / f"{name}.m4a"
+            if "audio" in ctype and "video" not in ctype:
+                target = out_dir / f"{safe}.m4a"
+                part = out_dir / f".{safe}.m4a.part"
             written = 0
-            with open(target, "wb") as fh:
-                async for chunk in r.aiter_bytes(64 * 1024):
-                    fh.write(chunk)
-                    written += len(chunk)
+            try:
+                with open(part, "wb") as fh:
+                    async for chunk in r.aiter_bytes(64 * 1024):
+                        fh.write(chunk)
+                        written += len(chunk)
+                if written > 0:
+                    part.replace(target)
+            finally:
+                part.unlink(missing_ok=True)
     if written <= 0:
+        target.unlink(missing_ok=True)
         return DownloadResult(ok=False, message="直链下载失败：未写入任何数据")
     return DownloadResult(ok=True, video_file=target.name, message="下载完成")
 
@@ -400,6 +451,7 @@ async def download_dash(
     - 用 ffmpeg -c copy 合并（不重编码，秒级完成）。
     """
     import httpx
+    from app.core.egress import client_kwargs
 
     out_dir = _as_dir(out_dir)
     if out_dir is None:
@@ -413,7 +465,7 @@ async def download_dash(
     audio_tmp = out_dir / f".{safe}.audio.m4s"
     target = out_dir / f"{safe}.mp4"
 
-    async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=300, follow_redirects=True, **client_kwargs("bilibili")) as client:
         # 已经是混合流（durl/flv）或不需要合并：直接落 target
         if not audio_urls or not merge:
             res = await _fetch_to_file(client, video_urls, target, headers)

@@ -96,7 +96,10 @@ def test_creator_video_sync_blocked_until_manually_opened(session, monkeypatch):
 
 
 def test_manual_toggle_then_sync_ingests_videos(client, session, monkeypatch):
-    """手动打开 sync_videos 后，链路真的生效：落库 + 同步入库。"""
+    """手动打开 sync_videos 后，命令入队 → worker 执行 → 内容入库。"""
+    from app.models import JobQueue
+    from app.workers.handlers import handle_sync
+
     acc = _account(session)
     sub = _creator_sub(session, acc, sync_videos=False)
 
@@ -110,10 +113,17 @@ def test_manual_toggle_then_sync_ingests_videos(client, session, monkeypatch):
 
     _patch_fetch(monkeypatch, "douyin", [_item("V1", author_id="AUTHOR1")])
     r = client.post(f"/api/followed-creators/{sub.id}/sync")
+    assert r.status_code == 202, r.text
     body = r.json()
-    assert body["status"] == "success", body
-    assert body["added"] == 1
+    assert body["status"] == "queued", body
+    job = session.get(JobQueue, body["job_id"])
+    assert job is not None and job.payload["force"] is True
+
+    outcome = asyncio.run(handle_sync(session, job.payload, job))
+    assert outcome.ok is True
     assert session.scalar(select(ContentItem)).external_id == "V1"
+    run = session.scalar(select(SyncRun).where(SyncRun.job_id == job.id))
+    assert run is not None and run.status == "success" and run.added == 1
 
 
 def test_opening_video_sync_also_opens_relation(client, session):

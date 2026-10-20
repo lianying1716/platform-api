@@ -19,7 +19,7 @@ EXPECTED_DEFAULTS = {
     "max_items": 50,
     "only_new": True,
     "download_quality": "best",
-    "with_comments": False,
+    "comment_mode": "gate",
 }
 
 
@@ -47,7 +47,10 @@ def test_subscription_settings_defaults(session):
     assert sub.max_items == 50
     assert sub.only_new is True
     assert sub.download_quality == "best"
-    assert sub.with_comments is False
+    assert sub.comment_mode == "gate"
+    assert sub.interval_minutes is None
+    assert sub.auto_transcribe is None
+    assert sub.auto_analyze is None
 
 
 def test_subscription_settings_explicit_values(session):
@@ -62,7 +65,7 @@ def test_subscription_settings_explicit_values(session):
         max_items=20,
         only_new=False,
         download_quality="1080",
-        with_comments=True,
+        comment_mode="force",
     )
     session.add(sub)
     session.commit()
@@ -73,7 +76,7 @@ def test_subscription_settings_explicit_values(session):
     assert sub.max_items == 20
     assert sub.only_new is False
     assert sub.download_quality == "1080"
-    assert sub.with_comments is True
+    assert sub.comment_mode == "force"
 
 
 # --- A4：SubscriptionIn 校验（create 与 update 共用同一模型） ---
@@ -117,16 +120,16 @@ def test_create_subscription_accepts_valid_settings(client, session):
         "min_play": 0,
         "max_items": 500,
         "publish_after_days": 0,
-        "download_quality": "audio",
+        "download_quality": "720",
         "only_new": False,
-        "with_comments": True,
+        "comment_mode": "force",
     }
     r = client.post("/api/subscriptions", json=body)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["download_quality"] == "audio"
+    assert data["download_quality"] == "720"
     assert data["only_new"] is False
-    assert data["with_comments"] is True
+    assert data["comment_mode"] == "force"
     assert data["max_items"] == 500
 
 

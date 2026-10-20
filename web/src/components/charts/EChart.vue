@@ -11,53 +11,13 @@
 </template>
 
 <script setup lang="ts">
-import {
-  BarChart,
-  FunnelChart,
-  GaugeChart,
-  HeatmapChart,
-  LineChart,
-  PieChart,
-  RadarChart,
-  SankeyChart,
-  ScatterChart,
-} from 'echarts/charts'
-import {
-  CalendarComponent,
-  DataZoomComponent,
-  GridComponent,
-  LegendComponent,
-  MarkLineComponent,
-  RadarComponent,
-  TooltipComponent,
-  VisualMapComponent,
-} from 'echarts/components'
-import { use } from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
 import { computed, onMounted, ref } from 'vue'
 import VChart from 'vue-echarts'
+import { ensureCoreCharts } from './echarts-registry'
 
-// 按需注册，控制体积
-use([
-  CanvasRenderer,
-  LineChart,
-  BarChart,
-  PieChart,
-  ScatterChart,
-  HeatmapChart,
-  FunnelChart,
-  RadarChart,
-  SankeyChart,
-  GaugeChart,
-  GridComponent,
-  TooltipComponent,
-  LegendComponent,
-  DataZoomComponent,
-  MarkLineComponent,
-  CalendarComponent,
-  VisualMapComponent,
-  RadarComponent,
-])
+// Dashboard pages only need the core chart set; the registry lets the design
+// sample opt into the rest without shipping them to every visitor.
+ensureCoreCharts()
 
 const props = defineProps<{
   /** 图表配置工厂：接收主题色令牌，返回 ECharts option */

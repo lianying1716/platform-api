@@ -284,27 +284,39 @@ async def run_breakdown(
 
     - 已 `done` 且 `force=False`：直接返回既有行（幂等，不重复花 token）。
     - `force=True`：即使已 `done` 也重跑（upsert，按 asset_id 唯一，不产生重复行）。
+    - 依赖约束：调用方应先通过 ``workflow_engine`` 放行；这里再做一次硬校验，
+      没有已完成转录与视频理解时拒绝调用模型（不产出降级空报告）。
 
     Raises:
         BreakdownInputError: 素材不存在 / 无关联内容（数据问题，不可重试）。
         Exception: 拆解链路任何失败——落 `status=error` 后原样抛出（worker 负责重试）。
     """
     asset = db.get(MediaAsset, asset_id)
-    if asset is None:
+    if asset is None or asset.deleted_at is not None:
         raise BreakdownInputError(f"素材不存在: {asset_id}")
+
+    transcript = db.scalar(select(Transcript).where(Transcript.asset_id == asset_id))
+    if transcript is None or not (transcript.full_text or "").strip():
+        raise BreakdownInputError("拆解前置未完成：需要先完成转录")
+    understanding = db.scalar(
+        select(VideoUnderstanding).where(VideoUnderstanding.asset_id == asset_id)
+    )
+    if understanding is None or understanding.status != "done":
+        raise BreakdownInputError("拆解前置未完成：需要先完成视频理解")
 
     row = db.scalar(select(ViralBreakdown).where(ViralBreakdown.asset_id == asset_id))
     if row is not None and row.status == "done" and not force:
         return row
+
 
     if row is None:
         row = ViralBreakdown(asset_id=asset_id)
         db.add(row)
     row.status = "doing"
     row.error = ""
+    events.publish("breakdown_status", {"asset_id": asset_id, "status": "doing"}, db=db)
     db.commit()
     db.refresh(row)
-    events.publish("breakdown_status", {"asset_id": asset_id, "status": "doing"})
 
     try:
         content = db.get(ContentItem, asset.content_id)
@@ -317,15 +329,9 @@ async def run_breakdown(
 
         payload = _assemble_payload(db, content, asset, s["prompt"])
         system, user = breakdown.build_breakdown_prompt(payload)
-        from app.services.model_access_service import ModelAccessService, assignment_configured
+        from app.services.model_access_service import ModelAccessService
 
         gateway = ModelAccessService()
-        use_gateway = assignment_configured(db, "text_analysis")
-        base_url, api_key, llm_model = ("", "", "")
-        if not use_gateway:
-            from app.services.understand_service import _resolve_llm
-
-            base_url, api_key, llm_model = _resolve_llm(db)
 
         async def call_model(*, request, parse_result, **kwargs):
             return await gateway.call_with_fallback(
@@ -339,14 +345,7 @@ async def run_breakdown(
                 job_id=job_id,
             )
 
-        llm_kwargs = {
-            "base_url": base_url,
-            "api_key": api_key,
-            "model": llm_model,
-        }
-        if use_gateway:
-            llm_kwargs["call_model"] = call_model
-        result = await breakdown.run_llm(system, user, **llm_kwargs)
+        result = await breakdown.run_llm(system, user, call_model=call_model)
         parsed = result.get("data") or {}
         if not isinstance(parsed, dict):
             raise ValueError("拆解返回不是 JSON 对象")
@@ -357,16 +356,16 @@ async def run_breakdown(
         row.comment_insights = _dict_or_empty(parsed.get("comment_insights"))
         row.data_context = payload["data_context"]
         row.understanding_available = payload["understanding"] is not None
-        row.model = result.get("model") or llm_model
+        row.model = result.get("model") or ""
         row.prompt_version = _PROMPT_VERSION
         row.usage = result.get("usage") or {}
         if result.get("routing"):
             row.routing = {"text_analysis": result["routing"]}
         row.status = "done"
         row.error = ""
+        events.publish("breakdown_status", {"asset_id": asset_id, "status": "done"}, db=db)
         db.commit()
         db.refresh(row)
-        events.publish("breakdown_status", {"asset_id": asset_id, "status": "done"})
         return row
     except Exception as exc:
         db.rollback()
@@ -376,6 +375,6 @@ async def run_breakdown(
             db.add(row)
         row.status = "error"
         row.error = str(exc)[:512]
+        events.publish("breakdown_status", {"asset_id": asset_id, "status": "error"}, db=db)
         db.commit()
-        events.publish("breakdown_status", {"asset_id": asset_id, "status": "error"})
         raise

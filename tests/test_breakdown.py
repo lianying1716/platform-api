@@ -7,6 +7,8 @@ Task 2：拆解配置 + 提示词模块 —— 默认值/覆盖、prompt 维度�
 import asyncio
 
 import pytest
+
+import app.modules.breakdown as b
 from sqlalchemy.exc import IntegrityError
 
 
@@ -158,60 +160,56 @@ def test_build_breakdown_prompt_without_understanding_and_comments():
     assert "abc" in user
 
 
-def _fake_llm(content: str, *, capture: dict | None = None):
-    async def fake_post(url, headers, body, timeout):
+class _GatewayResult:
+    def __init__(self, data, *, model="m", usage=None):
+        self.data = data
+        self.used_model_key = model
+        self.usage = usage or {"total_tokens": 7}
+
+    def to_routing(self):
+        return {"used_model_key": self.used_model_key}
+
+
+def _gateway(content: str, *, capture: dict | None = None, model: str = "m"):
+    async def call_model(*, request, parse_result):
         if capture is not None:
-            capture["url"] = url
-            capture["headers"] = headers
-            capture["body"] = body
-            capture["timeout"] = timeout
-        return {"choices": [{"message": {"content": content}}], "usage": {"total_tokens": 7}}
+            capture.update({"request": request, "timeout": request.get("timeout")})
+        data = parse_result(content)
+        return _GatewayResult(data, model=model)
 
-    return fake_post
+    return call_model
 
 
-def test_run_llm_parses_json(monkeypatch):
-    import app.modules.breakdown as b
-
+def test_run_llm_parses_json():
     cap: dict = {}
-    monkeypatch.setattr(b, "_post_json", _fake_llm('{"verdict":"火","score":88}', capture=cap))
-    out = asyncio.run(
-        b.run_llm("sys", "usr", base_url="http://x/v1/", api_key="k", model="m")
-    )
-    # 返回契约：{"data","usage","model"}（服务层据此落库 usage / model）。
+    out = asyncio.run(b.run_llm("sys", "usr", call_model=_gateway('{"verdict":"火","score":88}', capture=cap)))
     assert isinstance(out, dict)
     assert out["data"]["verdict"] == "火" and out["data"]["score"] == 88
     assert out["usage"] == {"total_tokens": 7}
     assert out["model"] == "m"
-    # 端点、鉴权头、body 结构
-    assert cap["url"] == "http://x/v1/chat/completions"
-    assert cap["headers"]["Authorization"] == "Bearer k"
-    assert cap["body"]["model"] == "m"
-    assert cap["body"]["response_format"] == {"type": "json_object"}
-    assert cap["body"]["messages"][0] == {"role": "system", "content": "sys"}
-    assert cap["body"]["messages"][1] == {"role": "user", "content": "usr"}
+    body = cap["request"]
+    assert "model" not in body
+    assert body["response_format"] == {"type": "json_object"}
+    assert body["messages"][0] == {"role": "system", "content": "sys"}
+    assert body["messages"][1] == {"role": "user", "content": "usr"}
 
 
-def test_run_llm_strips_code_fence(monkeypatch):
-    import app.modules.breakdown as b
-
-    monkeypatch.setattr(b, "_post_json", _fake_llm("```json\n{\"verdict\":\"x\"}\n```"))
-    out = asyncio.run(b.run_llm("s", "u", base_url="http://x/v1", api_key="k", model="m"))
+def test_run_llm_strips_code_fence():
+    out = asyncio.run(b.run_llm("s", "u", call_model=_gateway("```json\n{\"verdict\":\"x\"}\n```")))
     assert out["data"]["verdict"] == "x"
 
 
-def test_run_llm_invalid_json_raises(monkeypatch):
-    import app.modules.breakdown as b
-
-    monkeypatch.setattr(b, "_post_json", _fake_llm("不是 JSON"))
-    with pytest.raises(ValueError):  # 非法输出必须抛，由 worker 落 error / 重试，不静默
-        asyncio.run(b.run_llm("s", "u", base_url="http://x/v1", api_key="k", model="m"))
+def test_run_llm_invalid_json_raises():
+    with pytest.raises(ValueError):
+        asyncio.run(b.run_llm("s", "u", call_model=_gateway("不是 JSON")))
 
 
-def test_run_llm_passes_timeout(monkeypatch):
-    import app.modules.breakdown as b
-
+def test_run_llm_passes_timeout():
     cap: dict = {}
-    monkeypatch.setattr(b, "_post_json", _fake_llm('{"ok":1}', capture=cap))
-    asyncio.run(b.run_llm("s", "u", base_url="http://x/v1", api_key="k", model="m", timeout=42))
+    asyncio.run(b.run_llm("s", "u", call_model=_gateway('{"ok":1}', capture=cap), timeout=42))
     assert cap["timeout"] == 42
+
+
+def test_run_llm_requires_gateway():
+    with pytest.raises(RuntimeError, match="ModelAccessService"):
+        asyncio.run(b.run_llm("s", "u"))

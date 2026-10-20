@@ -151,9 +151,32 @@ async def fetch_danmaku(credential: dict, bvid: str, cid: int, duration: int, ou
     return target.name
 
 
-def write_nfo(out_dir: Path, bvid: str, **kwargs) -> str:
-    """写入 ``<bvid>.nfo``，返回文件名。"""
-    target = Path(out_dir) / f"{bvid}.nfo"
+def write_nfo(
+    out_dir: Path,
+    stem: str,
+    bvid: str,
+    title: str,
+    plot: str = "",
+    author: str = "",
+    published_at: str | None = None,
+    tags: list[str] | None = None,
+) -> str:
+    """写入 ``<stem>.nfo``，返回文件名。
+
+    ``stem`` 是媒体文件/分P后缀（如 ``BV1xx_02_第二集``），``bvid`` 是平台唯一 ID。
+    两者必须分开：以前把 stem 当 bvid 位置参数、又传 ``bvid=`` 关键字，直接 TypeError。
+    """
+    target = Path(out_dir) / f"{stem}.nfo"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(build_nfo(**kwargs), encoding="utf-8")
+    target.write_text(
+        build_nfo(
+            title=title,
+            plot=plot,
+            author=author,
+            published_at=published_at,
+            bvid=bvid,
+            tags=tags,
+        ),
+        encoding="utf-8",
+    )
     return target.name

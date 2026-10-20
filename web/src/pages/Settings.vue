@@ -17,10 +17,13 @@
         <p class="tip">素材保存根目录，支持本机路径、NAS 挂载，Windows 盘符或 UNC（如 Z:\xsai 或 \\NAS\xsai）。</p>
         <div class="bar">
           <button class="ui-btn primary" @click="storageDialog = true">新增根目录</button>
+          <button class="ui-btn" :disabled="scanningOrphans || !roots.length" @click="scanOrphans">
+            {{ scanningOrphans ? '扫描中…' : '扫描孤儿文件' }}
+          </button>
           <span class="grow" />
           <span class="ui-badge">共 {{ roots.length }}</span>
         </div>
-        <section class="ui-panel" v-loading="loadingRoots">
+        <section class="ui-panel table-panel" v-loading="loadingRoots">
           <div v-if="!loadingRoots && !roots.length" class="ui-empty">
             <div class="big">还没有配置存储根目录</div>
             <p>选一个目录作为素材落盘位置，下载与转录都会写到这里。</p>
@@ -50,6 +53,23 @@
               </tr>
             </tbody>
           </table>
+        </section>
+        <section v-if="orphanReport" class="ui-panel">
+          <div class="ui-panel-head">
+            <h2>孤儿文件报告</h2>
+            <span class="ui-badge" :class="orphanReport.orphan_count ? 'warn' : 'ok'">
+              {{ orphanReport.orphan_count }} 个
+            </span>
+            <span class="grow" />
+            <button class="ui-btn ghost sm" @click="orphanReport = null">关闭</button>
+          </div>
+          <div class="ui-panel-body">
+            <p class="tip" style="margin-top: 0">只读报告，不会自动删除。相对路径如下：</p>
+            <ul v-if="orphanReport.orphans.length" class="orphan-list">
+              <li v-for="path in orphanReport.orphans" :key="path"><code>{{ path }}</code></li>
+            </ul>
+            <p v-else class="ui-empty" style="padding: 8px 0">没有发现孤儿文件。</p>
+          </div>
         </section>
       </el-tab-pane>
 
@@ -390,6 +410,16 @@
           show-icon
         />
 
+        <el-alert
+          v-if="update.checkedAt && update.ok === false"
+          type="error"
+          :closable="false"
+          style="margin-top: 12px; max-width: 720px"
+          title="检查更新失败"
+          :description="update.message || '无法获取最新版本，请稍后重试'"
+          show-icon
+        />
+
         <div style="margin-top: 20px; max-width: 720px">
           <el-alert
             v-if="!upgradeStatus.enabled"
@@ -481,7 +511,7 @@
       <div class="ui-modal-box">
         <div class="ui-panel-head"><h2>删除存储根目录</h2></div>
         <div class="ui-modal-body">
-          <p>确定删除「{{ rootTarget.name }}」({{ rootTarget.path }})？已入库素材的路径会失效。</p>
+          <p>确定删除「{{ rootTarget.name }}」({{ rootTarget.path }})？仍被账号、订阅或素材引用的根目录会被拒绝删除。</p>
         </div>
         <div class="ui-modal-foot">
           <button class="ui-btn" @click="rootTarget = null">取消</button>
@@ -572,10 +602,14 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api'
+import { parseUtc } from '../utils/time'
 
+const router = useRouter()
 const tab = ref('storage')
 // 页签清单：与下面 el-tab-pane 的 name 一一对应
 const tabs = [
@@ -593,10 +627,12 @@ const tabs = [
 const roots = ref<any[]>([])
 const checks = ref<any[]>([])
 const loadingRoots = ref(false)
+const scanningOrphans = ref(false)
+const orphanReport = ref<{ orphan_count: number; orphans: string[] } | null>(null)
 const loadingDiag = ref(false)
 // ---- 版本与升级 ----
 const ver = ref<any>({ app_version: '', git_commit: '', build_time: '', db_revision: '', db_head: '', db_in_sync: false })
-const update = ref<any>({ current: '', latest: '', available: false, url: '' })
+const update = ref<any>({ current: '', latest: '', available: false, url: '', ok: null, message: '', checkedAt: 0 })
 const upgradeStatus = ref<{ enabled: boolean; current: string }>({ enabled: false, current: '' })
 const checkingUpdate = ref(false)
 const upgrading = ref(false)
@@ -697,7 +733,6 @@ function chooseDir() {
   pickerDialog.value = false
 }
 
-const settings = reactive<any>({ llm_base_url: '', llm_model: '', llm_api_key: '', proxy_url: '', llm_api_key_set: false })
 const pwd = reactive({ old_password: '', new_password: '' })
 const commentSettings = reactive({
   top_pct: 0.2,
@@ -762,8 +797,7 @@ function toggleAiDay(w: any, day: number) {
 
 function fmtAiTime(value: string | null) {
   if (!value) return ''
-  const d = new Date(value)
-  return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return parseUtc(value)?.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) ?? ''
 }
 
 async function loadAiSchedule() {
@@ -904,6 +938,17 @@ async function loadRoots() {
   }
 }
 
+async function scanOrphans() {
+  scanningOrphans.value = true
+  try {
+    const { data } = await api.get('/api/system/storage-roots/orphans')
+    orphanReport.value = data
+    ElMessage.success(data.orphan_count ? `发现 ${data.orphan_count} 个孤儿文件` : '没有发现孤儿文件')
+  } finally {
+    scanningOrphans.value = false
+  }
+}
+
 async function createRoot() {
   if (!rootForm.name.trim() || !rootForm.path.trim()) return ElMessage.warning('名称和路径必填')
   await api.post('/api/system/storage-roots', rootForm)
@@ -922,46 +967,12 @@ function delRoot(row: any) {
 
 async function doDelRoot() {
   if (!rootTarget.value) return
-  await api.delete(`/api/system/storage-roots/${rootTarget.value.id}`)
-  rootTarget.value = null
-  await loadRoots()
-}
-
-async function loadSettings() {
-  const { data } = await api.get('/api/system/settings')
-  Object.assign(settings, data, { llm_api_key: '' })
-}
-
-async function saveSettings() {
-  await api.put('/api/system/settings', {
-    llm_base_url: settings.llm_base_url,
-    llm_model: settings.llm_model,
-    llm_api_key: settings.llm_api_key,
-    proxy_url: settings.proxy_url,
-  })
-  ElMessage.success('已保存')
-  settings.llm_api_key = ''
-  await loadSettings()
-}
-
-const testingLlm = ref(false)
-async function testLlm() {
-  testingLlm.value = true
   try {
-    // 用当前表单值（含未保存的）探测，方便边调边试
-    const { data } = await api.post('/api/system/settings/test-llm', {
-      llm_base_url: settings.llm_base_url,
-      llm_model: settings.llm_model,
-      llm_api_key: settings.llm_api_key,
-    })
-    if (data.ok) {
-      ElMessage.success(`连接成功（${data.elapsed_ms}ms）· 模型 ${data.model}`)
-    } else {
-      ElMessage.error(data.message || '连接失败')
-    }
-  } finally {
-    testingLlm.value = false
-  }
+    await api.delete(`/api/system/storage-roots/${rootTarget.value.id}`)
+    ElMessage.success('已删除存储根')
+    rootTarget.value = null
+    await loadRoots()
+  } catch { /* axios 已提示引用数量/原因 */ }
 }
 
 async function loadDiag() {
@@ -987,10 +998,13 @@ async function checkUpdate() {
   try {
     const { data } = await api.get('/api/system/update/check')
     if (data.ok === false) {
+      // Keep the failure in the page instead of only showing a transient toast.
+      // A rate-limited GitHub quota otherwise looks like the button did nothing.
+      update.value = { ...data, checkedAt: Date.now() }
       ElMessage.warning(data.message || '检查更新失败')
       return
     }
-    update.value = data
+    update.value = { ...data, checkedAt: Date.now() }
     if (data.available) ElMessage.success(`发现新版本 ${data.latest}`)
     else ElMessage.success('已是最新版本')
   } finally {
@@ -1072,10 +1086,16 @@ async function confirmUpgrade() {
 
 async function changePwd() {
   if (pwd.new_password.length < 6) return ElMessage.warning('新密码至少 6 位')
-  await api.post('/api/auth/change-password', pwd)
-  ElMessage.success('密码已修改')
-  pwd.old_password = ''
-  pwd.new_password = ''
+  try {
+    await api.post('/api/auth/change-password', pwd)
+    // The server invalidates every old session. Drop the local token before
+    // navigating so the login page cannot mount with a dead credential.
+    localStorage.removeItem('token')
+    pwd.old_password = ''
+    pwd.new_password = ''
+    ElMessage.success('密码已修改，请重新登录')
+    router.push('/login')
+  } catch { /* axios 已提示 */ }
 }
 
 async function loadCommentSettings() {
@@ -1128,7 +1148,6 @@ async function saveProcessSettings() {
 
 onMounted(() => {
   loadRoots()
-  loadSettings()
   loadDiag()
   loadCommentSettings()
   loadAiSchedule()
@@ -1203,6 +1222,14 @@ onUnmounted(stopPolling)
   font-size: 12px;
   margin-left: 8px;
 }
+
+.orphan-list {
+  list-style: none; margin: 0; padding: 0; max-height: 280px; overflow: auto;
+  border: 1px solid var(--line-soft); background: var(--surface-2);
+}
+.orphan-list li { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); min-width: 0; }
+.orphan-list li:last-child { border-bottom: 0; }
+.orphan-list code { overflow-wrap: anywhere; }
 
 /* AI 时段 */
 .ai-window-head { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; }

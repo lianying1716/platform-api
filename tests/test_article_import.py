@@ -46,12 +46,58 @@ def test_parse_extracts_fields():
     assert "js_content" in out["html"]
 
 
+def test_parse_sanitizes_dangerous_article_html():
+    from app.modules.article_import import parse_article_html
+
+    html = FIXTURE.read_text(encoding="utf-8").replace(
+        '<p>第一段正文。</p>',
+        '<p onclick="steal()">第一段正文。</p>'
+        '<script>alert(1)</script>'
+        '<img src="x" onerror="steal()">'
+        '<a href="javascript:alert(1)">bad</a>',
+    )
+    out = parse_article_html(html, "https://mp.weixin.qq.com/s/AbCdEf123456")
+    lowered = out["html"].lower()
+    assert "<script" not in lowered
+    assert "onclick" not in lowered
+    assert "onerror" not in lowered
+    assert "javascript:" not in lowered
+    assert "第一段正文" in out["html"]
+
+
 def test_parse_falls_back_title_to_og_when_activity_name_missing():
     from app.modules.article_import import parse_article_html
 
     html = FIXTURE.read_text(encoding="utf-8").replace('id="activity-name"', 'id="x"')
     out = parse_article_html(html, "https://mp.weixin.qq.com/s/AbCdEf123456")
     assert out["title"] == "测试文章标题"
+
+
+def test_parse_normalizes_protocol_relative_images_and_links():
+    from app.modules.article_import import parse_article_html
+
+    html = FIXTURE.read_text(encoding="utf-8").replace(
+        '<p>第一段正文。</p>',
+        '<p>第一段正文。</p><img src="//mmbiz.qpic.cn/a.jpg">'
+        '<a href="//mp.weixin.qq.com/s/x">link</a>',
+    )
+    out = parse_article_html(html, "https://mp.weixin.qq.com/s/AbCdEf123456")
+    assert 'src="https://mmbiz.qpic.cn/a.jpg"' in out["html"]
+    assert 'href="https://mp.weixin.qq.com/s/x"' in out["html"]
+
+
+def test_parse_rejects_backslash_disguised_external_link():
+    """Browsers normalize /\\evil.example to //evil.example; do not keep it as same-origin."""
+    from app.modules.article_import import parse_article_html
+
+    html = FIXTURE.read_text(encoding="utf-8").replace(
+        '<p>第一段正文。</p>',
+        '<p>第一段正文。</p><a href="/\\evil.example/steal">bad</a>'
+        '<img src="/\\evil.example/pixel.png">',
+    )
+    out = parse_article_html(html, "https://mp.weixin.qq.com/s/AbCdEf123456")
+    assert "evil.example" not in out["html"]
+    assert "<a" in out["html"] and "<img" in out["html"]
 
 
 def test_import_endpoint_creates_asset_and_transcript(client, monkeypatch):

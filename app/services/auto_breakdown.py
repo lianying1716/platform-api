@@ -9,10 +9,10 @@
 - 互动率门槛 —— "观众真参与了"，默认 0=不限；
 - 命中规则 any/all —— 任一命中 / 全部满足，默认 any。
 
-命中后按三个开关分别入队：自动转录 / 自动视频理解 / 自动爆款拆解（后者依赖转录+理解，
-所以会按需把前置任务一并入队，由既有链式逻辑补齐）。
+命中后把开关映射为工作流步骤：自动转录 / 自动视频理解 / 自动爆款拆解。拆解声明的
+前置是转录+理解，工作流引擎会自动补齐并等待，不会让三步抢跑。
 
-边界：只对**视频且下载完成**的素材生效；这里只做判定 + 入队，真正加工由 worker 负责。
+边界：只对**视频且下载完成**的素材生效；这里只做判定 + 注册步骤，真正执行由 worker 负责。
 """
 
 from __future__ import annotations
@@ -22,14 +22,9 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.core.breakdown_settings import get_breakdown_settings, is_viral
-from app.core.queue import enqueue
 from app.models import ContentItem, MediaAsset
 
 logger = logging.getLogger("platform.auto_breakdown")
-
-# 与 process_gate / auto_process 一致：加工优先级低于核心管线。
-_PROCESS_PRIORITY = 120
-
 
 def _data_context(db: Session, content: ContentItem, asset: MediaAsset) -> dict:
     """复用拆解服务里那套确定性数字（避免两处口径漂移）。"""
@@ -59,29 +54,44 @@ def should_auto_breakdown(db: Session, content: ContentItem, asset: MediaAsset) 
     return hit
 
 
-def enqueue_auto_breakdown(db: Session, asset: MediaAsset, content: ContentItem) -> bool:
-    """命中阀门则按开关入队自动加工；返回是否命中并入了队。不 commit，调用方统一提交。"""
+def enqueue_auto_breakdown(
+    db: Session,
+    asset: MediaAsset,
+    content: ContentItem,
+    *,
+    settings: dict | None = None,
+) -> bool:
+    """命中阀门则注册自动加工工作流；返回是否命中。不 commit。
+
+    下载完成只登记步骤。转录/理解/拆解是否真正入队，由 ``workflow_engine``
+    按依赖放行；拆解不会在转录和视频理解完成前调用模型。
+    """
     if content.content_type != "video" or asset.download_status != "done":
         return False
     hit, cfg, ctx = _evaluate(db, content, asset)
     if not hit:
         return False
+    from app.core.process_settings import get_process_settings
+    from app.services.workflow_engine import register_workflow
+
+    proc = settings if settings is not None else get_process_settings(db)
+    from app.services.auto_process import auto_process_flags
+
+    want_transcribe, want_analyze = auto_process_flags(db, content, proc)
     want_understand = bool(cfg.get("auto_understand"))
     want_breakdown = bool(cfg.get("auto_breakdown"))
-
-    want_transcribe = bool(cfg.get("auto_transcribe")) or want_understand or want_breakdown
-
-    # 转录是理解 / 拆解的前置：需要就一并入队（去重由 queue 吸收）。
-    if want_transcribe and asset.transcribe_status not in ("done", "doing", "transcribing"):
-        asset.transcribe_status = "pending"
-        enqueue(db, "transcribe", {"asset_id": asset.id}, priority=_PROCESS_PRIORITY, commit=False)
-
-    if want_understand and asset.understand_status not in ("done", "doing", "understanding"):
-        asset.understand_status = "pending"
-        enqueue(db, "understand_video", {"asset_id": asset.id}, priority=_PROCESS_PRIORITY, commit=False)
-
+    steps: list[str] = []
+    if want_transcribe or want_analyze:
+        steps.append("transcribe")
+    if want_analyze:
+        steps.append("analyze")
+    if want_understand or want_breakdown:
+        steps.append("understand_video")
     if want_breakdown:
-        enqueue(db, "breakdown", {"asset_id": asset.id, "force": False}, priority=_PROCESS_PRIORITY, commit=False)
+        steps.append("breakdown")
+    if steps:
+        register_workflow(db, asset.id, steps, options={"force": False})
+        db.commit()
 
     logger.info(
         "自动爆款命中 asset=%s play=%s like=%s rate=%.4f (understand=%s breakdown=%s)",

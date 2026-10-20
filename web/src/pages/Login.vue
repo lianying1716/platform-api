@@ -62,7 +62,7 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
@@ -90,6 +90,10 @@ async function submit() {
     const { data } = await api.post(url, { password: password.value })
     localStorage.setItem('token', data.token)
     router.push('/overview')
+  } catch {
+    // The shared axios interceptor already presents the actionable message
+    // (401/429/network). Keep the rejection handled so the browser console does
+    // not report an unhandled promise while the user remains on this form.
   } finally {
     loading.value = false
   }

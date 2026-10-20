@@ -8,7 +8,8 @@ def test_process_defaults(session):
     # 两档简化：返回的键集合与 PROCESS_KEYS 完全一致（抽帧相关键已彻底移除）。
     assert set(s) == set(PROCESS_KEYS)
     assert s["min_heat"] >= 0
-    assert s["video_max_mb"] > 0 and s["provider"] in ("qwen", "gemini")
+    assert s["video_max_mb"] > 0
+    assert "provider" not in s and "vision_model" not in s and "classify_model" not in s
 
 
 def test_process_override(session):
@@ -30,7 +31,7 @@ def test_process_defaults_types(session):
     assert isinstance(s["weight_comment"], float)
     assert isinstance(s["classify_enabled"], bool)
     assert isinstance(s["use_cover"], bool) and s["use_cover"] is False
-    assert isinstance(s["vision_model"], str) and s["vision_model"]
+    assert "vision_model" not in s
 
 
 def test_process_bool_and_string_override(session):
@@ -39,12 +40,10 @@ def test_process_bool_and_string_override(session):
 
     session.add(SystemSetting(key="process_classify_enabled", value="0"))
     session.add(SystemSetting(key="process_use_cover", value="true"))
-    session.add(SystemSetting(key="process_provider", value="gemini"))
     session.commit()
     s = get_process_settings(session)
     assert s["classify_enabled"] is False
     assert s["use_cover"] is True
-    assert s["provider"] == "gemini"
 
 
 def test_process_bad_value_falls_back_to_default(session):

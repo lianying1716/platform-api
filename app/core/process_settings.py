@@ -15,7 +15,6 @@ from app.models import SystemSetting
 _INT = "int"
 _FLOAT = "float"
 _BOOL = "bool"
-_STR = "str"
 
 # 对外短名 -> system_setting key（单一事实来源；API / 服务复用此映射）
 PROCESS_KEYS: dict[str, str] = {
@@ -31,9 +30,6 @@ PROCESS_KEYS: dict[str, str] = {
     "use_cover": "process_use_cover",
     "cover_max_mb": "process_cover_max_mb",
     "low_confidence_threshold": "process_low_confidence_threshold",
-    "provider": "process_provider",
-    "vision_model": "process_vision_model",
-    "classify_model": "process_classify_model",
     # 全局自动加工默认（新素材下载完成后是否自动转录/视频理解）；订阅级开关可显式覆盖。
     "auto_transcribe": "process_auto_transcribe",
     "auto_analyze": "process_auto_analyze",
@@ -55,9 +51,6 @@ _DEFAULTS: dict[str, tuple[object, str]] = {
     "process_cover_max_mb": (5.0, _FLOAT),
     # 判类置信度低于此值 → 标 low_confidence 供人工复核（设计 §4 默认 0.6）。
     "process_low_confidence_threshold": (0.6, _FLOAT),
-    "process_provider": ("qwen", _STR),
-    "process_vision_model": ("qwen3.8-flash", _STR),
-    "process_classify_model": ("qwen3.8-flash", _STR),
     # 默认关闭：自动加工耗资源，默认让用户显式开启。
     "process_auto_transcribe": (False, _BOOL),
     "process_auto_analyze": (False, _BOOL),

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core import crypto
@@ -28,9 +28,19 @@ from app.models import (
 )
 from app.modules import model_protocols
 from app.services import model_probe
+from app.services.legacy_llm_migration import legacy_migration_status
 from app.services.model_access_service import WORK_TYPES, capabilities_of
 
 router = APIRouter(prefix="/api/model-access", tags=["model-access"])
+
+
+@router.get("/legacy")
+def legacy_migration_overview(
+    db: Session = Depends(get_db),
+    actor=Depends(require_admin_or_scope("read", "operate", "admin")),
+):
+    """旧版 llm_* 认领状态；只返回状态，不暴露密钥或密文。"""
+    return legacy_migration_status(db)
 
 
 class ProviderIn(BaseModel):
@@ -188,6 +198,7 @@ def _model_payload(db: Session, row: AiModel) -> dict:
         "capabilities": capabilities_of(row, provider),
         "probe_status": row.probe_status,
         "probe_error": row.probe_error,
+        "probe_started_at": row.probe_started_at.isoformat() if row.probe_started_at else None,
         "probed_at": row.probed_at.isoformat() if row.probed_at else None,
         "assigned_work_types": list(assigned),
     }
@@ -228,6 +239,7 @@ def _enqueue_probe(db: Session, model_id: int, spec: dict, *, model: AiModel | N
         db.commit()
         if model is not None:
             model.probe_status = "testing"
+            model.probe_started_at = datetime.utcnow()
             db.commit()
         return row
     from app.core.queue import enqueue
@@ -241,12 +253,26 @@ def _enqueue_probe(db: Session, model_id: int, spec: dict, *, model: AiModel | N
     )
     if model is not None:
         model.probe_status = "testing"
+        model.probe_started_at = datetime.utcnow()
         db.commit()
     return job
 
 
 def _sensitive(scope: str):
     return require_admin_or_scope("admin") if scope == "admin" else require_admin_or_scope("operate", "admin")
+
+
+def _provider_api_key(provider: AiProvider) -> str:
+    """Decrypt once at the provider boundary; never return this value in a response."""
+    return str(crypto.decrypt_credential(provider.api_key_encrypted or "").get("api_key") or "")
+
+
+async def _fetch_model_names(provider: AiProvider, api_key: str, *, timeout: float = 30) -> list[str]:
+    """The single model-list use case shared by preview and saved-provider discovery."""
+    data = await model_protocols.send_request(
+        model_protocols.list_models_request(provider, api_key=api_key), timeout=timeout
+    )
+    return model_protocols.parse_models(provider.protocol, data)
 
 
 # ---------------- 供应商 ----------------
@@ -315,7 +341,16 @@ def patch_provider(
             row.base_url = base_url
             changed_connection = True
     if body.api_key is not None and body.api_key.strip():
-        row.api_key_encrypted = crypto.encrypt_credential({"api_key": body.api_key.strip()})
+        new_key = body.api_key.strip()
+        old_key = ""
+        if row.api_key_encrypted:
+            try:
+                old_key = str(crypto.decrypt_credential(row.api_key_encrypted).get("api_key") or "")
+            except Exception:  # noqa: BLE001 无法解密也应按连接变更处理
+                old_key = ""
+        if new_key != old_key:
+            row.api_key_encrypted = crypto.encrypt_credential({"api_key": new_key})
+            changed_connection = True
     if body.enabled is not None:
         row.enabled = body.enabled
     if changed_connection:
@@ -324,9 +359,8 @@ def patch_provider(
             # 保留旧能力记录，交由 capabilities_of() 按 config_revision 统一标记为 stale；
             # 直接清空会让“需重新检测”的安全提示在前端无迹可寻。
             model.probe_status = "untested"
+            model.probe_started_at = None
             model.probed_at = None
-        for assignment in db.scalars(select(ModelAssignment)).all():
-            assignment.legacy_pending_validation = False
     db.commit()
     _api_log(db, actor, "model_access.patch_provider", "ok", started)
     return _mask_provider(row)
@@ -362,10 +396,8 @@ async def test_provider(
         raise HTTPException(status_code=404, detail="供应商不存在")
     key = ""
     try:
-        key = str(crypto.decrypt_credential(row.api_key_encrypted or "").get("api_key") or "")
-        req = model_protocols.list_models_request(row, api_key=key)
-        data = await model_protocols.send_request(req, timeout=20)
-        model_protocols.parse_models(row.protocol, data)
+        key = _provider_api_key(row)
+        await _fetch_model_names(row, key, timeout=20)
         row.last_test_status, row.last_test_error, row.last_test_at = "ok", "", datetime.utcnow()
         db.commit()
         _api_log(db, actor, "model_access.test_provider", "ok", started)
@@ -393,11 +425,8 @@ async def discover_models(
         raise HTTPException(status_code=404, detail="供应商不存在")
     key = ""
     try:
-        key = str(crypto.decrypt_credential(row.api_key_encrypted or "").get("api_key") or "")
-        data = await model_protocols.send_request(
-            model_protocols.list_models_request(row, api_key=key), timeout=30
-        )
-        names = model_protocols.parse_models(row.protocol, data)
+        key = _provider_api_key(row)
+        names = await _fetch_model_names(row, key)
         _api_log(db, actor, "model_access.discover_models", "ok", started)
         return {"models": names}
     except Exception as exc:  # noqa: BLE001 清单失败允许前端手输
@@ -522,10 +551,7 @@ async def preview_models(
         enabled=True,
     )
     try:
-        data = await model_protocols.send_request(
-            model_protocols.list_models_request(probe_row, api_key=key), timeout=30
-        )
-        names = model_protocols.parse_models(protocol, data)
+        names = await _fetch_model_names(probe_row, key)
     except Exception as exc:  # noqa: BLE001 清单失败允许前端手输
         _api_log(db, actor, "model_access.preview_models", "error", started)
         safe = crypto.redact_text(str(exc), extra_secrets=(key,))
@@ -609,6 +635,61 @@ def list_models(
         out = [row for row in out if work_type in row["assigned_work_types"]]
     _api_log(db, actor, "model_access.list_models", "ok", started)
     return out
+
+
+class ProbeReconcileBody(BaseModel):
+    # The UI polls for ~7 minutes.  Older probes with no live job are abandoned;
+    # the janitor's 30-minute pass remains the conservative backstop.
+    older_than_minutes: int = Field(default=7, ge=1, le=1440)
+
+
+@router.post("/probes/reconcile")
+def reconcile_probes(
+    body: ProbeReconcileBody | None = None,
+    db: Session = Depends(get_db),
+    actor=Depends(_sensitive("operate")),
+):
+    """Recover probes stuck in ``testing`` after the client's poll gave up.
+
+    The client polling for seven minutes is itself the lease.  A queued probe
+    that no worker ever claimed, or a running probe whose heartbeat has gone
+    stale, is cancelled before reconciliation.  A live (freshly heartbeating)
+    worker is left alone.  The list payload is returned for an immediate refresh.
+    """
+    from app.services.run_reconciler import reconcile_runs
+
+    started = time.time()
+    minutes = (body or ProbeReconcileBody()).older_than_minutes
+    cutoff = datetime.utcnow() - timedelta(minutes=minutes)
+    job_ids = [
+        row.id
+        for row in db.scalars(
+            select(JobQueue).where(
+                JobQueue.job_type == "probe_model",
+                JobQueue.status.in_(("queued", "running")),
+            )
+        ).all()
+        if row.status == "queued"
+        or not (
+            (row.heartbeat_at or row.locked_at or row.updated_at or row.created_at) >= cutoff
+        )
+    ]
+    if job_ids:
+        db.execute(
+            update(JobQueue)
+            .where(JobQueue.id.in_(job_ids))
+            .values(
+                status="error",
+                error="模型检测超时，已由前端终止；可重新检测",
+                updated_at=datetime.utcnow(),
+                heartbeat_at=None,
+            )
+        )
+        db.commit()
+    counts = reconcile_runs(db, older_than_minutes=minutes)
+    rows = db.scalars(select(AiModel).order_by(AiModel.id)).all()
+    _api_log(db, actor, "model_access.reconcile_probes", "ok", started)
+    return {"recovered": counts.get("probe", 0), "models": [_model_payload(db, row) for row in rows]}
 
 
 @router.post("/models/import")
@@ -725,6 +806,7 @@ def patch_model(
         # 协议变化会让既有能力结论失效；capabilities_of() 会按协议比对判 stale，
         # 这里只把探测状态复位，提示用户重新检测。
         row.probe_status = "untested"
+        row.probe_started_at = None
     db.commit()
     _api_log(db, actor, "model_access.patch_model", "ok", started)
     return _model_payload(db, row)
@@ -966,7 +1048,7 @@ def _asset_titles(db: Session, rows) -> dict[int, str]:
     pairs = db.execute(
         select(MediaAsset.id, ContentItem.title)
         .join(ContentItem, MediaAsset.content_id == ContentItem.id)
-        .where(MediaAsset.id.in_(asset_ids))
+        .where(MediaAsset.id.in_(asset_ids), MediaAsset.deleted_at.is_(None))
     ).all()
     return {int(asset_id): title or "" for asset_id, title in pairs}
 

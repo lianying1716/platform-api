@@ -53,11 +53,12 @@
         <span class="ov-kpi-v">{{ num(content.total) }}</span>
         <span class="ov-kpi-d">{{ num(content.video) }} 视频 · {{ num(content.article) }} 文章</span>
       </button>
-      <button class="ov-kpi tone-warn" :class="{ warn: processing.pending > 0 }" @click="go('/pipeline')">
+      <button class="ov-kpi tone-warn" :class="{ warn: processing.pending + processing.failed > 0 }" @click="go('/pipeline')">
         <span class="ov-kpi-k">待加工</span>
         <span class="ov-kpi-v">{{ num(processing.pending) }}</span>
         <span class="ov-kpi-d">
-          <template v-if="processing.failed">含 {{ num(processing.failed) }} 条失败，需重试</template>
+          <template v-if="processing.failed">失败 {{ num(processing.failed) }} 条，需重试</template>
+          <template v-else-if="processing.pending">等待队列处理</template>
           <template v-else>队列顺畅</template>
         </span>
       </button>
@@ -105,34 +106,36 @@
 
     <section class="ui-panel" v-if="platforms.length">
       <div class="ui-panel-head"><h2>各平台明细</h2><span class="hint">点击行进入素材库</span></div>
-      <table class="ui-table">
-        <thead>
-          <tr>
-            <th>平台</th>
-            <th style="text-align: right">素材</th>
-            <th style="text-align: right">视频</th>
-            <th style="text-align: right">文章</th>
-            <th style="text-align: right">已转录</th>
-            <th style="text-align: right">已判类</th>
-            <th style="text-align: right">占用</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="p in platforms"
-            :key="p.platform"
-            @click="go(`/assets?platform=${p.platform}${accountId ? `&account_id=${accountId}` : ''}`)"
-          >
-            <td><PlatformMark :platform="p.platform" size="sm" /></td>
-            <td class="num">{{ num(p.total) }}</td>
-            <td class="num">{{ num(p.video) }}</td>
-            <td class="num">{{ num(p.article) }}</td>
-            <td class="num">{{ num(p.transcribed) }}</td>
-            <td class="num">{{ num(p.categorized) }}</td>
-            <td class="num">{{ bytes(storageByPlatform[p.platform] || 0) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="ui-table-scroll">
+        <table class="ui-table">
+          <thead>
+            <tr>
+              <th>平台</th>
+              <th style="text-align: right">素材</th>
+              <th style="text-align: right">视频</th>
+              <th style="text-align: right">文章</th>
+              <th style="text-align: right">已转录</th>
+              <th style="text-align: right">已判类</th>
+              <th style="text-align: right">占用</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="p in platforms"
+              :key="p.platform"
+              @click="go(`/assets?platform=${p.platform}${accountId ? `&account_id=${accountId}` : ''}`)"
+            >
+              <td><PlatformMark :platform="p.platform" size="sm" /></td>
+              <td class="num">{{ num(p.total) }}</td>
+              <td class="num">{{ num(p.video) }}</td>
+              <td class="num">{{ num(p.article) }}</td>
+              <td class="num">{{ num(p.transcribed) }}</td>
+              <td class="num">{{ num(p.categorized) }}</td>
+              <td class="num">{{ bytes(storageByPlatform[p.platform] || 0) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="ui-panel" v-if="categories.length">
@@ -160,19 +163,21 @@
           <h2>热门 Top</h2>
           <span class="hint">按最新快照播放量</span>
         </div>
-        <table class="ui-table" v-if="hot.length">
-          <thead>
-            <tr><th>#</th><th>标题</th><th>平台</th><th style="text-align: right">播放</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="(h, i) in hot" :key="i">
-              <td class="num">{{ i + 1 }}</td>
-              <td class="strong ellip">{{ h.title || '（无标题）' }}</td>
-              <td>{{ platformLabel(h.platform) }}</td>
-              <td class="num">{{ compact(h.play) }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="ui-table-scroll" v-if="hot.length">
+          <table class="ui-table">
+            <thead>
+              <tr><th>#</th><th>标题</th><th>平台</th><th style="text-align: right">播放</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(h, i) in hot" :key="i">
+                <td class="num">{{ i + 1 }}</td>
+                <td class="strong ellip">{{ h.title || '（无标题）' }}</td>
+                <td>{{ platformLabel(h.platform) }}</td>
+                <td class="num">{{ compact(h.play) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <div class="ui-panel-body" v-else><p class="ui-empty">暂无带指标的数据。</p></div>
       </section>
 
@@ -181,21 +186,23 @@
           <h2>对标账号</h2>
           <span class="hint">点「拆解」看内容策略报告</span>
         </div>
-        <table class="ui-table" v-if="creators.length">
-          <thead>
-            <tr><th>账号</th><th>平台</th><th style="text-align: right">内容数</th><th style="text-align: right">操作</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in creators" :key="c.author_id + c.platform">
-              <td class="strong">{{ c.author_name || c.author_id }}</td>
-              <td><PlatformMark :platform="c.platform" size="sm" :show-label="false" /></td>
-              <td class="num">{{ num(c.content_count) }}</td>
-              <td style="text-align: right">
-                <button class="ui-btn ghost sm" @click="openReport(c)">拆解</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="ui-table-scroll" v-if="creators.length">
+          <table class="ui-table">
+            <thead>
+              <tr><th>账号</th><th>平台</th><th style="text-align: right">内容数</th><th style="text-align: right">操作</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in creators" :key="c.author_id + c.platform">
+                <td class="strong">{{ c.author_name || c.author_id }}</td>
+                <td><PlatformMark :platform="c.platform" size="sm" :show-label="false" /></td>
+                <td class="num">{{ num(c.content_count) }}</td>
+                <td style="text-align: right">
+                  <button class="ui-btn ghost sm" @click="openReport(c)">拆解</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <div class="ui-panel-body" v-else><p class="ui-empty">还没有作者维度的数据。</p></div>
       </section>
     </div>
@@ -229,21 +236,23 @@
             </div>
 
             <p class="sec">Top 作品</p>
-            <table class="ui-table">
-              <thead><tr><th>标题</th><th>类型</th><th style="text-align: right">播放</th><th style="text-align: right">点赞</th></tr></thead>
-              <tbody>
-                <tr v-for="(t, i) in report.top" :key="i">
-                  <td class="strong ellip">
-                    <span v-if="t.viral" class="ui-badge bad">爆</span>
-                    <a v-if="t.url" :href="t.url" target="_blank" rel="noopener">{{ t.title || '（无标题）' }}</a>
-                    <span v-else>{{ t.title || '（无标题）' }}</span>
-                  </td>
-                  <td>{{ t.category || '—' }}</td>
-                  <td class="num">{{ compact(t.play) }}</td>
-                  <td class="num">{{ compact(t.like) }}</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="ui-table-scroll">
+              <table class="ui-table">
+                <thead><tr><th>标题</th><th>类型</th><th style="text-align: right">播放</th><th style="text-align: right">点赞</th></tr></thead>
+                <tbody>
+                  <tr v-for="(t, i) in report.top" :key="i">
+                    <td class="strong ellip">
+                      <span v-if="t.viral" class="ui-badge bad">爆</span>
+                      <a v-if="safeExternalUrl(t.url)" :href="safeExternalUrl(t.url)" target="_blank" rel="noopener noreferrer">{{ t.title || '（无标题）' }}</a>
+                      <span v-else>{{ t.title || '（无标题）' }}</span>
+                    </td>
+                    <td>{{ t.category || '—' }}</td>
+                    <td class="num">{{ compact(t.play) }}</td>
+                    <td class="num">{{ compact(t.like) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
 
             <p class="sec">对标基准</p>
             <div class="rep-metrics">
@@ -271,11 +280,12 @@
 <script setup lang="ts">
 // 显式组件名：Layout 的 keep-alive include 按组件名匹配，切页返回时保留本页数据。
 defineOptions({ name: 'OverviewPage' })
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import PlatformMark from '../components/PlatformMark.vue'
 import { api } from '../api'
+import { safeExternalUrl } from '../utils/safeUrl'
 import EChart from '../components/charts/EChart.vue'
 
 const router = useRouter()
@@ -362,9 +372,10 @@ const classifiedPct = computed(() => {
   return `${Math.round((categorizedCount.value / total) * 100)}%`
 })
 // 待办：加工失败的优先，其次队列积压，最后账号异常。决定 hero 右上角显示什么。
-// 待办 = 队列里的待处理条数 + 异常账号数。两者语义不重叠，相加不会自相矛盾。
-// （processing.pending 已经包含失败项，所以这里不再单独加 failed。）
-const todoCount = computed(() => (processing.value.pending || 0) + (accountsStat.value.abnormal || 0))
+// pending 只含 queued/running；failed 是独立终态，必须单独相加。
+const todoCount = computed(
+  () => (processing.value.pending || 0) + (processing.value.failed || 0) + (accountsStat.value.abnormal || 0),
+)
 const todoTarget = computed(() => {
   if (processing.value.failed || processing.value.pending) return '/pipeline'
   if (accountsStat.value.abnormal) return '/accounts'

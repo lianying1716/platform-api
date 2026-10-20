@@ -21,10 +21,10 @@ class _FakeEngine:
     def is_busy(self):
         return self._busy
 
-    def start(self, version, from_version=""):
+    def start(self, version, from_version="", reversible=True):
         from app.updater.engine import UpgradeJob
 
-        self.started.append((version, from_version))
+        self.started.append((version, from_version, reversible))
         self.job = UpgradeJob(version=version, from_version=from_version, status="success")
         return self.job
 

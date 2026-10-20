@@ -4,24 +4,21 @@
 
 - `build_breakdown_prompt(payload) -> (system, user)`：把「元数据 + 转录 + 视频理解(L3) +
   评论摘要 + 后端算好的互动数字」拼成 LLM 的 system/user，纯函数便于单测。
-- `run_llm(system, user, *, base_url, api_key, model, timeout) -> dict`：走 OpenAI 兼容
-  `chat/completions`，强制 `response_format=json_object`，容错解析严格 JSON；非法输出抛异常
-  （由 worker 落 `status=error` / 重试，不静默降级）。
+- `run_llm(system, user, *, call_model, timeout) -> dict`：经统一 ``ModelAccessService``
+  发起请求，强制 JSON 输出，容错解析严格 JSON；非法输出抛异常（由 worker 落
+  `status=error` / 重试，不静默降级）。
 
 红线：
 - 数字（相对中位数倍数/互动率/分位）由后端确定性计算后作为**输入**交给模型，模型只做定性，
   禁止重算或杜撰（提示词里已写明）。
-- 供应商可换、模型名/base_url 来自配置，不硬编码。
+- 供应商与模型名来自「模型接入」，由网关注入，不硬编码。
 
-测试注入点：内部 `_post_json(url, headers, body, timeout)` 用 `httpx.AsyncClient`；
-`run_llm` 只经它发请求，测试 monkeypatch `_post_json`，不要 patch httpx。
+模型请求只经调用方注入的网关回调；本模块不读取供应商配置、不直连 HTTP。
 """
 
 import json
 import re
 from typing import Callable
-
-import httpx
 
 from app.core.breakdown_settings import DEFAULT_BREAKDOWN_PROMPT
 
@@ -111,14 +108,6 @@ def build_breakdown_prompt(payload: dict) -> tuple[str, str]:
     return system, user
 
 
-async def _post_json(url: str, headers: dict, body: dict, timeout: float) -> dict:
-    """发一次 JSON POST 并返回响应 JSON；非 2xx 抛 httpx.HTTPStatusError。"""
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(url, headers=headers, json=body)
-        resp.raise_for_status()
-        return resp.json()
-
-
 def parse_structured(text: str) -> dict:
     """容错解析模型返回的 JSON 对象。
 
@@ -153,30 +142,21 @@ async def run_llm(
     system: str,
     user: str,
     *,
-    base_url: str,
-    api_key: str,
-    model: str,
-    timeout: float = 90,
     call_model: Callable | None = None,
+    timeout: float = 90,
 ) -> dict:
-    """调 OpenAI 兼容 `chat/completions`，返回 ``{"data", "usage", "model"}``。
+    """经统一模型网关执行拆解，返回 ``{"data", "usage", "model", "routing"}``。
 
     Args:
         system/user: `build_breakdown_prompt` 产出的提示词。
-        base_url: OpenAI 兼容约定、**包含 `/v1`**（如 `https://api.xsai5.xyz/v1`）。
-        api_key/model: 供应商配置（服务层从 DB 设置优先解析后注入）。
+        call_model: 统一模型网关回调；未注入即视为编程错误。
         timeout: 单次请求超时秒数（拆解为长文本，默认 90s）。
 
-    Returns:
-        dict，字段：
-        - ``data``：解析后的严格 JSON 对象（报告本体）。
-        - ``usage``：接口返回的 token 用量（缺省为空 dict）。
-        - ``model``：实际使用的模型名（响应未回带时取入参 ``model``）。
-
     Raises:
-        httpx.HTTPError: 网络 / HTTP 失败。
         ValueError: 返回内容不是合法 JSON 对象。
     """
+    if call_model is None:
+        raise RuntimeError("爆款拆解必须经 ModelAccessService 调用，禁止直连模型接口")
     body = {
         "messages": [
             {"role": "system", "content": system},
@@ -185,16 +165,6 @@ async def run_llm(
         "temperature": 0.4,
         "response_format": {"type": "json_object"},
     }
-    if call_model is None:
-        base = (base_url or "").rstrip("/")
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        request_body = {**body, "model": model}
-        data = await _post_json(f"{base}/chat/completions", headers, request_body, timeout)
-        raw = data["choices"][0]["message"]["content"]
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-        used_model = data.get("model") or model
-        return {"data": parse_structured(raw), "usage": usage, "model": used_model, "routing": {}}
-
     result = await call_model(
         request={**body, "timeout": timeout},
         parse_result=parse_structured,
@@ -202,6 +172,6 @@ async def run_llm(
     return {
         "data": result.data if hasattr(result, "data") else result,
         "usage": getattr(result, "usage", {}) or {},
-        "model": getattr(result, "used_model_key", model),
+        "model": getattr(result, "used_model_key", ""),
         "routing": result.to_routing() if hasattr(result, "to_routing") else {},
     }

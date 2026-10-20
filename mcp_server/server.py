@@ -77,11 +77,11 @@ def check_account(account_id: int) -> dict:
 
 
 @mcp.tool()
-def start_qr_login(platform: str) -> dict:
+def start_qr_login(platform: str, account_id: int | None = None) -> dict:
     """发起扫码登录，返回二维码图片(base64)和 session_id。
     platform: bilibili / kuaishou / zhihu / douyin / xhs（支持扫码的才可）。
     返回后用 poll_qr_login 轮询状态。"""
-    return _post("/api/skills/accounts/qr-login", None, params={"platform": platform})
+    return _post("/api/skills/accounts/qr-login", None, params={"platform": platform, "account_id": account_id})
 
 
 @mcp.tool()
@@ -91,9 +91,24 @@ def poll_qr_login(session_id: str) -> dict:
 
 
 @mcp.tool()
-def update_cookie(platform: str, cookie: str, display_name: str = "") -> dict:
-    """手动用 Cookie 录入/更新账号（扫码不可用时的兜底）。"""
-    return _post("/api/skills/accounts/cookie", {"platform": platform, "cookie": cookie, "display_name": display_name})
+def update_cookie(
+    platform: str,
+    cookie: str,
+    display_name: str = "",
+    account_id: int | None = None,
+    external_id: str = "",
+) -> dict:
+    """手动用 Cookie 录入/更新账号；同平台多账号时必须指定 account_id 或 external_id。"""
+    return _post(
+        "/api/skills/accounts/cookie",
+        {
+            "platform": platform,
+            "cookie": cookie,
+            "display_name": display_name,
+            "account_id": account_id,
+            "external_id": external_id,
+        },
+    )
 
 
 # ---------- 采集/同步 ----------
@@ -103,6 +118,8 @@ def create_crawl_task(
     keyword: str,
     sort: str = "popular",
     limit_per_run: int = 50,
+    interval_minutes: int = 1440,
+    comment_mode: str = "off",
     account_id: int = 0,
 ) -> dict:
     """创建关键词采集任务。account_id=0 表示自动轮换；指定则固定用该账号。"""
@@ -111,6 +128,8 @@ def create_crawl_task(
         "keyword": keyword,
         "sort": sort,
         "limit_per_run": limit_per_run,
+        "interval_minutes": interval_minutes,
+        "comment_mode": comment_mode,
         "account_id": account_id or None,
     })
 

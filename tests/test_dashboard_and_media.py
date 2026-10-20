@@ -83,6 +83,23 @@ def test_article_endpoint_returns_text(client, session):
     assert "title" in body and "text" in body
 
 
+def test_article_endpoint_sanitizes_legacy_html(client, session):
+    """存量脏 HTML 也不能从 API 出口原样返回给 MCP/导出客户端。"""
+    content, asset = _seed(session, content_type="article", relative_path="wechat_mp/legacy")
+    asset_id = asset.id
+    content.extra = {
+        "html": '<p onclick="x()">安全</p><script>window.__xss=1</script>'
+        '<a href="javascript:alert(1)">坏链接</a>'
+    }
+    session.commit()
+
+    body = client.get(f"/api/assets/{asset_id}/article").json()
+    assert "<script" not in body["html"]
+    assert "onclick" not in body["html"]
+    assert "javascript:" not in body["html"]
+    assert "安全" in body["html"]
+
+
 def test_media_range_returns_206(client, session, tmp_path):
     payload = bytes(range(256)) * 4  # 1024 bytes
     root = StorageRoot(name="t", path=str(tmp_path), is_default=True)

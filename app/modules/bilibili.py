@@ -585,12 +585,16 @@ class BilibiliAdapter:
         return items[:limit]
 
 
-def _pick_best_video_stream(streams: list[dict]) -> dict | None:
+def _pick_best_video_stream(streams: list[dict], max_height: int | None = None) -> dict | None:
     """按「清晰度优先、其次码率」选最高档视频流（照抄 bili-sync best_stream）。
 
     bili-sync 先比 quality（id），相同再按 codecs 偏好；我们用 id→bandwidth 近似，
     效果等价于"取最高画质"。
     """
+    if max_height is not None:
+        bounded = [v for v in streams if int(v.get("height") or 0) <= max_height]
+        if bounded:
+            streams = bounded
     if not streams:
         return None
     return max(streams, key=lambda v: (int(v.get("id") or 0), int(v.get("bandwidth") or 0)))
@@ -616,7 +620,12 @@ def _stream_urls(stream: dict | None) -> list[str]:
     return out
 
 
-async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
+async def resolve_play_urls(
+    credential: dict,
+    bvid: str,
+    *,
+    max_height: int | None = None,
+) -> dict | None:
     """用 view + playurl 把 BV 号解析成可下载的 DASH 地址。
 
     这是 B站下载的正确入口（照抄 bili-sync：先 /x/web-interface/view 拿 cid，
@@ -652,7 +661,8 @@ async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
                 play = await client.get(
                     _PLAYURL,
                     params={
-                        "bvid": bvid, "cid": page_cid, "qn": 127,
+                        "bvid": bvid, "cid": page_cid,
+                        "qn": 127 if max_height is None else {1080: 80, 720: 64}.get(max_height, 127),
                         "fnval": _FNVAL_DASH, "fourk": 1,
                     },
                     cookies=cookies,
@@ -666,7 +676,9 @@ async def resolve_play_urls(credential: dict, bvid: str) -> dict | None:
                 return None
             p = pdata.get("data") or {}
             dash = p.get("dash") or {}
-            v_urls = _stream_urls(_pick_best_video_stream(dash.get("video") or []))
+            v_urls = _stream_urls(
+                _pick_best_video_stream(dash.get("video") or [], max_height=max_height)
+            )
             if not v_urls:
                 durl = p.get("durl") or []
                 mixed: list[str] = []

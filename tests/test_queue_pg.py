@@ -96,7 +96,7 @@ def test_payload_column_is_json_on_pg(pg_engine):
 
 def test_enqueue_dedup_on_pg(pg_engine):
     """dedup=True 在 PG 上不得抛 json=json，且去重语义正确。"""
-    from app.core.queue import complete, enqueue
+    from app.core.queue import complete, dedup_key, enqueue
     from app.models import JobQueue
 
     db = _session(pg_engine)
@@ -121,9 +121,63 @@ def test_enqueue_dedup_on_pg(pg_engine):
         assert j4.id != j1.id
         assert db.query(JobQueue).filter_by(job_type="download").count() == 3
 
-        # 空 payload / 多键 payload 的相等判断走 Python 侧，语义与 SQLite 一致
+        # 空 payload / 多键 payload 使用同一规范键，语义与 SQLite 一致
         enqueue(db, "crawl", {})
-        enqueue(db, "crawl", {})
+        reordered = enqueue(db, "crawl", {})
+        assert reordered.dedup_key == dedup_key("crawl", {})
         assert db.query(JobQueue).filter_by(job_type="crawl").count() == 1
+
+        # Key ordering must not create a second active job.
+        a = enqueue(db, "sync", {"subscription_id": 3, "force": False})
+        b = enqueue(db, "sync", {"force": False, "subscription_id": 3})
+        assert b.id == a.id
+    finally:
+        db.close()
+
+
+def test_active_dedup_key_has_partial_unique_index_on_pg(pg_engine):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import JobQueue
+
+    db = _session(pg_engine)
+    try:
+        first = JobQueue(job_type="download", payload={"asset_id": 1}, dedup_key="same", status="queued")
+        db.add(first)
+        db.commit()
+        db.add(JobQueue(job_type="download", payload={"asset_id": 1}, dedup_key="same", status="error"))
+        db.commit()  # terminal rows are outside the partial index
+        db.add(JobQueue(job_type="download", payload={"asset_id": 1}, dedup_key="same", status="queued"))
+        with pytest.raises(IntegrityError):
+            db.commit()
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_retry_failed_retries_in_bounded_batches(pg_engine, monkeypatch):
+    from app.core import queue
+    from app.models import JobQueue
+
+    db = _session(pg_engine)
+    commits = {"n": 0}
+    real_commit = db.commit
+
+    def counting_commit():
+        commits["n"] += 1
+        return real_commit()
+
+    monkeypatch.setattr(db, "commit", counting_commit)
+    try:
+        db.add_all([
+            JobQueue(job_type="download", payload={"asset_id": i}, status="error")
+            for i in range(1, 8)
+        ])
+        db.commit()
+        commits["n"] = 0
+        ids = queue.retry_failed(db, batch_size=3)
+        assert len(ids) == 7
+        assert commits["n"] == 3
+        assert db.query(JobQueue).filter_by(status="queued").count() == 7
     finally:
         db.close()

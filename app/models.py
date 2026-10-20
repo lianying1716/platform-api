@@ -101,6 +101,33 @@ class SystemSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class AdminSession(Base):
+    """Persisted admin session. Only the SHA-256 digest of the bearer token is stored."""
+
+    __tablename__ = "admin_session"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AuthRateEvent(Base):
+    """One login attempt, counted by a sliding five-minute window.
+
+    Fixed buckets let a caller spend a full budget just before a boundary and
+    another just after it.  Event rows make the window exact and still give the
+    worker a bounded retention table to prune.
+    """
+
+    __tablename__ = "auth_rate_event"
+    __table_args__ = (Index("ix_auth_rate_event_key_created", "key", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(96), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
 # ============================================================
 # P2：存储 / 订阅同步 / 内容与素材
 # ============================================================
@@ -148,22 +175,27 @@ class Subscription(Base):
     # 但拉取博主投稿必须由用户手动开启（对齐抖小云的独立开关）。
     sync_videos: Mapped[bool] = mapped_column(Boolean, default=False)
     auto_download: Mapped[bool] = mapped_column(Boolean, default=False)
-    interval_minutes: Mapped[int] = mapped_column(Integer, default=360)
+    # NULL = inherit the global random interval.  A non-null value is an
+    # explicit subscription-level fixed interval (including an explicit 360).
+    interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     subdir_template: Mapped[str] = mapped_column(String(256), default="{platform}/{account}/{creator}/{date}")
     # 订阅级存储根覆盖：NULL = 继承账号绑定（再回退默认根）。
     storage_root_id: Mapped[int | None] = mapped_column(
         ForeignKey("storage_root.id", ondelete="SET NULL"), nullable=True
     )
-    # 加工开关（本订阅级显式 opt-in；命中即绕过热度门控直接入队）。
-    auto_transcribe: Mapped[bool] = mapped_column(Boolean, default=False)
-    auto_analyze: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Three-state processing overrides: None = inherit global, False = explicit
+    # off, True = explicit on.  False must never be used as "unset".
+    auto_transcribe: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    auto_analyze: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     # 同步设置（迁移 0008）：过滤 / 截断 / 只新 / 画质 / 评论门控
     min_play: Mapped[int] = mapped_column(Integer, default=0)  # 最低播放量门槛，0=不限
     publish_after_days: Mapped[int] = mapped_column(Integer, default=0)  # 只同步最近 N 天，0=不限
     max_items: Mapped[int] = mapped_column(Integer, default=50)  # 单次同步最多入库条数
     only_new: Mapped[bool] = mapped_column(Boolean, default=True)  # 只入库新内容
     download_quality: Mapped[str] = mapped_column(String(16), default="best")  # best/1080/720/audio
-    with_comments: Mapped[bool] = mapped_column(Boolean, default=False)  # 本批是否走评论门控
+    # Comment policy is an enum rather than two different meanings of one bool.
+    # off = never enqueue, gate = global heat gate, force = bypass the gate.
+    comment_mode: Mapped[str] = mapped_column(String(16), default="gate", server_default="gate")
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # 最后一次**尝试**同步的时间（无论成败）。用于失败退避：last_sync_at 只在成功时更新，
     # 拿它判到期会让持续失败的订阅被反复入队、在风控期反复打平台。
@@ -171,6 +203,14 @@ class Subscription(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+    @property
+    def with_comments(self) -> bool:
+        """Read-only compatibility projection for legacy response consumers."""
+        return self.comment_mode == "force"
+
+    @with_comments.setter
+    def with_comments(self, value: bool | None) -> None:
+        self.comment_mode = "force" if value else "gate"
 
 class ContentSource(Base):
     """内容来源关系：同一账号内同一视频可来自多个订阅；取消订阅只停用来源。"""
@@ -209,7 +249,10 @@ class SyncRun(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     subscription_id: Mapped[int] = mapped_column(ForeignKey("subscription.id", ondelete="CASCADE"), index=True)
+    # 发起这次运行的队列任务。API 只提交命令，运行记录通过 job_id 可追溯到执行平面。
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="running")  # running/success/error
     fetched: Mapped[int] = mapped_column(Integer, default=0)
@@ -284,6 +327,8 @@ class MediaAsset(Base):
     process_tier: Mapped[str] = mapped_column(String(16), default="")  # ""/basic/advanced
     understand_status: Mapped[str] = mapped_column(String(16), default="pending")
     error: Mapped[str] = mapped_column(String(512), default="")
+    # 两阶段删除：先隐藏并入队清理文件，worker 成功后物理删除；失败保留此标记可重试。
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -297,6 +342,17 @@ class JobQueue(Base):
     """基于 PG 的任务队列。SELECT ... FOR UPDATE SKIP LOCKED 取任务，不引入 Redis。"""
 
     __tablename__ = "job_queue"
+    __table_args__ = (
+        # A dedup key is only unique while a job is active.  Completed and
+        # failed jobs must not prevent a later instance of the same command.
+        Index(
+            "uq_job_queue_active_dedup_key",
+            "dedup_key",
+            unique=True,
+            postgresql_where=text("dedup_key IS NOT NULL AND status IN ('queued', 'running')"),
+            sqlite_where=text("dedup_key IS NOT NULL AND status IN ('queued', 'running')"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     job_type: Mapped[str] = mapped_column(String(32), index=True)  # download / transcribe / analyze / sync / crawl
@@ -306,10 +362,68 @@ class JobQueue(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     error: Mapped[str] = mapped_column(Text, default="")
+    # Canonical hash of job_type + payload.  NULL is kept for jobs submitted
+    # with dedup=False and for legacy rows that predate the migration.
+    dedup_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # worker 执行期间定期刷新；只按 locked_at 判超时会把仍在跑的长任务误回收。
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     run_after: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class PipelineRun(Base):
+    """One durable content-processing DAG for an asset.
+
+    ``job_queue`` is the technical execution plane; this row is the business
+    workflow state.  A run is created only after a local asset is usable
+    (normally after download), and all processing actions for that asset share
+    its active run so retries cannot diverge into parallel chains.
+    """
+
+    __tablename__ = "pipeline_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("media_asset.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), default="content_processing", index=True)
+    # waiting/queued/running/done/error/cancelled
+    status: Mapped[str] = mapped_column(String(24), default="waiting", index=True)
+    error: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PipelineStep(Base):
+    """A node in a :class:`PipelineRun` with explicit prerequisites."""
+
+    __tablename__ = "pipeline_step"
+    __table_args__ = (
+        UniqueConstraint("run_id", "step", name="uq_pipeline_step_run_step"),
+        Index("ix_pipeline_step_status_job", "status", "job_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("pipeline_run.id", ondelete="CASCADE"), index=True
+    )
+    step: Mapped[str] = mapped_column(String(32), index=True)
+    # waiting_prerequisite/ready/queued/running/done/error/skipped
+    status: Mapped[str] = mapped_column(String(24), default="waiting_prerequisite", index=True)
+    depends_on: Mapped[list] = mapped_column(JSON, default=list)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_queue.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Transcript(Base):
@@ -344,14 +458,26 @@ class CrawlTask(Base):
     keyword: Mapped[str] = mapped_column(String(256))
     sort: Mapped[str] = mapped_column(String(16), default="popular")  # popular / latest
     limit_per_run: Mapped[int] = mapped_column(Integer, default=50)
-    with_comments: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Crawl defaults to no comment enrichment; an explicit force is opt-in.
+    comment_mode: Mapped[str] = mapped_column(String(16), default="off", server_default="off")
     to_candidate: Mapped[bool] = mapped_column(Boolean, default=True)  # 视频是否进下载候选池
     min_play: Mapped[int] = mapped_column(Integer, default=0)
     interval_minutes: Mapped[int] = mapped_column(Integer, default=1440)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Updated when a scheduled or manual attempt is enqueued.  Failure backoff
+    # uses this instead of last_run_at, which only advances on success.
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+    @property
+    def with_comments(self) -> bool:
+        """Read-only compatibility projection for legacy response consumers."""
+        return self.comment_mode == "force"
+
+    @with_comments.setter
+    def with_comments(self, value: bool | None) -> None:
+        self.comment_mode = "force" if value else "off"
 
 class CrawlRun(Base):
     """一次关键词采集执行记录。"""
@@ -360,10 +486,12 @@ class CrawlRun(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("crawl_task.id", ondelete="CASCADE"), index=True)
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     account_id: Mapped[int | None] = mapped_column(
         ForeignKey("platform_account.id", ondelete="SET NULL"), nullable=True, index=True
     )
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="running")
     fetched: Mapped[int] = mapped_column(Integer, default=0)
@@ -427,6 +555,24 @@ class ApiCallLog(Base):
     status: Mapped[str] = mapped_column(String(16), default="")  # ok / error / denied
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class ApiRateWindow(Base):
+    """Durable per-key, per-minute counter shared by API and worker processes.
+
+    A sliding in-memory window reset on restart and was not shared between
+    processes.  One row per ``(key_id, window_start)`` makes the check a single
+    atomic UPSERT: the increment only succeeds while ``count < limit``.
+    """
+
+    __tablename__ = "api_rate_window"
+    __table_args__ = (UniqueConstraint("key_id", "window_start", name="uq_api_rate_window_key_start"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key_id: Mapped[int] = mapped_column(ForeignKey("api_key.id", ondelete="CASCADE"), index=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 # ============================================================
@@ -584,6 +730,7 @@ class AiModel(Base):
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
     probe_status: Mapped[str] = mapped_column(String(16), default="untested")
     probe_error: Mapped[str] = mapped_column(Text, default="")
+    probe_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     probed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -712,6 +859,56 @@ class TaskLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class EventOutbox(Base):
+    """Durable cross-process event stream for SSE.
+
+    Worker and API run in different processes, so an in-memory asyncio queue can
+    never carry worker progress to the browser.  Events are committed here and
+    the API polls by id; ``id`` is also the SSE ``Last-Event-ID`` cursor.
+    """
+
+    __tablename__ = "event_outbox"
+    __table_args__ = (
+        Index("ix_event_outbox_created_at", "created_at"),
+        Index("ix_event_outbox_event_id", "event", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event: Mapped[str] = mapped_column(String(64))
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Alert(Base):
+    """Actionable operational alert with dedupe, acknowledgement and recovery."""
+
+    __tablename__ = "alert"
+    __table_args__ = (
+        UniqueConstraint("dedup_key", name="uq_alert_dedup_key"),
+        Index("ix_alert_status_created_at", "status", "created_at"),
+        Index("ix_alert_job_id_status", "job_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)  # job_failed / job_stale
+    dedup_key: Mapped[str] = mapped_column(String(160))
+    severity: Mapped[str] = mapped_column(String(8), default="warning")  # warning/error
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active/acknowledged/resolved
+    title: Mapped[str] = mapped_column(String(160), default="")
+    message: Mapped[str] = mapped_column(String(512), default="")
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_queue.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    job_type: Mapped[str] = mapped_column(String(32), default="")
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class DeletionAudit(Base):
     """素材删除审计：谁、何时、为何删除哪条素材；Agent 删除必须有此记录。"""
 
@@ -723,6 +920,9 @@ class DeletionAudit(Base):
     account_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     actor: Mapped[str] = mapped_column(String(64), default="admin")
     reason: Mapped[str] = mapped_column(String(512), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/completed/failed
+    error: Mapped[str] = mapped_column(String(512), default="")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

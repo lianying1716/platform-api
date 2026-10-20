@@ -180,16 +180,25 @@ def _save_credential(db: Session, account: PlatformAccount, plain: dict) -> None
 # ---------- 平台元信息 ----------
 @router.get("/platforms", response_model=list[schemas.PlatformInfo])
 def list_platforms():
-    return [
-        schemas.PlatformInfo(
-            platform=a.platform,
-            label=a.label,
-            credential_kind=a.credential_kind,
-            supports_qr=a.supports_qr,
-            credential_fields=a.credential_fields,
-        )
-        for a in REGISTRY.values()
-    ]
+    from app.domain.capabilities import as_public_manifest
+
+    capabilities = {row["platform"]: row for row in as_public_manifest()}
+    out = []
+    for adapter in REGISTRY.values():
+        cap = capabilities.get(adapter.platform) or {}
+        out.append(schemas.PlatformInfo(
+            platform=adapter.platform,
+            label=adapter.label,
+            credential_kind=adapter.credential_kind,
+            supports_qr=adapter.supports_qr,
+            credential_fields=adapter.credential_fields,
+            source_types=cap.get("source_types", []),
+            download_qualities=cap.get("download_qualities", []),
+            keyword_crawl=bool(cap.get("keyword_crawl")),
+            comments=bool(cap.get("comments")),
+            follow_import=bool(cap.get("follow_import")),
+        ))
+    return out
 
 
 # ---------- 扫码登录（必须先于 /accounts/{id} 声明） ----------

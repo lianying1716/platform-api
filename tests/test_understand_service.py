@@ -18,11 +18,11 @@ import app.services.understand_service as svc
 
 @pytest.fixture(autouse=True)
 def _chdir_tmp(tmp_path, monkeypatch):
-    """服务按「storage_root 相对路径」落文件；无 storage_root 时会退化到 cwd。
-
-    这里把 cwd 指到 tmp_path，避免测试在仓库根写 douyin/ 等现场目录。
-    """
+    """在 tmp_path 下提供显式默认存储根；生产代码禁止回退到 cwd。"""
     monkeypatch.chdir(tmp_path)
+    import app.core.storage as storage_mod
+
+    monkeypatch.setattr(storage_mod, "get_default_root", lambda _db: type("Root", (), {"path": str(tmp_path), "id": 1})())
     yield
 
 
@@ -51,7 +51,12 @@ def _seed(
     )
     db.add(c)
     db.flush()
-    a = MediaAsset(content_id=c.id, relative_path=relative_path, video_file=video_file)
+    a = MediaAsset(
+        content_id=c.id,
+        relative_path=relative_path,
+        video_file=video_file,
+        download_status="done",
+    )
     db.add(a)
     db.flush()
     db.add(Transcript(asset_id=a.id, full_text="评论区扣1，下单送腰带", language="zh", model="base"))
@@ -259,10 +264,22 @@ def _patch_http(monkeypatch, resp):
     monkeypatch.setattr(svc.httpx, "AsyncClient", lambda *a, **k: _FakeClient(resp))
 
 
+def patch_image_fetch(monkeypatch, content=b"", content_type="image/jpeg", *, error=None):
+    """Patch the shared egress boundary, not an arbitrary inner HTTPS client."""
+    from app.core import egress
+
+    async def fake_fetch(url, *, purpose, platform, timeout, max_bytes):
+        if error is not None:
+            raise error()
+        return egress.ImageResponse(url, 200, content_type, content)
+
+    monkeypatch.setattr(egress, "fetch_image", fake_fetch)
+
+
 def test_ensure_cover_downloads_and_writes(monkeypatch, session, tmp_path):
     """Important#1：封面真正落盘——_ensure_cover 下载后返回本地路径。"""
     c, a = _seed(session, cover_url="http://img.test/c.png")
-    _patch_http(monkeypatch, _FakeResp(b"\x89PNG-fake", "image/png"))
+    patch_image_fetch(monkeypatch, b"\x89PNG-fake", "image/png")
 
     work = str(tmp_path / "_cover")
     path = asyncio.run(svc._ensure_cover(c, work, 5))
@@ -282,30 +299,23 @@ def test_ensure_cover_download_failure_falls_back(monkeypatch, session, tmp_path
     """封面下载失败 → None（回退纯文本），不抛。"""
     c, a = _seed(session, cover_url="http://img.test/x.jpg")
 
-    class _Boom:
-        async def __aenter__(self):
-            return self
+    async def boom(*_a, **_k):
+        raise OSError("网络炸了")
 
-        async def __aexit__(self, *exc):
-            return False
-
-        async def get(self, url):
-            raise RuntimeError("网络炸了")
-
-    monkeypatch.setattr(svc.httpx, "AsyncClient", lambda *a, **k: _Boom())
+    patch_image_fetch(monkeypatch, error=boom)
     assert asyncio.run(svc._ensure_cover(c, str(tmp_path), 5)) is None
 
 
 def test_ensure_cover_oversize_returns_none(monkeypatch, session, tmp_path):
     c, a = _seed(session, cover_url="http://img.test/big.jpg")
-    _patch_http(monkeypatch, _FakeResp(b"x" * 4096, "image/jpeg"))
+    patch_image_fetch(monkeypatch, b"x" * 4096, "image/jpeg")
     assert asyncio.run(svc._ensure_cover(c, str(tmp_path), 0.0001)) is None
 
 
 def test_run_understand_use_cover_passes_downloaded_path(monkeypatch, session, tmp_path):
     """Important#1 端到端：use_cover=True 时 classify 收到真实封面路径（不再恒为 None）。"""
     c, a = _seed(session, cover_url="http://img.test/c.jpg")
-    _patch_http(monkeypatch, _FakeResp(b"cover-bytes", "image/jpeg"))
+    patch_image_fetch(monkeypatch, b"cover-bytes", "image/jpeg")
 
     seen = {}
 

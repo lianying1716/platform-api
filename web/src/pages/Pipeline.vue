@@ -36,6 +36,21 @@
       <router-link class="pq-ai-link" to="/system">调整时段</router-link>
     </div>
 
+    <section v-if="alerts.length" class="pq-alerts" aria-label="运行告警">
+      <div v-for="alert in alerts" :key="alert.id" class="pq-alert" :class="alert.severity">
+        <div class="pq-alert-main">
+          <b>{{ alert.title }}</b>
+          <span v-if="alert.occurrences > 1" class="pq-alert-count">×{{ alert.occurrences }}</span>
+          <p>{{ alert.message }}</p>
+          <span class="pq-alert-time">{{ fmtLogTime(alert.last_seen_at) }} · 任务 #{{ alert.job_id }}</span>
+        </div>
+        <div class="pq-alert-acts">
+          <button v-if="alert.status === 'active'" class="ui-btn sm" @click="ackAlert(alert)">确认</button>
+          <button class="ui-btn sm" @click="resolveAlert(alert)">关闭</button>
+        </div>
+      </div>
+    </section>
+
     <section class="ui-panel" v-loading="loading">
       <div v-if="!loading && !jobs.length" class="ui-empty">
         <div class="big">{{ filter ? '该状态下没有任务' : '队列是空的' }}</div>
@@ -85,7 +100,20 @@
 
           <!-- 右：操作 -->
           <div class="pq-acts">
+            <button class="ui-btn sm" @click="toggleLogs(row)">{{ openLogs === row.id ? '收起日志' : '日志' }}</button>
             <button v-if="row.status === 'error'" class="ui-btn sm" @click="retry(row)">重试</button>
+          </div>
+          <div v-if="openLogs === row.id" class="pq-logs">
+            <div v-if="logsLoading" class="pq-log-empty">读取日志…</div>
+            <div v-else-if="!logs.length" class="pq-log-empty">这条任务还没有结构化日志</div>
+            <ol v-else class="pq-log-list">
+              <li v-for="log in logs" :key="log.id" class="pq-log" :class="log.level">
+                <span class="pq-log-time">{{ fmtLogTime(log.created_at) }}</span>
+                <span class="pq-log-level">{{ log.level }}</span>
+                <span class="pq-log-msg">{{ log.message }}</span>
+                <span v-if="log.actor" class="pq-log-actor">{{ log.actor }}</span>
+              </li>
+            </ol>
           </div>
         </li>
       </ul>
@@ -94,20 +122,79 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
+import { parseUtc } from '../utils/time'
 
 const jobs = ref<any[]>([])
 const loading = ref(false)
 const filter = ref('')
-const counts = ref({ queued: 0, running: 0, error: 0, done: 0 })
+const counts = ref({ queued: 0, running: 0, error: 0, done: 0, total: 0 })
 const lastLoaded = ref('')
 const aiSchedule = ref<any>({ enabled: false, is_open: true, next_open_at: null })
 let timer: number | undefined
+let refreshOnEvent: (() => void) | undefined
+const openLogs = ref<number | null>(null)
+const logs = ref<any[]>([])
+const logsLoading = ref(false)
+const alerts = ref<any[]>([])
+
+function alertToOut(row: any) {
+  return {
+    id: row.id,
+    title: row.title,
+    message: row.message,
+    severity: row.severity === 'error' ? 'error' : 'warning',
+    status: row.status,
+    occurrences: row.occurrences,
+    job_id: row.job_id,
+    last_seen_at: row.last_seen_at,
+  }
+}
+
+async function loadAlerts() {
+  const { data } = await api.get('/api/pipeline/alerts')
+  alerts.value = (data.alerts || []).map(alertToOut)
+}
+
+async function ackAlert(row: any) {
+  await api.post(`/api/pipeline/alerts/${row.id}/acknowledge`)
+  await loadAlerts()
+}
+
+async function resolveAlert(row: any) {
+  await api.post(`/api/pipeline/alerts/${row.id}/resolve`)
+  await loadAlerts()
+}
+
+function fmtLogTime(value: string | null) {
+  const t = parseTs(value)
+  return t ? new Date(t).toLocaleTimeString('zh-CN', { hour12: false }) : '—'
+}
+
+async function toggleLogs(row: any) {
+  if (openLogs.value === row.id) {
+    openLogs.value = null
+    logs.value = []
+    return
+  }
+  openLogs.value = row.id
+  await loadLogs(row.id)
+}
+
+async function loadLogs(jobId: number) {
+  logsLoading.value = true
+  try {
+    const { data } = await api.get(`/api/pipeline/jobs/${jobId}/logs`)
+    logs.value = data.logs || []
+  } finally {
+    logsLoading.value = false
+  }
+}
 
 const summaryCards = computed(() => [
-  { k: '', label: '全部', n: counts.value.queued + counts.value.running + counts.value.error + counts.value.done, tone: '' },
+  { k: '', label: '全部', n: counts.value.total, tone: '' },
   { k: 'queued', label: '排队中', n: counts.value.queued, tone: 'warn' },
   { k: 'running', label: '执行中', n: counts.value.running, tone: 'run' },
   { k: 'error', label: '失败', n: counts.value.error, tone: 'bad' },
@@ -168,7 +255,7 @@ function stageText(row: any) {
 
 function parseTs(v: string | null | undefined) {
   if (!v) return null
-  return new Date(/Z$/.test(v) || v.includes('+') ? v : v + 'Z').getTime()
+  return parseUtc(v)?.getTime() ?? null
 }
 function human(ms: number | null) {
   if (ms === null || ms < 0) return '—'
@@ -206,9 +293,9 @@ function nextRun(row: any) {
 
 function fmtAiTime(value: string | null) {
   if (!value) return ''
-  return new Date(value).toLocaleString('zh-CN', {
+  return parseUtc(value)?.toLocaleString('zh-CN', {
     hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  })
+  }) ?? ''
 }
 
 async function load() {
@@ -216,19 +303,27 @@ async function load() {
   try {
     const q = filter.value ? `?status=${filter.value}` : ''
     // 列表按当前筛选取；计数始终基于全量，避免筛选后徽标互相矛盾
-    const [listResp, allResp, scheduleResp] = await Promise.all([
+    const [listResp, countResp, scheduleResp, alertResp] = await Promise.all([
       api.get(`/api/pipeline/jobs${q}`),
-      filter.value ? api.get('/api/pipeline/jobs') : null,
+      api.get('/api/pipeline/summary'),
       api.get('/api/pipeline/ai-schedule'),
+      api.get('/api/pipeline/alerts'),
     ])
     jobs.value = listResp.data
+    if (openLogs.value !== null) await loadLogs(openLogs.value)
     aiSchedule.value = scheduleResp.data
-    const all = (allResp?.data ?? listResp.data) as any[]
+    alerts.value = (alertResp.data.alerts || []).map(alertToOut)
+    // Counts come from SQL aggregation, never from the first page of the list.
+    const summary = countResp.data as Record<string, Record<string, number>>
+    const sum = (status: string) => Object.values(summary).reduce((n, row) => n + Number(row[status] || 0), 0)
+    const queued = sum('queued')
+    const running = sum('running')
     counts.value = {
-      queued: all.filter((j) => j.status === 'queued').length,
-      running: all.filter((j) => j.status === 'running').length,
-      error: all.filter((j) => j.status === 'error').length,
-      done: all.filter((j) => j.status === 'done').length,
+      queued,
+      running,
+      error: sum('error'),
+      done: sum('done'),
+      total: queued + running + sum('error') + sum('done'),
     }
     lastLoaded.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   } finally {
@@ -251,8 +346,13 @@ async function retryAll() {
 onMounted(() => {
   load()
   timer = window.setInterval(load, 5000)
+  refreshOnEvent = () => { if (!loading.value) load() }
+  window.addEventListener('xsai:events-changed', refreshOnEvent)
 })
-onUnmounted(() => timer && clearInterval(timer))
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+  if (refreshOnEvent) window.removeEventListener('xsai:events-changed', refreshOnEvent)
+})
 </script>
 
 <style scoped>
@@ -292,6 +392,16 @@ onUnmounted(() => timer && clearInterval(timer))
   padding: 0 6px;
 }
 
+.pq-alerts { display: flex; flex-direction: column; gap: 6px; }
+.pq-alert { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--danger); background: var(--danger-soft); padding: 9px 12px; }
+.pq-alert.warning { border-color: var(--warn); background: var(--warn-soft); }
+.pq-alert-main { min-width: 0; flex: 1; }
+.pq-alert-main b { color: var(--ink); }
+.pq-alert-main p { margin: 3px 0; color: var(--ink-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.pq-alert-count { margin-left: 6px; font-size: var(--fs-xs); color: var(--danger); font-weight: 700; }
+.pq-alert-time { font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.pq-alert-acts { display: flex; gap: 6px; flex: none; }
+
 /* 任务列表 */
 .pq-list { list-style: none; margin: 0; padding: 0; }
 .pq-item {
@@ -299,6 +409,13 @@ onUnmounted(() => timer && clearInterval(timer))
   padding: 12px var(--sp-4);
   border-bottom: 1px solid var(--line-soft);
 }
+.pq-logs { grid-column: 2 / -1; border-top: 1px dashed var(--line-soft); margin-top: 8px; padding-top: 8px; }
+.pq-log-empty { color: var(--muted); font-size: var(--fs-sm); }
+.pq-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.pq-log { display: grid; grid-template-columns: 72px 48px minmax(0, 1fr) auto; gap: 8px; font-size: var(--fs-sm); }
+.pq-log-time, .pq-log-level, .pq-log-actor { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pq-log.error .pq-log-level, .pq-log.error .pq-log-msg { color: var(--danger); }
+.pq-log-msg { min-width: 0; overflow-wrap: anywhere; }
 .pq-item:last-child { border-bottom: 0; }
 .pq-item.bad { background: color-mix(in oklab, var(--danger) 5%, var(--surface)); }
 .pq-item.run { background: color-mix(in oklab, var(--accent-2) 4%, var(--surface)); }
@@ -332,9 +449,11 @@ onUnmounted(() => timer && clearInterval(timer))
 /* 错误信息完整展示，不做任何截断（用户要求：详细信息必须展示完全） */
 
 .pq-acts { display: flex; align-items: center; }
+.pq-acts { gap: 6px; flex-wrap: wrap; }
 
 @media (max-width: 860px) {
   .pq-item { grid-template-columns: 1fr; }
   .pq-pos { flex-direction: row; gap: 10px; }
+  .pq-alert { flex-wrap: wrap; }
 }
 </style>

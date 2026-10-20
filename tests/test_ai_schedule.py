@@ -210,8 +210,12 @@ def test_closed_schedule_does_not_block_downloads(client, session, monkeypatch):
     c = ContentItem(account_id=1, platform="douyin", external_id="e", title="t")
     session.add(c)
     session.flush()
-    a = MediaAsset(content_id=c.id, download_status="pending")
+    a = MediaAsset(content_id=c.id, download_status="done", transcribe_status="done")
     session.add(a)
+    session.flush()
+    from app.models import Transcript
+
+    session.add(Transcript(asset_id=a.id, full_text="已有转录"))
     session.commit()
     client.post(f"/api/assets/{a.id}/analyze")
     from app.core.queue import claim

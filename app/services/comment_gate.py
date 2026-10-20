@@ -75,14 +75,23 @@ def enqueue_comment_jobs(
     platform: str,
     settings: dict,
     bypass_gate: bool = False,
+    mode: str | None = None,
 ) -> int:
     """选出目标并入队 fetch_comments，返回**本次新建**的 job 条数。
 
     低优先级(150)，让下载/转录/分析先跑；不阻塞 API。调用方需保证指标快照已落库。
     仅 COMMENT_PLATFORMS 内的平台入队；已被 queue 去重吸收的重复目标不计入返回值。
-    ``bypass_gate=True``（订阅 with_comments）跳过门控阈值，但仍按平台白名单与去重处理。
+    ``mode`` 是统一的 off/gate/force 策略；``bypass_gate`` 仅保留给存量调用方。
     """
     from app.core.queue import enqueue
+
+    if mode is not None:
+        from app.domain.comments import comment_policy
+
+        policy = comment_policy(mode)
+        if not policy.enabled:
+            return 0
+        bypass_gate = policy.force
 
     if platform not in COMMENT_PLATFORMS:
         return 0

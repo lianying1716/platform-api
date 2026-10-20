@@ -19,16 +19,6 @@ VALID_URL = "https://mp.weixin.qq.com/s/AbCdEf123456"
 BAD_URL = "https://evil.example.com/s/x"
 
 
-@pytest.fixture(autouse=True)
-def _reset_rate_window():
-    """每个测试重置进程内限流窗口，避免内存库主键复用导致跨测试串扰。"""
-    from app.core import api_auth
-
-    api_auth._rate_window.clear()
-    yield
-    api_auth._rate_window.clear()
-
-
 def _make_key(client, scopes: list[str]) -> tuple[int, str]:
     """用管理员端点创建 API Key，返回 (id, 明文 key)。"""
     r = client.post("/api/ai/keys", json={"name": "skills-test", "scopes": scopes})

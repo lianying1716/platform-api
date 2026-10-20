@@ -485,7 +485,9 @@ async def send_request(request: ProtocolRequest, *, timeout: float) -> dict:
     GET（模型清单）不带请求体；POST（对话/视频）发送 JSON body。
     """
     method = (request.method or "POST").upper()
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    from app.core.egress import client_kwargs
+
+    async with httpx.AsyncClient(timeout=timeout, **client_kwargs("llm")) as client:
         if method == "GET":
             response = await client.get(request.url, headers=request.headers)
         else:

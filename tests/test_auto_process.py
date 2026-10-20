@@ -21,7 +21,7 @@ from app.models import (
 )
 
 
-def _setup(session, *, auto_transcribe=False, auto_analyze=False, content_type="video"):
+def _setup(session, *, auto_transcribe=None, auto_analyze=None, content_type="video"):
     root = StorageRoot(name="r", path="/tmp/ap", is_default=True)
     session.add(root)
     session.commit()
@@ -55,6 +55,14 @@ def test_flags_subscription_overrides_global(session):
     # 订阅级 False 覆盖全局 True
     t, a = auto_process_flags(session, c, {"auto_transcribe": True, "auto_analyze": True})
     assert (t, a) == (False, False)
+
+
+def test_flags_inherit_global_true(session):
+    from app.services.auto_process import auto_process_flags
+
+    _acc, _sub, c = _setup(session, auto_transcribe=None, auto_analyze=None)
+    t, a = auto_process_flags(session, c, {"auto_transcribe": True, "auto_analyze": True})
+    assert (t, a) == (True, True)
 
 
 def test_flags_subscription_true_overrides_global_false(session):
@@ -130,6 +138,10 @@ def test_maybe_chain_analyze_enqueues_when_transcript_done(session):
     _acc, _sub, c = _setup(session, auto_transcribe=False, auto_analyze=True)
     asset = MediaAsset(content_id=c.id, download_status="done", transcribe_status="done")
     session.add(asset)
+    session.flush()
+    from app.models import Transcript
+
+    session.add(Transcript(asset_id=asset.id, full_text="已有转录"))
     session.commit()
     maybe_chain_analyze(session, asset, c, {"auto_transcribe": False, "auto_analyze": True})
     session.commit()

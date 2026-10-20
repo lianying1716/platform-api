@@ -495,6 +495,61 @@ def test_runner_writes_task_log_on_failure(_engine, monkeypatch):
     db.close()
 
 
+def test_runner_marks_failed_outcome_as_error(_engine, monkeypatch):
+    import app.workers.runner as runner
+    from app.domain.jobs import JobOutcome, RetryClass
+    from app.models import JobQueue
+
+    _enqueue_fake_job(_engine)
+
+    async def business_failure(db, payload):
+        return JobOutcome.failure("同步业务失败", retry=RetryClass.NEVER, code="sync_failed")
+
+    monkeypatch.setattr(runner, "SessionLocal", _runner_sessionmaker(_engine))
+    monkeypatch.setattr(runner, "HANDLERS", {"fake": business_failure})
+    assert asyncio.run(runner._run_one()) is True
+
+    db = _runner_sessionmaker(_engine)()
+    job = db.scalar(select(JobQueue))
+    assert job.status == "error"
+    assert "同步业务失败" in job.error
+    db.close()
+
+
+def test_runner_reconciles_asset_on_failed_job(_engine, monkeypatch):
+    import app.workers.runner as runner
+    from app.domain.jobs import JobOutcome, RetryClass
+    from app.models import ContentItem, JobQueue, MediaAsset, PlatformAccount
+
+    S = _runner_sessionmaker(_engine)
+    db = S()
+    account = PlatformAccount(platform="douyin", display_name="a")
+    db.add(account)
+    db.flush()
+    content = ContentItem(account_id=account.id, platform="douyin", external_id="x")
+    db.add(content)
+    db.flush()
+    asset = MediaAsset(content_id=content.id, download_status="downloading")
+    db.add(asset)
+    db.flush()
+    db.add(JobQueue(job_type="download", payload={"asset_id": asset.id}))
+    db.commit()
+    asset_id = asset.id
+    db.close()
+
+    async def business_failure(db, payload):
+        return JobOutcome.failure("下载失败", retry=RetryClass.NEVER, code="download_failed")
+
+    monkeypatch.setattr(runner, "SessionLocal", _runner_sessionmaker(_engine))
+    monkeypatch.setattr(runner, "HANDLERS", {"download": business_failure})
+    assert asyncio.run(runner._run_one()) is True
+
+    db = S()
+    refreshed = db.get(MediaAsset, asset_id)
+    assert refreshed.download_status == "error"
+    db.close()
+
+
 def test_runner_survives_task_log_failure(_engine, monkeypatch):
     """I1：task_log 写入抛异常不得翻转任务结果。"""
     import app.workers.runner as runner

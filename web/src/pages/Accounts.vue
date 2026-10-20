@@ -51,6 +51,31 @@
               <i />
             </button>
           </div>
+          <div v-if="accountSwitches[row.id]?.length" class="acc-kinds">
+            <div
+              v-for="sw in accountSwitches[row.id]"
+              :key="sw.key"
+              class="acc-kind"
+              :class="{ on: sw.enabled, busy: togglingKind === `${row.id}:${sw.key}` }"
+            >
+              <span class="acc-kind-text" :title="sw.description">
+                <b>{{ sw.label }}</b>
+                <span v-if="sw.key === 'creator' && sw.exists">
+                  已导入 {{ sw.followed_count }} 位 · 视频同步 {{ sw.video_sync_count }} 位
+                </span>
+                <span v-else>{{ sw.enabled ? '已开启' : '未开启' }}</span>
+              </span>
+              <button
+                class="ui-switch sm"
+                :class="{ on: sw.enabled }"
+                :disabled="!row.sync_enabled || togglingKind === `${row.id}:${sw.key}`"
+                :aria-label="`${sw.label}：${sw.enabled ? '关闭' : '开启'}`"
+                @click="toggleKind(row, sw)"
+              >
+                <i />
+              </button>
+            </div>
+          </div>
           <dl class="acc-meta">
             <div><dt>到期</dt><dd>{{ fmt(row.expires_at) }}</dd></div>
             <div><dt>上次体检</dt><dd>{{ fmt(row.last_checked_at) }}</dd></div>
@@ -218,13 +243,27 @@
 
 <script setup lang="ts">
 import { InfoFilled } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import PlatformMark from '../components/PlatformMark.vue'
 import { api, type Account, type PlatformInfo } from '../api'
+import { parseUtc } from '../utils/time'
 
 const accounts = ref<Account[]>([])
 const platforms = ref<PlatformInfo[]>([])
+type AccountSwitch = {
+  key: string
+  source_type: string
+  label: string
+  description: string
+  enabled: boolean
+  exists?: boolean
+  followed_count?: number
+  video_sync_count?: number
+}
+const switchCapabilities = ref<Record<string, string[]>>({})
+const accountSwitches = ref<Record<number, AccountSwitch[]>>({})
+const togglingKind = ref('')
 const loading = ref(false)
 const checking = ref<number | null>(null)
 const togglingSync = ref<number | null>(null)
@@ -300,7 +339,7 @@ function statusText(s: string) {
 }
 function fmt(v: string | null) {
   if (!v) return '—'
-  return new Date(v.endsWith('Z') ? v : v + 'Z').toLocaleString('zh-CN', { hour12: false })
+  return parseUtc(v)?.toLocaleString('zh-CN', { hour12: false }) ?? '—'
 }
 
 async function load() {
@@ -308,8 +347,43 @@ async function load() {
   try {
     const { data } = await api.get('/api/accounts')
     accounts.value = data
+    await loadAccountSwitches(data)
   } finally {
     loading.value = false
+  }
+}
+
+async function loadAccountSwitches(rows: Account[]) {
+  const next: Record<number, AccountSwitch[]> = {}
+  await Promise.all(rows.map(async (row) => {
+    if (!(switchCapabilities.value[row.platform] || []).length) return
+    try {
+      const { data } = await api.get(`/api/accounts/${row.id}/sync-switches`)
+      next[row.id] = data.switches || []
+    } catch {
+      // The account itself remains usable; a transient switch read failure must
+      // not blank the whole account page or look like "no switches exist".
+      next[row.id] = []
+    }
+  }))
+  accountSwitches.value = next
+}
+
+async function toggleKind(row: Account, sw: AccountSwitch) {
+  const key = `${row.id}:${sw.key}`
+  const next = !sw.enabled
+  const before = sw.enabled
+  sw.enabled = next
+  togglingKind.value = key
+  try {
+    await api.put(`/api/accounts/${row.id}/sync-switches/${sw.key}`, { enabled: next })
+    ElMessage.success(next ? `${sw.label}已开启` : `${sw.label}已关闭`)
+    accountSwitches.value[row.id] = (await api.get(`/api/accounts/${row.id}/sync-switches`)).data.switches || []
+  } catch (e: any) {
+    sw.enabled = before
+    ElMessage.error(e?.response?.data?.detail || `${sw.label}操作失败`)
+  } finally {
+    togglingKind.value = ''
   }
 }
 
@@ -346,7 +420,7 @@ function needsReverify(row: Account) {
   return (row.status === 'error' || row.status === 'expired') && row.status !== 'deleted'
 }
 
-// 重新扫码：复用现有扫码弹窗，后端按 external_id 认到同一账号并覆盖凭证。
+// 重新扫码：复用现有扫码弹窗，并由 startQr 显式携带 account_id 原地覆盖。
 function rescan(row: Account) {
   editing.value = row
   form.platform = row.platform
@@ -389,6 +463,10 @@ async function startQr() {
     const { data } = await api.post('/api/accounts/qr-login', {
       platform: form.platform,
       display_name: form.display_name,
+      // A rescan targets the existing account explicitly.  Accounts that failed
+      // verification often have no external_id, so identity matching alone
+      // cannot safely replace them.
+      ...(editing.value ? { account_id: editing.value.id } : {}),
     })
     dialog.value = false
     qrImage.value = data.qr_image_base64
@@ -547,6 +625,7 @@ async function doRemove() {
 onMounted(async () => {
   const { data } = await api.get('/api/platforms')
   platforms.value = data
+  switchCapabilities.value = (await api.get('/api/sync-switches/capabilities')).data
   storageRoots.value = (await api.get('/api/system/storage-roots')).data
   await load()
 })
@@ -596,6 +675,20 @@ onUnmounted(stopPolling)
 .acc-sync-sub { font-size: var(--fs-xs); color: var(--muted); }
 .acc-sync .grow { flex: 1; }
 .acc-sync .ui-switch[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* 账号级同步类别：收藏 / 稍后再看 / 关注列表各一行，状态与订阅行同源。 */
+.acc-kinds { display: flex; flex-direction: column; border: 1px solid var(--line-soft); }
+.acc-kind {
+  display: flex; align-items: center; gap: 10px; min-height: 38px;
+  padding: 7px 10px; border-bottom: 1px solid var(--line-soft); background: var(--surface);
+}
+.acc-kind:last-child { border-bottom: 0; }
+.acc-kind.on { background: color-mix(in oklab, var(--accent) 5%, var(--surface)); }
+.acc-kind.busy { opacity: .65; }
+.acc-kind-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.acc-kind-text b { font-size: var(--fs-xs); color: var(--ink); }
+.acc-kind-text span { font-size: var(--fs-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acc-kind .ui-switch[disabled] { opacity: .45; cursor: not-allowed; }
 
 /* 平台卡片选择器 */
 .plat-picker {

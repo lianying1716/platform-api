@@ -45,6 +45,94 @@ def test_check_update_reports_newer(monkeypatch):
     assert res["url"].startswith("https://example")
 
 
+def test_check_update_reports_rate_limit_and_token(monkeypatch):
+    """Exhausted anonymous quota must be a structured failure, and token auth is used."""
+    import asyncio
+
+    import httpx
+    from app.config import settings
+    from app.core import version_upgrade
+
+    seen = {}
+
+    class _Resp:
+        status_code = 403
+        headers = {"x-ratelimit-reset": "1792525055"}
+        text = "rate limit exceeded"
+
+        def raise_for_status(self):
+            request = httpx.Request("GET", "https://api.github.com/repos/owner/repo/releases/latest")
+            raise httpx.HTTPStatusError("403", request=request, response=self)
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **kwargs):
+            seen.update(kwargs.get("headers") or {})
+            if "api.github.com" in url:
+                return _Resp()
+            return _Redirect()
+
+    class _Redirect:
+        status_code = 302
+        headers = {"location": "https://github.com/owner/repo/releases/tag/v1.2.3"}
+        text = ""
+        request = httpx.Request("GET", "https://github.com/owner/repo/releases/latest")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(settings, "update_github_token", "ghs_test", raising=False)
+    result = asyncio.run(version_upgrade.check_latest(current="v1.0.7", repo="owner/repo"))
+    assert result["ok"] is True
+    assert result["latest"] == "v1.2.3"
+    assert result["available"] is True
+    assert result["source"] == "public_redirect"
+    assert seen["Authorization"] == "Bearer ghs_test"
+
+
+def test_check_update_reports_failure_when_redirect_fallback_also_fails(monkeypatch):
+    """A private/unavailable release page must still surface an actionable 429/403."""
+    import asyncio
+
+    import httpx
+    from app.core import version_upgrade
+
+    class _Resp:
+        status_code = 429
+        headers = {}
+        text = "rate limit exceeded"
+
+        def raise_for_status(self):
+            request = httpx.Request("GET", "https://api.github.com/repos/owner/repo/releases/latest")
+            raise httpx.HTTPStatusError("429", request=request, response=self)
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **kwargs):
+            if "api.github.com" in url:
+                return _Resp()
+            return httpx.Response(404, request=httpx.Request("GET", url), headers={})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    result = asyncio.run(version_upgrade.check_latest(current="v1.0.7", repo="owner/repo"))
+    assert result["ok"] is False
+    assert "限流" in result["message"]
+
+
 def test_version_whitelist_rejects_injection():
     """版本号白名单：拒绝 shell 注入 / 路径穿越。"""
     from app.core import version_upgrade

@@ -24,6 +24,7 @@ from app.models import (
     MediaAsset,
     PlatformAccount,
 )
+from app.domain.capabilities import CRAWL_PLATFORMS
 from app.modules import crawler
 from app.services import foundation
 
@@ -67,12 +68,21 @@ def _account_cookie(account: PlatformAccount | None) -> str:
     return cred.get("cookie", "")
 
 
-async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
+async def run_crawl_task(db: Session, task_id: int, *, job_id: int | None = None) -> CrawlRun:
     task = db.get(CrawlTask, task_id)
     if task is None:
         raise ValueError("采集任务不存在")
+    if task.platform not in CRAWL_PLATFORMS:
+        raise ValueError(f"平台 {task.platform} 不支持关键词采集")
 
-    run = CrawlRun(task_id=task.id, status="running")
+    now = datetime.utcnow()
+    run = CrawlRun(
+        task_id=task.id,
+        job_id=job_id,
+        status="running",
+        started_at=now,
+        heartbeat_at=now,
+    )
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -92,7 +102,7 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
             keyword=task.keyword,
             sort=task.sort,
             limit=task.limit_per_run,
-            with_comments=task.with_comments,
+            with_comments=False,
             cookie=cookie,
         )
     except Exception as exc:  # noqa: BLE001 抓取异常不应让平台崩
@@ -114,14 +124,20 @@ async def run_crawl_task(db: Session, task_id: int) -> CrawlRun:
     task.last_run_at = datetime.utcnow()
     if account is not None:
         account.last_crawl_used_at = datetime.utcnow()
+    events.publish("crawl_done", {"task_id": task.id, "added": added}, db=db)
     db.commit()
-    events.publish("crawl_done", {"task_id": task.id, "added": added})
     # 评论富集：动态门控后入队（不阻塞，worker 抓）。指标快照已在上方 commit，门控才读得到。
     from app.core.comment_settings import get_comment_settings
     from app.services.comment_gate import enqueue_comment_jobs
 
     try:
-        enqueue_comment_jobs(db, touched, platform=task.platform, settings=get_comment_settings(db))
+        enqueue_comment_jobs(
+            db,
+            touched,
+            platform=task.platform,
+            settings=get_comment_settings(db),
+            mode=task.comment_mode,
+        )
     except Exception:  # noqa: BLE001 评论富集是增强项，失败不得翻转本次采集的成功状态
         db.rollback()
         logging.getLogger("platform.crawl").exception("评论入队失败，已忽略（不影响本次采集）")
@@ -235,11 +251,13 @@ def _ensure_download(db: Session, content: ContentItem) -> None:
 def _finish(
     db: Session, run: CrawlRun, status: str, fetched: int = 0, added: int = 0, error: str = ""
 ) -> CrawlRun:
+    now = datetime.utcnow()
     run.status = status
     run.fetched = fetched
     run.added = added
     run.error = error[:500]
-    run.finished_at = datetime.utcnow()
+    run.finished_at = now
+    run.heartbeat_at = None
     db.commit()
     db.refresh(run)
     return run

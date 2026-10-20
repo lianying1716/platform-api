@@ -127,6 +127,9 @@ def _app_with_overrides(_db_env, _engine, monkeypatch):
 
     # main.py 用 from ... import 直接绑定了这些名字，需同时打补丁
     monkeypatch.setattr(main_mod, "init_db", lambda: None)
+    import app.services.legacy_llm_migration as legacy_mod
+
+    monkeypatch.setattr(legacy_mod, "bootstrap_legacy_llm", lambda: None)
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: None)
     monkeypatch.setattr(main_mod, "stop_scheduler", lambda: None)
     main_mod.app.dependency_overrides[db_mod.get_db] = override_get_db

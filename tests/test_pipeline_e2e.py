@@ -22,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 
 
 @pytest.fixture()
-def session(monkeypatch):
+def session(monkeypatch, tmp_path):
     monkeypatch.setenv("PLATFORM_CREDENTIAL_ENC_KEY", base64.b64encode(os.urandom(32)).decode())
     import app.config as config
 
@@ -38,6 +38,10 @@ def session(monkeypatch):
 
     Base.metadata.create_all(engine)
     db = TestSession()
+    from app.models import StorageRoot
+
+    db.add(StorageRoot(id=1, name="test", path=str(tmp_path), is_default=True))
+    db.commit()
     yield db
     db.close()
 
@@ -125,7 +129,13 @@ def test_full_pipeline_download_transcribe_analyze(session, monkeypatch):
     content = ContentItem(account_id=1, platform="bilibili", external_id="BV9", title="测试视频", author_name="UP", url="https://b/BV9")
     session.add(content)
     session.flush()
-    asset = MediaAsset(content_id=content.id, download_status="pending", understand_status="")
+    asset = MediaAsset(
+        content_id=content.id,
+        storage_root_id=1,
+        relative_path="bilibili/up/BV9",
+        download_status="pending",
+        understand_status="",
+    )
     session.add(asset)
     session.commit()
 
@@ -140,7 +150,8 @@ def test_full_pipeline_download_transcribe_analyze(session, monkeypatch):
         return {"language": "zh", "model": "base",
                 "segments": [{"start": 0, "end": 2, "text": "你好"}], "full_text": "你好世界"}
 
-    async def fake_analyze(title, full_text):
+    async def fake_analyze(title, full_text, *, call_model):
+        assert callable(call_model)
         return {"summary": "这是摘要", "tags": ["科技", "教程"], "model": "mock-llm"}
 
     monkeypatch.setattr("app.modules.media_download.download", fake_download)
@@ -201,7 +212,12 @@ def test_transcribe_keeps_advanced_tier(session, monkeypatch):
     session.add(content)
     session.flush()
     asset = MediaAsset(
-        content_id=content.id, download_status="done", video_file="v.mp4", process_tier="advanced"
+        content_id=content.id,
+        storage_root_id=1,
+        relative_path="douyin/a/adv1",
+        download_status="done",
+        video_file="v.mp4",
+        process_tier="advanced",
     )
     session.add(asset)
     session.commit()
@@ -341,7 +357,12 @@ def test_download_completion_triggers_auto_process_gate(session, monkeypatch):
     session.add(content)
     session.flush()
     session.add(ContentMetricSnapshot(content_id=content.id, like=5000, comment=100))
-    asset = MediaAsset(content_id=content.id, download_status="pending")
+    asset = MediaAsset(
+        content_id=content.id,
+        storage_root_id=1,
+        relative_path="douyin/hot1",
+        download_status="pending",
+    )
     session.add(asset)
     session.commit()
 
@@ -356,10 +377,17 @@ def test_download_completion_triggers_auto_process_gate(session, monkeypatch):
     session.refresh(asset)
     assert asset.download_status == "done"
 
-    # 爆款（like=5000 ≥ L3 阈值 1000）应被自动判定为 L3 并入队 understand_video。
-    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "understand_video")).all()
+    # 爆款（like=5000 ≥ L3 阈值 1000）先登记转录；理解等待转录完成后再入队。
+    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "transcribe")).all()
     assert len(jobs) == 1
     assert jobs[0].payload["asset_id"] == asset.id and jobs[0].priority == 120
+    assert session.query(JobQueue).filter_by(job_type="understand_video").count() == 0
+    from app.models import PipelineStep, PipelineRun
+
+    run = session.query(PipelineRun).filter_by(asset_id=asset.id).one()
+    steps = {row.step: row for row in session.query(PipelineStep).filter_by(run_id=run.id)}
+    assert steps["understand_video"].status == "waiting_prerequisite"
+    assert steps["understand_video"].job_id is None
     session.refresh(asset)
     assert asset.understand_status == "pending"
 
@@ -374,7 +402,12 @@ def test_download_gate_failure_does_not_flip_download(session, monkeypatch):
     session.add(content)
     session.flush()
     session.add(ContentMetricSnapshot(content_id=content.id, like=5000))
-    asset = MediaAsset(content_id=content.id, download_status="pending")
+    asset = MediaAsset(
+        content_id=content.id,
+        storage_root_id=1,
+        relative_path="douyin/hot2",
+        download_status="pending",
+    )
     session.add(asset)
     session.commit()
 
@@ -430,14 +463,20 @@ def test_download_path_respects_inflight_budget(session, monkeypatch):
         session.add(content)
         session.flush()
         session.add(ContentMetricSnapshot(content_id=content.id, like=5000, comment=100))
-        asset = MediaAsset(content_id=content.id, download_status="pending")
+        asset = MediaAsset(
+            content_id=content.id,
+            storage_root_id=1,
+            relative_path=f"douyin/hot{i}",
+            download_status="pending",
+        )
         session.add(asset)
         session.commit()
         asyncio.run(handlers.handle_download(session, {"asset_id": asset.id}))
         session.refresh(asset)
         assert asset.download_status == "done"
 
-    assert session.query(JobQueue).filter_by(job_type="understand_video").count() == 3
+    assert session.query(JobQueue).filter_by(job_type="transcribe").count() == 3
+    assert session.query(JobQueue).filter_by(job_type="understand_video").count() == 0
 
 
 def test_crawl_process_gate_failure_does_not_flip_run(session, monkeypatch):
@@ -518,10 +557,10 @@ def test_crawl_enqueues_process_for_already_downloaded_hot_video(session, monkey
     run = asyncio.run(crawl_service.run_crawl_task(session, task.id))
     assert run.status == "success"
 
-    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "understand_video")).all()
+    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "transcribe")).all()
     assert len(jobs) == 1 and jobs[0].payload["asset_id"] == asset.id
 
     # 再采一次：队列里已有未完成的同 asset job → 不重复入队。
     asyncio.run(crawl_service.run_crawl_task(session, task.id))
-    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "understand_video")).all()
+    jobs = session.scalars(select(JobQueue).where(JobQueue.job_type == "transcribe")).all()
     assert len(jobs) == 1

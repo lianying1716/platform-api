@@ -29,6 +29,21 @@ _IMAGE_COLORS = {
     "green": (30, 170, 80),
 }
 
+# Vision probes ask for a color; Chinese-capable models often answer 红色/蓝色/绿色
+# even when instructed to use English. Accept both spellings instead of treating a
+# correct visual answer as "model did not read the image".
+_COLOR_ALIASES = {
+    "red": "red", "红色": "red", "红": "red",
+    "blue": "blue", "蓝色": "blue", "蓝": "blue",
+    "green": "green", "绿色": "green", "绿": "green",
+}
+
+
+def _normalize_color(value: object) -> str:
+    """Map an English or Chinese color answer onto red/blue/green."""
+    text = str(value or "").strip().lower()
+    return _COLOR_ALIASES.get(text, _COLOR_ALIASES.get(text.rstrip("色"), ""))
+
 
 def _decrypt_key(provider: AiProvider) -> str:
     if not provider.api_key_encrypted:
@@ -292,9 +307,17 @@ async def probe_model(
         raise ValueError(f"模型不存在: {model_id}")
     provider = db.get(AiProvider, model.provider_id)
     if provider is None:
+        model.probe_status = "failed"
+        model.probe_error = "供应商不存在，无法探测"
+        model.probe_started_at = None
+        db.commit()
         raise ValueError(f"模型所属供应商不存在: {model.provider_id}")
     api_key = _decrypt_key(provider)
     if not api_key:
+        model.probe_status = "failed"
+        model.probe_error = "供应商没有可用访问密钥，无法探测"
+        model.probe_started_at = None
+        db.commit()
         raise ValueError("供应商没有可用访问密钥，无法探测")
 
     revision = int(provider.config_revision or 1)
@@ -383,7 +406,7 @@ async def probe_model(
                 protocol=effective_protocol,
             )
             parsed = _parse_json_text(result["text"])
-            answer = str((parsed or {}).get("color", "")).strip().lower()
+            answer = _normalize_color((parsed or {}).get("color"))
             ok = bool((parsed or {}).get("has_image")) and answer == color
             detail = "通过图片颜色探测" if ok else "模型未正确识别图片"
             caps["image"] = _capability(
@@ -436,8 +459,8 @@ async def probe_model(
                     protocol=effective_protocol,
                 )
                 parsed = _parse_json_text(result["text"])
-                first = str((parsed or {}).get("first", "")).strip().lower()
-                second = str((parsed or {}).get("second", "")).strip().lower()
+                first = _normalize_color((parsed or {}).get("first"))
+                second = _normalize_color((parsed or {}).get("second"))
                 ok = first == "red" and second == "blue"
                 detail = "通过红蓝视频探测" if ok else "模型未正确读取视频画面"
                 caps["video"] = _capability(
@@ -474,11 +497,16 @@ async def probe_model(
         for k in ("text", "json", "image", "video")
         if (caps.get(k) or {}).get("value") is False
     )[:2000]
+    model.probe_started_at = None
     model.probed_at = datetime.utcnow()
-    for assignment in db.scalars(
-        select(ModelAssignment).where(ModelAssignment.primary_model_id == model.id)
-    ).all():
-        assignment.legacy_pending_validation = False
+    # Only a successful real probe of the legacy model clears the pending flag.
+    # A failed/partial probe must keep the warning visible until the gap is fixed
+    # or the user explicitly overrides the capability.
+    if model.probe_status in ("passed", "partial"):
+        for assignment in db.scalars(
+            select(ModelAssignment).where(ModelAssignment.primary_model_id == model.id)
+        ).all():
+            assignment.legacy_pending_validation = False
     db.commit()
     db.refresh(model)
     return model

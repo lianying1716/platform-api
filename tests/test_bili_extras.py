@@ -50,6 +50,22 @@ def test_nfo_contains_core_fields():
     assert "<tag>露营</tag>" in nfo
 
 
+def test_write_nfo_separates_media_stem_from_bvid(tmp_path):
+    """分P文件用分P stem 命名，NFO 内仍必须是真实 BVID（真实下载踩过 TypeError）。"""
+    from app.modules import bili_extras
+
+    filename = bili_extras.write_nfo(
+        tmp_path,
+        stem="BV1xx_02_第二集",
+        bvid="BV1xx",
+        title="合集",
+    )
+    assert filename == "BV1xx_02_第二集.nfo"
+    text = (tmp_path / filename).read_text(encoding="utf-8")
+    assert '<uniqueid type="bilibili">BV1xx</uniqueid>' in text
+    assert "<title>合集</title>" in text
+
+
 @pytest.mark.asyncio
 async def test_fetch_subtitles_writes_srt(tmp_path, monkeypatch):
     from app.modules import bili_extras

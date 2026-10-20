@@ -10,7 +10,9 @@
   下载失败/超限回退纯文本，不阻断。
 - 提示词按类型区分：`build_prompt` 拼「角色/关注点/维度/输出 JSON/禁止编造」。
 - 体积超限先用 ffmpeg 逐级降质压缩（`_ensure_inline`），压缩后仍超限交给 vision 抛错由 worker 重试。
-- 判类与理解走 **DB 设置优先、config 兜底**，保证设置页可在线改（含 llm_* 覆盖）。
+- 判类与理解只经 ``ModelAccessService``；供应商、密钥、模型与主备路由均来自
+  「模型接入」的 ``AiProvider`` / ``ModelAssignment``，不再读取 ``llm_*`` 或
+  加工页里的模型名。旧配置由启动时的 ``legacy_llm_migration`` 一次性认领。
 
 对外能力：
 - `build_prompt(...)`：纯函数，拼装类型专属理解提示词。
@@ -23,11 +25,9 @@ import logging
 import os
 import subprocess
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.core import events
 from app.core.process_settings import (
     get_common_dimensions,
@@ -36,7 +36,7 @@ from app.core.process_settings import (
     get_type_prompts,
 )
 from app.core.storage import resolve_asset_dir
-from app.models import ContentItem, MediaAsset, SystemSetting, Transcript, VideoUnderstanding
+from app.models import ContentItem, MediaAsset, Transcript, VideoUnderstanding
 from app.modules import vision
 from app.modules.classify import classify
 
@@ -55,24 +55,6 @@ class UnderstandInputError(ValueError):
 
     继承 ValueError（调用方/测试可用 ValueError 捕获）。worker 侧据此不重试。
     """
-
-
-# --------------------------------------------------------------------------- 配置解析
-
-
-def _resolve_llm(db: Session) -> tuple[str, str, str]:
-    """解析 LLM Base URL / Key / 模型：DB 设置优先，回退 config。
-
-    与 `analysis.py` 不同，这里让设置页（system_setting）里的 llm_* 立即生效；
-    未配置 base_url 时抛出可读错误（不静默失败）。
-    """
-    rows = {s.key: s.value for s in db.scalars(select(SystemSetting)).all()}
-    base = (rows.get("llm_base_url") or settings.llm_base_url or "").rstrip("/")
-    key = rows.get("llm_api_key") or settings.llm_api_key or ""
-    model = rows.get("llm_model") or settings.llm_model or ""
-    if not base:
-        raise ValueError("未配置大模型 Base URL（在系统设置里填）")
-    return base, key, model
 
 
 # --------------------------------------------------------------------------- 提示词
@@ -134,9 +116,6 @@ async def _classify_category(
     *,
     use_cover: bool,
     cover_path: str | None,
-    base_url: str,
-    api_key: str,
-    model: str,
     call_model=None,
 ) -> tuple[str, float, str]:
     """判类；失败回退 other 且不抛（失败隔离）。返回 (category, confidence, reason)。"""
@@ -148,9 +127,6 @@ async def _classify_category(
             transcript,
             get_taxonomy(db),
             cover_path=cover_path,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
             use_cover=use_cover,
             call_model=call_model,
         )
@@ -180,7 +156,9 @@ def _coerce_conf(value: object) -> float:
 
 def _asset_video_path(db: Session, asset: MediaAsset) -> str:
     """素材物理视频路径 = storage_root + relative_path + video_file。仅后端内部使用。"""
-    return os.path.join(resolve_asset_dir(db, asset), asset.video_file or "")
+    from app.core.storage import resolve_asset_file_path
+
+    return resolve_asset_file_path(resolve_asset_dir(db, asset), asset.video_file or "")
 
 
 def _guess_ext(url: str, content_type: str) -> str:
@@ -207,17 +185,26 @@ async def _ensure_cover(content: ContentItem, work_dir: str, max_mb: float) -> s
         return None
     os.makedirs(work_dir, exist_ok=True)
     try:
-        async with httpx.AsyncClient(timeout=_COVER_TIMEOUT) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            raw = resp.content
+        from app.core.egress import fetch_image
+
+        image = await fetch_image(
+            url,
+            purpose="understand_cover",
+            platform=getattr(content, "platform", "") or "",
+            timeout=_COVER_TIMEOUT,
+            max_bytes=int(max_mb * _MB) if max_mb and max_mb > 0 else 20 * _MB,
+        )
+        if image.status_code != 200:
+            logger.warning("封面下载失败 HTTP %s，跳过封面判类: %s", image.status_code, url)
+            return None
+        raw = image.content
         if not raw:
             logger.warning("封面下载为空，跳过封面判类: %s", url)
             return None
         if max_mb and max_mb > 0 and len(raw) > max_mb * _MB:
             logger.warning("封面体积 %.2fMB 超过上限 %.2fMB，跳过封面判类", len(raw) / _MB, max_mb)
             return None
-        path = os.path.join(work_dir, "cover" + _guess_ext(url, resp.headers.get("content-type", "")))
+        path = os.path.join(work_dir, "cover" + _guess_ext(url, image.content_type))
         with open(path, "wb") as fh:
             fh.write(raw)
         logger.info("封面已缓存: %s -> %s", url, path)
@@ -273,6 +260,13 @@ def _transcript_text(db: Session, asset_id: int) -> str:
     return tr.full_text if tr and tr.full_text else ""
 
 
+def _protocol_provider_label(db: Session, work_type: str) -> str:
+    """兼容视觉模块的 provider 入参；真实供应商/协议仍由网关解析。"""
+    from app.services.model_access_service import resolved_transport
+
+    return "gemini" if resolved_transport(db, work_type) == "gemini_inline" else "qwen"
+
+
 async def run_understand(
     db: Session,
     asset_id: int,
@@ -288,12 +282,17 @@ async def run_understand(
         Exception: 理解链路任何失败——落 `status=error` 后原样抛出（worker 负责重试）。
     """
     asset = db.get(MediaAsset, asset_id)
-    if asset is None:
+    if asset is None or asset.deleted_at is not None:
         raise UnderstandInputError(f"素材不存在: {asset_id}")
 
+    transcript = db.scalar(select(Transcript).where(Transcript.asset_id == asset_id))
+    if transcript is None or not (transcript.full_text or "").strip():
+        _record_understand_error(db, asset_id, "视频理解前置未完成：需要先完成转录")
+        raise UnderstandInputError("视频理解前置未完成：需要先完成转录")
+
     asset.understand_status = "doing"
+    events.publish("asset_status", {"asset_id": asset_id, "understand": "doing"}, db=db)
     db.commit()
-    events.publish("asset_status", {"asset_id": asset_id, "understand": "doing"})
 
     try:
         asset = db.get(MediaAsset, asset_id)
@@ -301,16 +300,10 @@ async def run_understand(
         if content is None:  # 数据不一致（孤儿资产）：显式报错，不靠兜底 catch 静默成 other
             raise UnderstandInputError(f"素材 #{asset_id} 未关联内容（content_id={asset.content_id}）")
         s = get_process_settings(db)
-        from app.services.model_access_service import ModelAccessService, assignment_configured
+        from app.services.model_access_service import ModelAccessService
 
         gateway = ModelAccessService()
         routed: dict[str, dict] = {}
-        use_gateway = assignment_configured(db, "cover_classify") or assignment_configured(
-            db, "video_understanding"
-        )
-        base_url, api_key, llm_model = ("", "", "")
-        if not use_gateway:
-            base_url, api_key, llm_model = _resolve_llm(db)
 
         async def call_model(*, request, parse_result, video_request=False, **kwargs):
             stage_key = "video_understanding" if video_request else "cover_classify"
@@ -354,10 +347,7 @@ async def run_understand(
                 transcript,
                 use_cover=want_cover,
                 cover_path=cover_path,
-                base_url=base_url,
-                api_key=api_key,
-                model=s.get("classify_model") or llm_model,
-                call_model=call_model if assignment_configured(db, "cover_classify") else None,
+                call_model=call_model,
             )
         else:
             category, conf, reason = "other", 0.0, "判类已关闭，使用通用模板"
@@ -377,11 +367,8 @@ async def run_understand(
         result = await vision.understand(
             inline_path,
             prompt,
-            provider=s.get("provider", "qwen"),
-            base_url=base_url,
-            api_key=api_key,
-            model=s.get("vision_model") or llm_model,
-            call_model=call_model if assignment_configured(db, "video_understanding") else None,
+            provider=_protocol_provider_label(db, "video_understanding"),
+            call_model=call_model,
         )
 
         parsed = vision.parse_structured(result.get("text", ""))
@@ -402,7 +389,7 @@ async def run_understand(
         existing.dimensions = dims
         existing.summary = summary
         existing.timeline = timeline
-        existing.model = result.get("model", "") or llm_model
+        existing.model = result.get("model", "")
         existing.prompt_version = f"{_PROMPT_VERSION}:{category}"
         existing.usage = usage
         existing.routing = {
@@ -418,14 +405,15 @@ async def run_understand(
         # 注意：不要写 asset.error。media_asset.error 是**共享**的下载/整体错误位，
         # 视频理解失败时写进去会让「已下载成功」的素材在前端显示成失败（实测 bug）。
         # 理解自身的错误只落 VideoUnderstanding.error。
+        events.publish("asset_status", {"asset_id": asset_id, "understand": "done"}, db=db)
         db.commit()
         db.refresh(existing)
-        events.publish("asset_status", {"asset_id": asset_id, "understand": "done"})
         return existing
     except Exception as exc:
         db.rollback()
         _record_understand_error(db, asset_id, str(exc))
-        events.publish("asset_status", {"asset_id": asset_id, "understand": "error"})
+        events.publish("asset_status", {"asset_id": asset_id, "understand": "error"}, db=db)
+        db.commit()
         raise
 
 

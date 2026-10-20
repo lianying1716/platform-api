@@ -35,6 +35,9 @@ class UpgradeJob:
     status: str = "running"  # running/success/failed/rolled_back
     error: str = ""
     backup_path: str = ""
+    # Whether the target migration can be rolled back safely.  Unknown/irreversible
+    # upgrades must not auto-rollback; they need a deliberate restore decision.
+    reversible: bool = True
     started_at: str = ""
     finished_at: str = ""
     steps: list[dict] = field(default_factory=list)
@@ -46,6 +49,7 @@ class UpgradeJob:
             "status": self.status,
             "error": self.error,
             "backup_path": self.backup_path,
+            "reversible": self.reversible,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "steps": list(self.steps),
@@ -56,11 +60,31 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def health_is_target(probe, version: str) -> bool:
+    """Decide whether a health probe proves *the target* version is serving.
+
+    Accepts a structured dict from the real updater (preferred) and a plain
+    bool for older injected probes/tests.  A 200 from the old container must
+    never pass: the version and DB revision are part of the contract.
+    """
+    if isinstance(probe, bool):
+        return probe
+    if not isinstance(probe, dict):
+        return False
+    if not probe.get("reachable", True):
+        return False
+    return (
+        str(probe.get("app_version") or "") == str(version)
+        and probe.get("db_in_sync") is True
+    )
+
+
 class UpgradeEngine:
     """依赖注入式升级编排器（进程内单例，供边车使用）。"""
 
     def __init__(
         self, *, backup, pull, recreate, health, rollback, pin=None,
+        restore=None,
         health_retries=30, health_interval=3.0,
     ):
         self._backup = backup
@@ -71,6 +95,9 @@ class UpgradeEngine:
         # pin：把目标版本持久化（写回 .env），否则重启后 compose 会按默认 tag
         # 静默切回旧版本，网页升级名存实亡。为 None 时跳过（兼容无持久化场景）。
         self._pin = pin
+        # restore(backup_path)：可逆升级失败时恢复数据库与 data 卷。
+        # 未注入时回滚只切镜像，调用方必须显式接受这一限制。
+        self._restore = restore
         self._health_retries = health_retries
         self._health_interval = health_interval
         self._lock = threading.Lock()
@@ -91,12 +118,12 @@ class UpgradeEngine:
         job.steps.append({"step": step, "status": status, "detail": detail, "at": _now()})
 
     # ---- 编排 ----
-    def start(self, version: str, *, from_version: str = "") -> UpgradeJob:
+    def start(self, version: str, *, from_version: str = "", reversible: bool = True) -> UpgradeJob:
         """启动一次升级（同步执行，边车以线程方式调用）。已有进行中任务则抛 UpgradeBusy。"""
         with self._lock:
             if self.is_busy():
                 raise UpgradeBusy(f"已有升级在进行中：{self._job.version}")
-            job = UpgradeJob(version=version, from_version=from_version, started_at=_now())
+            job = UpgradeJob(version=version, from_version=from_version, reversible=reversible, started_at=_now())
             self._job = job
         try:
             self._run(job)
@@ -108,9 +135,9 @@ class UpgradeEngine:
             job.finished_at = _now()
         return job
 
-    def run_sync(self, version: str, *, from_version: str = "") -> UpgradeJob:
+    def run_sync(self, version: str, *, from_version: str = "", reversible: bool = True) -> UpgradeJob:
         """测试/直接调用入口，等价 start。"""
-        return self.start(version, from_version=from_version)
+        return self.start(version, from_version=from_version, reversible=reversible)
 
     def _run(self, job: UpgradeJob) -> None:
         # 1) 备份（硬前置）
@@ -143,13 +170,20 @@ class UpgradeEngine:
         # 4) 健康校验（新版本是否真的起来了）
         self._step(job, "verify", "running", "健康校验新版本")
         ok = False
+        last_probe = None
         for _ in range(self._health_retries):
-            if self._health(job.version):
+            last_probe = self._health(job.version)
+            if health_is_target(last_probe, job.version):
                 ok = True
                 break
             time.sleep(self._health_interval)
         if not ok:
-            self._abort_with_rollback(job, "verify", "新版本健康校验超时")
+            detail = last_probe if isinstance(last_probe, dict) else {"healthy": last_probe}
+            self._abort_with_rollback(
+                job,
+                "verify",
+                f"新版本健康校验超时：目标 {job.version}，探测结果 {detail}",
+            )
             return
         self._step(job, "verify", "ok", "")
 
@@ -168,7 +202,28 @@ class UpgradeEngine:
 
     def _abort_with_rollback(self, job: UpgradeJob, step: str, message: str) -> None:
         self._step(job, step, "error", message)
+        if not job.reversible:
+            job.status = "failed"
+            job.error = f"{message}；迁移不可逆，已阻止自动回滚，请按备份人工恢复"
+            self._step(job, "rollback", "error", job.error)
+            return
         self._step(job, "rollback", "running", "自动回滚到旧版本")
+        # Restore the DB first: running the old image against a schema that the
+        # new version already migrated can fail to boot.  If the restore is not
+        # available we must not claim a complete rollback.
+        if self._restore is not None:
+            if not job.backup_path:
+                job.status = "failed"
+                job.error = f"{message}；无备份可恢复，已阻止自动回滚，请人工处理"
+                self._step(job, "rollback", "error", job.error)
+                return
+            rest = self._restore(job.backup_path)
+            if not rest.get("ok"):
+                job.status = "failed"
+                job.error = f"{message}；数据库恢复失败：{rest.get('error') or rest}，请人工处理"
+                self._step(job, "rollback", "error", job.error)
+                return
+            self._step(job, "db_restore", "ok", job.backup_path)
         rb = self._rollback(job.from_version or job.version)
         if rb.get("ok"):
             job.status = "rolled_back"

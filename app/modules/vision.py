@@ -13,17 +13,13 @@
 - `build_payload(provider, model, video_b64, prompt, *, mime) -> (path, headers, body)`：纯函数，
   返回端点**相对路径**（不含 base）、鉴权头的静态部分与请求体，便于单测不联网。
 - `parse_structured(text) -> dict`：纯函数，容错解析模型返回的 JSON（去代码围栏 / 抓最外层花括号）。
-- `understand(video_path, prompt, *, provider, base_url, api_key, model, max_mb, timeout) -> dict`：
-  读文件 -> 体积校验 -> 拼 payload -> 发请求 -> 提取文本与 usage。
+- `understand(video_path, prompt, *, provider, max_mb, timeout, call_model) -> dict`：
+  读文件 -> 体积校验 -> 经统一网关发请求 -> 提取文本与 usage。
   - 体积超 `max_mb` -> `ValueError`（由服务层先压缩，不在此隐式降质）。
   - 文件缺失 -> `FileNotFoundError`；网络/结构失败 -> 抛异常（由 worker 重试）。
 
-**base_url 约定**：遵循 **OpenAI 兼容约定、包含 `/v1`**（如 `https://api.xsai5.xyz/v1`），
-与 `classify` / `analysis` 一致。qwen 用 `{base_url}/chat/completions`；gemini 的原生端点自带
-`/v1beta`，由 `_join_provider_url` 归一拼到站点根（去掉末尾 `/v1`），避免 `.../v1/v1beta/...`。
-
-测试注入点：内部 `_post_json(url, headers, body, timeout)` 用 `httpx.AsyncClient`；
-`understand` 只经它发请求，测试 monkeypatch `_post_json`，不要 patch httpx。
+模型请求必须由调用方注入 ``call_model``（统一 ``ModelAccessService`` 网关）；
+``build_payload`` 仅保留为协议/请求体纯函数供测试与兼容展示。
 """
 
 import base64
@@ -33,7 +29,6 @@ import re
 from pathlib import Path
 from typing import Callable
 
-import httpx
 
 _MB = 1024 * 1024
 
@@ -180,36 +175,11 @@ def parse_structured(text: str) -> dict:
     raise json.JSONDecodeError("视频理解返回内容不是合法 JSON 对象", candidate, 0)
 
 
-async def _post_json(url: str, headers: dict, body: dict, timeout: float) -> dict:
-    """发一次 JSON POST 并返回响应 JSON；非 2xx 抛 httpx.HTTPStatusError。"""
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(url, headers=headers, json=body)
-        resp.raise_for_status()
-        return resp.json()
-
-
-def _extract_qwen_text(data: dict) -> str:
-    content = data["choices"][0]["message"]["content"]
-    if not isinstance(content, str):
-        raise ValueError("qwen 返回 message.content 不是字符串")
-    return content
-
-
-def _extract_gemini_text(data: dict) -> str:
-    parts = data["candidates"][0]["content"]["parts"]
-    if not isinstance(parts, list):
-        raise ValueError("gemini 返回 parts 结构非法")
-    return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-
-
 async def understand(
     video_path: str,
     prompt: str,
     *,
     provider: str,
-    base_url: str,
-    api_key: str,
-    model: str,
     max_mb: float = 15,
     timeout: float = 300,
     mime: str | None = None,
@@ -220,7 +190,7 @@ async def understand(
     Args:
         video_path: 本地视频路径。
         prompt: 该视频类型的理解提示词（由服务层按类型拼装）。
-        provider/base_url/api_key/model: 供应商适配配置（服务层从设置解析后注入）。
+        provider: 仅用于网关请求中的兼容 transport 标签；真实协议由网关解析。
         max_mb: 内联体积上限；超过则抛 `ValueError`，由服务层先压缩再重试。
         timeout: 单次请求超时秒数（视频较大，默认给足 300s）。
         mime: 覆盖 MIME 推断（默认按扩展名，再兜底 video/mp4）。
@@ -231,10 +201,11 @@ async def understand(
     Raises:
         FileNotFoundError: 视频文件不存在。
         ValueError: provider 未知 / 体积超限。
-        httpx.HTTPError: 网络或 HTTP 失败。
         KeyError/ValueError/TypeError: 响应结构不符合预期。
     """
     name = _normalize_provider(provider)
+    if call_model is None:
+        raise RuntimeError("视频理解必须经 ModelAccessService 调用，禁止直连模型接口")
     src = Path(video_path)
     if not src.exists():
         raise FileNotFoundError(f"待理解视频不存在: {video_path}")
@@ -247,21 +218,6 @@ async def understand(
 
     mime_type = _resolve_mime(video_path, mime)
     video_b64 = base64.b64encode(raw).decode("ascii")
-    if call_model is None:
-        path, headers, body = build_payload(name, model, video_b64, prompt, mime=mime_type)
-        if name == "qwen":
-            headers = {**headers, "Authorization": f"Bearer {api_key}"}
-        else:
-            headers = {**headers, "x-goog-api-key": api_key}
-        data = await _post_json(_join_provider_url(base_url, path), headers, body, timeout)
-        text = _extract_qwen_text(data) if name == "qwen" else _extract_gemini_text(data)
-        usage = data.get("usage") if name == "qwen" else data.get("usageMetadata")
-        return {
-            "text": text,
-            "usage": usage if isinstance(usage, dict) else {},
-            "model": model,
-            "provider": name,
-        }
 
     def parse(text):
         return parse_structured(text)
@@ -287,6 +243,6 @@ async def understand(
         "text": json.dumps(data, ensure_ascii=False),
         "parsed": data,
         "usage": getattr(result, "usage", {}) or {},
-        "model": getattr(result, "used_model_key", model),
+        "model": getattr(result, "used_model_key", ""),
         "provider": name,
     }

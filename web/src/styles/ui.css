@@ -222,6 +222,10 @@
 
 /* ---------- 面板（克制的容器） ---------- */
 .ui-panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); min-width: 0; }
+.ui-panel.table-panel { overflow-x: auto; }
+.ui-panel.table-panel > .ui-table { min-width: 460px; }
+.ui-table-scroll { min-width: 0; overflow-x: auto; }
+.ui-table-scroll > .ui-table { min-width: 460px; }
 .ui-panel-body { min-width: 0; }
 [data-dir='grotesk'] .ui-panel { border-radius: 0; }
 .ui-panel-head {
@@ -285,6 +289,8 @@
   box-shadow: var(--shadow-2);
 }
 .el-drawer { border-right: 0; }
+/* Element Plus leaves the drawer translated off-screen until its overlay is
+   displayed.  Never allow an overlay override to hide an actually-open drawer. */
 .el-dialog__header,
 .el-drawer__header {
   margin: 0;

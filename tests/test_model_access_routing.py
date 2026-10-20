@@ -225,3 +225,31 @@ def test_missing_assignment_preflight_raises(monkeypatch):
         )
     assert ei.value.primary_error_class == "not_configured"
     assert db.scalars(select(ModelCallAttempt)).all() == []
+
+
+def test_legacy_capability_is_usable_only_at_same_revision(session):
+    from app.services.model_access_service import capabilities_of
+
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",
+        api_key_encrypted="cipher", config_revision=1,
+    )
+    session.add(provider)
+    session.flush()
+    model = AiModel(
+        provider_id=provider.id,
+        model_key="legacy",
+        capabilities={
+            "text": {"value": True, "source": "legacy", "config_revision": 1, "protocol": "openai"},
+            "json": {"value": True, "source": "legacy", "config_revision": 1, "protocol": "openai"},
+        },
+    )
+    session.add(model)
+    session.commit()
+
+    assert capabilities_of(model, provider)["text"]["value"] is True
+    provider.config_revision = 2
+    session.commit()
+    stale = capabilities_of(model, provider)["text"]
+    assert stale["value"] is False
+    assert stale["source"] == "stale"

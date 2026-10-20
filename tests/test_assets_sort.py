@@ -65,9 +65,9 @@ def test_sort_default_latest_and_others(client, session):
     assert order == [c, a, b]
 
 
-def test_sort_unknown_falls_back_to_latest(client, session):
+def test_sort_unknown_is_rejected(client, session):
     base = datetime(2026, 1, 1, 12, 0, 0)
     a = _mk(session, ext="A", published=base, updated=base, like=1)
     b = _mk(session, ext="B", published=base + timedelta(days=1), updated=base + timedelta(days=1), like=2)
-    rows = client.get("/api/assets", params={"sort": "bogus"}).json()
-    assert [r["asset_id"] for r in rows] == [b, a]
+    response = client.get("/api/assets", params={"sort": "bogus"})
+    assert response.status_code == 422
