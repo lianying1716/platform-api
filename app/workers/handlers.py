@@ -18,7 +18,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core import events, queue
-from app.core.storage import render_subdir, resolve_account_root, resolve_asset_dir
+from app.domain.jobs import JobOutcome, RetryClass
+from app.core.storage import render_subdir, resolve_account_root, resolve_asset_dir, resolve_asset_file_path
 from app.models import (
     AiModel,
     AnalysisResult,
@@ -124,7 +125,7 @@ def _download_output_name(content: ContentItem, fallback_url: str) -> str:
     return f"{_truncate_bytes(title, budget)}_{cid}"
 
 
-async def _download_content(content: ContentItem, target_dir, cookie: str):
+async def _download_content(content: ContentItem, target_dir, cookie: str, policy=None):
     """按平台选择下载方式。
 
     - 抖音：抓取时已存 play_addr 直链 → 带 Cookie 直连下载（照抄抖小云，
@@ -133,18 +134,34 @@ async def _download_content(content: ContentItem, target_dir, cookie: str):
       + ffmpeg 合并（照抄 bili-sync）。**不用 yt-dlp**：B站对 yt-dlp 直接 412 风控。
     - 其它平台 / 老数据：回退 yt-dlp。
     """
+    from app.domain.download import DownloadPolicy
+
+    if policy is None:
+        policy = DownloadPolicy()
     if content.platform == "douyin":
         extra = content.extra or {}
         direct = str(extra.get("download_url") or "")
         if direct:
+            if policy.max_height is not None:
+                # Prefer a bounded mirror when the source payload exposes one;
+                # otherwise the signed default URL is still the only executable
+                # choice and the policy remains an upper-bound hint.
+                mirrors = [
+                    str(u) for u in (extra.get("download_urls") or [])
+                    if isinstance(u, str) and _douyin_url_height(u) <= policy.max_height
+                ]
+            else:
+                mirrors = [str(u) for u in (extra.get("download_urls") or []) if isinstance(u, str)]
             # 抖音直链带签名会过期/被限流：失败时轮换同一视频的其它镜像（照抄抖小云）。
-            mirrors = [str(u) for u in (extra.get("download_urls") or []) if isinstance(u, str)]
             return await media_download.download_direct(
                 direct, target_dir, cookie=cookie, mirror_urls=mirrors,
                 name=_download_output_name(content, content.url),
             )
         # 老数据没有直链：按 BV/aweme 号现取一次
-        return await media_download.download(content.url, target_dir, cookie=cookie)
+        kwargs = {"audio_only": policy.audio_only, "cookie": cookie}
+        if policy.max_height is not None:
+            kwargs["max_height"] = policy.max_height
+        return await media_download.download(content.url, target_dir, **kwargs)
 
     if content.platform == "bilibili":
         # 用 Cookie 解析 DASH；B站 CDN 只需 UA+Referer，Cookie 用于身份/高清晰度。
@@ -152,13 +169,16 @@ async def _download_content(content: ContentItem, target_dir, cookie: str):
         if not bvid and "/video/" in (content.url or ""):
             bvid = content.url.rsplit("/video/", 1)[-1].split("/")[0]
         try:
-            resolved = await _resolve_bili_urls(cookie=cookie, bvid=bvid)
+            resolved = await _resolve_bili_urls(cookie=cookie, bvid=bvid, max_height=policy.max_height)
         except Exception as exc:  # noqa: BLE001 解析失败回退 yt-dlp，别让整条链路断
             logger.warning("B站 playurl 解析失败（%s），回退 yt-dlp：%s", bvid, exc)
             resolved = None
         if resolved:
             return await _download_bili_pages(content, cookie, resolved, target_dir)
-        return await media_download.download(content.url, target_dir, cookie=cookie)
+        kwargs = {"audio_only": policy.audio_only, "cookie": cookie}
+        if policy.max_height is not None:
+            kwargs["max_height"] = policy.max_height
+        return await media_download.download(content.url, target_dir, **kwargs)
 
 
 async def _download_bili_pages(content: ContentItem, cookie: str, resolved: dict, target_dir) -> object:
@@ -187,10 +207,21 @@ async def _download_bili_pages(content: ContentItem, cookie: str, resolved: dict
             first_result = result
     return first_result
 
-    return await media_download.download(content.url, target_dir, cookie=cookie)
+    kwargs = {"audio_only": policy.audio_only, "cookie": cookie}
+    if policy.max_height is not None:
+        kwargs["max_height"] = policy.max_height
+    return await media_download.download(content.url, target_dir, **kwargs)
 
 
-async def _resolve_bili_urls(*, cookie: str, bvid: str):
+def _douyin_url_height(url: str) -> int:
+    """Parse a bounded height from common play URL query parameters."""
+    import re
+
+    match = re.search(r"(?:ratio|height|resolution)=(\\d{3,4})p?", url or "", re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+async def _resolve_bili_urls(*, cookie: str, bvid: str, max_height: int | None = None):
     """把 cookie 串还原成适配器需要的 credential dict，再解析 DASH 地址。"""
     from app.modules import bilibili as bili_module
 
@@ -202,7 +233,7 @@ async def _resolve_bili_urls(*, cookie: str, bvid: str):
         k = k.strip()
         if k in ("SESSDATA", "bili_jct", "buvid3", "DedeUserID", "ac_time_value"):
             cred[k.lower() if k != "DedeUserID" else "dedeuserid"] = v.strip()
-    return await bili_module.resolve_play_urls(cred, bvid)
+    return await bili_module.resolve_play_urls(cred, bvid, max_height=max_height)
 
 
 async def _write_bili_extras(content: ContentItem, cookie: str, resolved: dict, target_dir,
@@ -241,27 +272,29 @@ async def _write_bili_extras(content: ContentItem, cookie: str, resolved: dict, 
         bili_extras.write_nfo(
             target_dir,
             name or bvid,
+            bvid=bvid,
             title=content.title or bvid,
             author=content.author_name or "",
             published_at=published,
-            bvid=bvid,
         )
     except Exception:  # noqa: BLE001
         logger.warning("B站 NFO 写入失败 %s，已忽略", bvid, exc_info=True)
 
 
-async def handle_download(db: Session, payload: dict) -> None:
+async def handle_download(db: Session, payload: dict) -> JobOutcome:
     asset_id = payload["asset_id"]
     asset = db.get(MediaAsset, asset_id)
     if asset is None:
-        return
+        return JobOutcome.failure(f"素材 #{asset_id} 不存在", retry=RetryClass.NEVER, code="asset_missing")
+    if asset.deleted_at is not None:
+        return JobOutcome.success()
     content = db.get(ContentItem, asset.content_id)
     if content is None or not content.url:
         raise ValueError("内容缺少可下载 URL")
 
     asset.download_status = "downloading"
+    events.publish("asset_status", {"asset_id": asset_id, "download": "downloading"}, db=db)
     db.commit()
-    events.publish("asset_status", {"asset_id": asset_id, "download": "downloading"})
 
     # 计算保存目录：根目录优先取订阅级覆盖，其次账号绑定，最后默认根 + 订阅子目录模板。
     account = db.get(PlatformAccount, content.account_id)
@@ -293,7 +326,26 @@ async def handle_download(db: Session, payload: dict) -> None:
     from app.core.sync_settings import get_sync_settings, pick_download_gap_seconds
 
     await _await_download_slot(pick_download_gap_seconds(get_sync_settings(db)))
-    result = await _download_content(content, target_dir, cookie)
+    from app.domain.download import DownloadPolicy
+
+    quality = str(payload.get("quality") or (sub.download_quality if sub is not None else "best"))
+    policy = DownloadPolicy(quality)
+    try:
+        policy.validate_for(content.platform)
+    except ValueError as exc:
+        asset.download_status = "error"
+        asset.error = str(exc)[:500]
+        events.publish("asset_status", {"asset_id": asset_id, "download": "error"}, db=db)
+        db.commit()
+        return JobOutcome.failure(str(exc), retry=RetryClass.NEVER, code="download_policy")
+    try:
+        result = await _download_content(content, target_dir, cookie, policy=policy)
+    except ValueError as exc:
+        asset.download_status = "error"
+        asset.error = str(exc)[:500]
+        events.publish("asset_status", {"asset_id": asset_id, "download": "error"}, db=db)
+        db.commit()
+        return JobOutcome.failure(str(exc), retry=RetryClass.NEVER, code="download_policy")
     # download() 返回 DownloadResult(dataclass)，不是 dict —— 这里必须属性访问。
     asset.video_file = result.video_file
     asset.audio_file = result.audio_file
@@ -301,13 +353,13 @@ async def handle_download(db: Session, payload: dict) -> None:
         # 下载失败别谎报 done，否则看板上全是"已完成"却没有文件
         asset.download_status = "error"
         asset.error = result.message or "下载失败"
+        events.publish("asset_status", {"asset_id": asset_id, "download": "error"}, db=db)
         db.commit()
-        events.publish("asset_status", {"asset_id": asset_id, "download": "error"})
-        return
+        return JobOutcome.failure(result.message or "下载失败", code="download_failed")
     asset.download_status = "done"
     asset.error = ""
+    events.publish("asset_status", {"asset_id": asset_id, "download": "done"}, db=db)
     db.commit()
-    events.publish("asset_status", {"asset_id": asset_id, "download": "done"})
     # 下载完成后按动态热度门控自动决定是否升级到高级档（设计 §6.1）。采集/同步时素材尚未
     # 下载完，门控只对已下载素材生效，故真正的自动分档在此触发。失败不得翻转下载成功状态。
     from app.core.process_settings import get_process_settings
@@ -327,15 +379,16 @@ async def handle_download(db: Session, payload: dict) -> None:
     except Exception:  # noqa: BLE001 自动加工是增强项，失败不得翻转已完成的下载
         db.rollback()
         logger.exception("素材 #%s 自动加工入队失败，已忽略", asset_id)
-    # 自动爆款拆解：按设置页配置的阀门判定，命中则自动转录/理解/拆解。
+    # 自动加工统一注册到内容工作流。下载只负责登记依赖与放行就绪步骤，不再把
+    # 转录/理解/拆解同时抢跑；爆款命中仍由 auto_breakdown 的纯判定函数决定。
     try:
         from app.services.auto_breakdown import enqueue_auto_breakdown
 
-        enqueue_auto_breakdown(db, asset, content)
-        db.commit()
+        enqueue_auto_breakdown(db, asset, content, settings=settings)
     except Exception:  # noqa: BLE001 自动拆解是增强项，失败不得翻转已完成的下载
         db.rollback()
         logger.exception("素材 #%s 自动爆款拆解入队失败，已忽略", asset_id)
+    return JobOutcome.success()
 
 
 async def handle_transcribe(db: Session, payload: dict) -> None:
@@ -343,20 +396,23 @@ async def handle_transcribe(db: Session, payload: dict) -> None:
 
     asset_id = payload["asset_id"]
     asset = db.get(MediaAsset, asset_id)
-    if asset is None:
+    if asset is None or asset.deleted_at is not None:
         return
     if asset.download_status != "done":
         raise ValueError("素材尚未下载完成，无法转录")
 
     asset.transcribe_status = "transcribing"
+    events.publish("asset_status", {"asset_id": asset_id, "transcribe": "transcribing"}, db=db)
     db.commit()
-    events.publish("asset_status", {"asset_id": asset_id, "transcribe": "transcribing"})
 
     media_path = resolve_asset_dir(db, asset)
     audio = asset.audio_file or asset.video_file
     if not audio:
         raise ValueError("素材没有可转录的音视频文件")
-    full_media = f"{media_path}/{audio}"
+    try:
+        full_media = resolve_asset_file_path(media_path, audio, label="转录文件名")
+    except ValueError as exc:
+        raise ValueError(f"素材音视频路径不安全：{exc}") from exc
 
     result = await transcription.transcribe(full_media, payload.get("options", {}))
 
@@ -373,30 +429,10 @@ async def handle_transcribe(db: Session, payload: dict) -> None:
     if asset.process_tier != "advanced":
         asset.process_tier = "basic"
     asset.error = ""
+    events.publish("asset_status", {"asset_id": asset_id, "transcribe": "done"}, db=db)
     db.commit()
-    events.publish("asset_status", {"asset_id": asset_id, "transcribe": "done"})
-    # 转录完成后再补自动分析（analyze 依赖转录文本，必须在此链式触发）。
-    try:
-        from app.core.process_settings import get_process_settings
-        from app.services.auto_process import maybe_chain_analyze
-
-        content = db.get(ContentItem, asset.content_id)
-        maybe_chain_analyze(db, asset, content, get_process_settings(db))
-        db.commit()
-    except Exception:  # noqa: BLE001 自动分析是增强项，失败不得翻转已完成的转录
-        db.rollback()
-        logger.exception("素材 #%s 转录后自动分析入队失败，已忽略", asset_id)
-    # 转录完成后也补一次自动爆款拆解：拆解依赖转录文本，下载那刻可能还没转录好。
-    try:
-        content = db.get(ContentItem, asset.content_id)
-        if content is not None:
-            from app.services.auto_breakdown import enqueue_auto_breakdown
-
-            enqueue_auto_breakdown(db, asset, content)
-            db.commit()
-    except Exception:  # noqa: BLE001 自动拆解是增强项，失败不得翻转已完成的转录
-        db.rollback()
-        logger.exception("素材 #%s 转录后自动爆款拆解入队失败，已忽略", asset_id)
+    # 下游 analyze / understand / breakdown 由 runner 在转录 job 的 success
+    # 终态统一放行；handler 不再维护一套并行的链式触发。
 
 
 async def handle_analyze(db: Session, payload: dict, job=None) -> None:
@@ -404,7 +440,7 @@ async def handle_analyze(db: Session, payload: dict, job=None) -> None:
 
     asset_id = payload["asset_id"]
     asset = db.get(MediaAsset, asset_id)
-    if asset is None:
+    if asset is None or asset.deleted_at is not None:
         return
     transcript = db.query(Transcript).filter(Transcript.asset_id == asset_id).first()
     if transcript is None or not transcript.full_text:
@@ -414,26 +450,25 @@ async def handle_analyze(db: Session, payload: dict, job=None) -> None:
     db.commit()
 
     content = db.get(ContentItem, asset.content_id)
-    from app.services.model_access_service import ModelAccessService, assignment_configured
+    from app.services.model_access_service import ModelAccessService
 
-    call_model = None
-    if assignment_configured(db, "text_analysis"):
-        async def call_model(*, request, parse_result, **kwargs):
-            return await ModelAccessService().call_with_fallback(
-                db,
-                work_type="text_analysis",
-                operation="analyze",
-                request=request,
-                parse_result=parse_result,
-                validate_result=kwargs.get("validate_result"),
-                asset_id=asset_id,
-                    job_id=kwargs.get("job_id") or (job.id if job is not None else None),
-            )
+    async def call_model(*, request, parse_result, **kwargs):
+        return await ModelAccessService().call_with_fallback(
+            db,
+            work_type="text_analysis",
+            operation="analyze",
+            request=request,
+            parse_result=parse_result,
+            validate_result=kwargs.get("validate_result"),
+            asset_id=asset_id,
+            job_id=kwargs.get("job_id") or (job.id if job is not None else None),
+        )
 
-    analyze_kwargs = {"title": content.title if content else "", "full_text": transcript.full_text}
-    if call_model is not None:
-        analyze_kwargs["call_model"] = call_model
-    result = await analysis.analyze(**analyze_kwargs)
+    result = await analysis.analyze(
+        title=content.title if content else "",
+        full_text=transcript.full_text,
+        call_model=call_model,
+    )
 
     existing = db.query(AnalysisResult).filter(AnalysisResult.asset_id == asset_id).first()
     if existing is None:
@@ -446,24 +481,37 @@ async def handle_analyze(db: Session, payload: dict, job=None) -> None:
         existing.routing = {"text_analysis": result["routing"]}
     asset.analyze_status = "done"
     asset.error = ""
+    events.publish("asset_status", {"asset_id": asset_id, "analyze": "done"}, db=db)
     db.commit()
-    events.publish("asset_status", {"asset_id": asset_id, "analyze": "done"})
 
 
-async def handle_sync(db: Session, payload: dict) -> None:
+async def handle_sync(db: Session, payload: dict, job=None) -> JobOutcome:
     from app.models import Subscription
     from app.services.sync_service import run_subscription_sync
 
     sub = db.get(Subscription, payload["subscription_id"])
     if sub is None:
-        return
-    await run_subscription_sync(db, sub)
+        return JobOutcome.failure("订阅不存在", retry=RetryClass.NEVER, code="subscription_missing")
+    run = await run_subscription_sync(
+        db,
+        sub,
+        force=bool(payload.get("force", False)),
+        job_id=job.id if job is not None else None,
+    )
+    if run.status != "success":
+        return JobOutcome.failure(run.error or "订阅同步失败", code="sync_failed")
+    return JobOutcome.success()
 
 
-async def handle_crawl(db: Session, payload: dict) -> None:
+async def handle_crawl(db: Session, payload: dict, job=None) -> JobOutcome:
     from app.services.crawl_service import run_crawl_task
 
-    await run_crawl_task(db, payload["task_id"])
+    run = await run_crawl_task(
+        db, payload["task_id"], job_id=job.id if job is not None else None
+    )
+    if run.status != "success":
+        return JobOutcome.failure(run.error or "关键词采集失败", code="crawl_failed")
+    return JobOutcome.success()
 
 
 def _content_cookie(db: Session, content: ContentItem) -> str:
@@ -577,7 +625,8 @@ async def handle_understand_video(db: Session, payload: dict, job=None) -> None:
     from app.services.understand_service import UnderstandInputError, run_understand
 
     asset_id = payload["asset_id"]
-    if db.get(MediaAsset, asset_id) is None:
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None or asset.deleted_at is not None:
         return
     try:
         await run_understand(
@@ -597,7 +646,8 @@ async def handle_breakdown(db: Session, payload: dict, job=None) -> None:
     from app.services.breakdown_service import BreakdownInputError, run_breakdown
 
     asset_id = payload["asset_id"]
-    if db.get(MediaAsset, asset_id) is None:
+    asset = db.get(MediaAsset, asset_id)
+    if asset is None or asset.deleted_at is not None:
         return
     try:
         kwargs = {"force": bool(payload.get("force", False))}
@@ -619,13 +669,29 @@ async def handle_probe_model(db: Session, payload: dict, job=None) -> None:
     if db.get(AiModel, model_id) is None:
         return
     spec = payload.get("probe") or {}
-    await probe_model(
-        db,
-        model_id,
-        text=bool(spec.get("text", True)),
-        image=bool(spec.get("image", True)),
-        video=bool(spec.get("video", True)),
-    )
+    try:
+        await probe_model(
+            db,
+            model_id,
+            text=bool(spec.get("text", True)),
+            image=bool(spec.get("image", True)),
+            video=bool(spec.get("video", True)),
+        )
+    except Exception:
+        model = db.get(AiModel, model_id)
+        if model is not None and model.probe_status == "testing":
+            model.probe_status = "failed"
+            model.probe_error = "探测未能开始或异常中断"
+            model.probe_started_at = None
+            db.commit()
+        raise
+
+
+async def handle_delete_asset(db: Session, payload: dict, job=None) -> JobOutcome:
+    from app.services.storage_lifecycle import complete_asset_deletion
+
+    complete_asset_deletion(db, payload)
+    return JobOutcome.success()
 
 
 HANDLERS = {
@@ -639,4 +705,5 @@ HANDLERS = {
     "understand_video": handle_understand_video,
     "breakdown": handle_breakdown,
     "probe_model": handle_probe_model,
+    "delete_asset": handle_delete_asset,
 }

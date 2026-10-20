@@ -10,13 +10,21 @@
 
 
 def _seed_asset(db, *, video_file="v.mp4", relative_path="douyin/a/1"):
-    from app.models import ContentItem, MediaAsset
+    from app.models import ContentItem, MediaAsset, Transcript
 
     c = ContentItem(account_id=1, platform="douyin", external_id="aw1", content_type="video", title="t")
     db.add(c)
     db.flush()
-    a = MediaAsset(content_id=c.id, relative_path=relative_path, video_file=video_file)
+    a = MediaAsset(
+        content_id=c.id,
+        relative_path=relative_path,
+        video_file=video_file,
+        download_status="done",
+        transcribe_status="done",
+    )
     db.add(a)
+    db.flush()
+    db.add(Transcript(asset_id=a.id, full_text="测试转录", language="zh", model="base"))
     db.commit()
     return c.id, a.id
 
@@ -44,7 +52,8 @@ def test_process_endpoints_require_auth(anon_client, _engine):
 def test_get_process_settings_shape(client):
     body = client.get("/api/system/process-settings").json()
     assert body["min_heat"] >= 0
-    assert body["provider"] in ("qwen", "gemini")
+    # 模型选择只属于「模型接入」；加工设置不得再暴露第二套模型名。
+    assert "provider" not in body and "vision_model" not in body and "classify_model" not in body
     assert isinstance(body["taxonomy"], dict) and "commerce" in body["taxonomy"]
     assert isinstance(body["type_prompts"], dict) and "commerce" in body["type_prompts"]
     assert isinstance(body["common_dimensions"], list) and body["common_dimensions"]
@@ -59,8 +68,10 @@ def test_put_process_settings_rejects_out_of_range(client):
     r2 = client.put("/api/system/process-settings", json={"top_pct": 2})
     assert r2.status_code == 422
 
+    # 旧模型选择键已移除，写入时被忽略，不会形成第二套配置。
     r3 = client.put("/api/system/process-settings", json={"provider": "nope"})
-    assert r3.status_code == 422
+    assert r3.status_code == 200
+    assert "provider" not in client.get("/api/system/process-settings").json()
 
 
 def test_put_process_settings_rejects_bad_structure(client):
@@ -97,8 +108,6 @@ def test_put_process_settings_roundtrip(client):
     payload = {
         "min_heat": 4242,
         "use_cover": True,
-        "provider": "gemini",
-        "vision_model": "gemini-3.8-flash",
         "taxonomy": {"commerce": "带货v2", "other": "其他"},
         "type_prompts": {
             "commerce": {"focus": "只看价格", "dimensions": [{"key": "price", "name": "价格", "ask": "多少钱"}]}
@@ -111,8 +120,6 @@ def test_put_process_settings_roundtrip(client):
     body = client.get("/api/system/process-settings").json()
     assert body["min_heat"] == 4242
     assert body["use_cover"] is True
-    assert body["provider"] == "gemini"
-    assert body["vision_model"] == "gemini-3.8-flash"
     assert body["taxonomy"] == {"commerce": "带货v2", "other": "其他"}
     assert body["type_prompts"]["commerce"]["focus"] == "只看价格"
     assert body["common_dimensions"][0]["key"] == "visual"

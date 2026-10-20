@@ -21,6 +21,15 @@
       </div>
     </section>
 
+    <section class="vision-strip" role="note">
+      <span class="vision-mark" aria-hidden="true"><el-icon><View /></el-icon></span>
+      <div class="vision-copy">
+        <strong>视频理解与爆款拆解必须使用多模态视觉模型</strong>
+        <span>系统会把视频逐镜头抽帧送入模型；纯文本模型看不到画面，只能凭标题或字幕猜测。整段视频理解还需要模型支持视频输入。</span>
+      </div>
+      <span class="vision-note">推荐：Kimi K3、MiMo、Qwen3.8 Flash、Gemini 3.8 Flash</span>
+    </section>
+
     <div class="ui-tabs">
       <button class="ui-tab" :class="{ on: tab === 'models' }" @click="tab = 'models'">已导入模型</button>
       <button class="ui-tab" :class="{ on: tab === 'assignments' }" @click="tab = 'assignments'">工作分配</button>
@@ -28,6 +37,16 @@
     </div>
 
     <template v-if="tab === 'models'">
+      <section
+        v-if="legacyStatus && (legacyStatus.needs_api_key || legacyStatus.pending_validation.length)"
+        class="legacy-strip"
+        :class="{ warn: legacyStatus.needs_api_key || legacyStatus.pending_validation.length }"
+      >
+        <el-icon><WarningFilled /></el-icon>
+        <span>{{ legacyStatus.message }}</span>
+        <span v-if="legacyStatus.pending_validation.length" class="hint">待检测工作：{{ legacyStatus.pending_validation.map(workTitle).join('、') }}</span>
+        <span v-if="legacyStatus.needs_api_key" class="hint">旧配置缺少访问密钥，请重新添加供应商。</span>
+      </section>
       <div class="ui-bar">
         <button class="ui-btn primary" @click="openAdd">添加模型</button>
         <button class="ui-btn" @click="openProviders">供应商管理</button>
@@ -42,7 +61,8 @@
           <p>先添加一个模型，系统会自动检测它能做什么。</p>
           <button class="ui-btn primary" @click="openAdd">添加模型</button>
         </div>
-        <table v-else class="ui-table">
+        <div v-else class="ui-table-scroll">
+        <table class="ui-table">
           <thead>
             <tr>
               <th>模型</th>
@@ -119,6 +139,7 @@
             </template>
           </tbody>
         </table>
+        </div>
       </section>
     </template>
 
@@ -136,15 +157,31 @@
             </span>
           </div>
           <div class="ui-panel-body assignment-body">
+            <p v-if="item.work_type === 'video_understanding'" class="vision-hint">
+              仅可选择已通过视觉检测的模型。纯文本模型不会出现在下方列表。
+            </p>
             <label>主模型</label>
             <el-select v-model="draft[item.work_type].primary_model_id" clearable placeholder="选择主模型" style="width: 100%">
-              <el-option v-for="m in candidates(item.work_type)" :key="m.id" :label="m.display_name" :value="m.id" />
+              <el-option v-for="m in candidates(item.work_type)" :key="m.id" :label="modelLabel(m)" :value="m.id" />
             </el-select>
             <label>备用模型（可选）</label>
             <el-select v-model="draft[item.work_type].fallback_model_id" clearable placeholder="不用备用模型" style="width: 100%">
-              <el-option v-for="m in candidates(item.work_type)" :key="m.id" :label="m.display_name" :value="m.id" />
+              <el-option v-for="m in candidates(item.work_type)" :key="m.id" :label="modelLabel(m)" :value="m.id" />
             </el-select>
-            <p class="hint">主模型失败时自动尝试备用模型，失败原因会保留。</p>
+            <p class="hint" v-if="item.work_type === 'video_understanding'">主模型失败时自动尝试备用模型；两个都必须具备视觉能力。</p>
+            <p class="hint" v-else>主模型失败时自动尝试备用模型，失败原因会保留。</p>
+            <p v-if="item.work_type === 'video_understanding' && !candidates(item.work_type).length" class="vision-empty">
+              暂无通过视觉检测的模型。请先在「已导入模型」中添加并检测一个支持图片/视频输入的模型。
+            </p>
+            <div v-if="item.legacy_pending_validation" class="legacy-assignment">
+              <span class="ui-badge warn">旧配置待检测</span>
+              <button
+                v-if="item.primary_model"
+                class="ui-btn sm"
+                :disabled="item.primary_model.probe_status === 'testing'"
+                @click="probe(item.primary_model)"
+              >检测主模型</button>
+            </div>
             <button class="ui-btn primary" @click="saveAssignment(item.work_type)">保存</button>
           </div>
         </section>
@@ -351,6 +388,9 @@
             <div><b>{{ p.name }}</b><span class="ui-badge" :class="p.enabled ? 'ok' : 'warn'">{{ p.enabled ? '已启用' : '已停用' }}</span></div>
             <div class="mono dim">{{ p.base_url }}</div>
             <div class="hint">密钥 {{ p.has_api_key ? (p.api_key_masked || '已配置') : '未配置' }}</div>
+            <div v-if="p.last_test_status" class="hint" :class="{ err: p.last_test_status !== 'ok' }">
+              连接测试：{{ p.last_test_status === 'ok' ? '通过' : (p.last_test_error || '失败') }}
+            </div>
             <div class="provider-metrics">
               <button
                 class="metric"
@@ -371,11 +411,27 @@
             </div>
           </div>
           <div class="provider-actions">
+            <button class="ui-btn sm" :disabled="testingProvider === p.id" @click="testProvider(p)">
+              {{ testingProvider === p.id ? '测试中…' : '测试连接' }}
+            </button>
+            <button class="ui-btn sm" :disabled="discoveringProvider === p.id" @click="discoverProviderModels(p)">
+              {{ discoveringProvider === p.id ? '读取中…' : '读取模型' }}
+            </button>
             <button class="ui-btn sm" @click="editProvider(p)">编辑</button>
             <button class="ui-btn sm" @click="toggleProvider(p)">{{ p.enabled ? '停用' : '启用' }}</button>
             <button class="ui-btn sm danger" @click="removeProvider(p)">删除</button>
           </div>
         </div>
+        <section v-if="discoveredProviderModels" class="discovered-models">
+          <div class="ui-panel-head">
+            <h2>模型清单</h2>
+            <button class="ui-btn sm ghost" @click="discoveredProviderModels = null">关闭</button>
+          </div>
+          <p v-if="!discoveredProviderModels.models.length" class="hint">上游没有返回可用模型。</p>
+          <div v-else class="model-list">
+            <span v-for="name in discoveredProviderModels.models" :key="name" class="ui-badge mono">{{ name }}</span>
+          </div>
+        </section>
       </div>
     </el-dialog>
   </div>
@@ -383,9 +439,11 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { StarFilled, TopRight } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
+import { StarFilled, TopRight, View, WarningFilled } from '@element-plus/icons-vue'
 import { api } from '../api'
+import { parseUtc } from '../utils/time'
 
 const XINGSUAN_HOME = 'https://xsai5.xyz'
 
@@ -393,6 +451,7 @@ const tab = ref<'models' | 'assignments' | 'calls'>('models')
 const loading = ref(false)
 const models = ref<any[]>([])
 const assignments = ref<any[]>([])
+const legacyStatus = ref<any | null>(null)
 const expanded = reactive(new Set<number>())
 
 const calls = ref<any[]>([])
@@ -424,6 +483,9 @@ const discoverMessage = ref('')
 const providerDialog = ref(false)
 const providerLoading = ref(false)
 const providers = ref<any[]>([])
+const testingProvider = ref<number | null>(null)
+const discoveringProvider = ref<number | null>(null)
+const discoveredProviderModels = ref<{ providerId: number; models: string[] } | null>(null)
 const editingProvider = ref<any | null>(null)
 const providerForm = reactive({ name: '', protocol: 'openai', base_url: '', api_key: '' })
 
@@ -477,6 +539,8 @@ function capabilityTags(row: any) {
       key,
       label: stale
         ? `${label}（需重新检测）`
+        : value.source === 'legacy'
+          ? `${label}（待检测）`
         : value.source === 'manual_override'
           ? `${label}（手工）`
           : `${label}${value.value ? '' : '（不支持）'}`,
@@ -532,18 +596,20 @@ function probeClass(status: string) {
 }
 
 function fmt(value: string | null) {
-  return value ? new Date(value).toLocaleString() : '—'
+  return parseUtc(value)?.toLocaleString() ?? '—'
 }
 
 async function loadAll(options: { syncDrafts?: boolean } = {}) {
   loading.value = true
   try {
-    const [m, a] = await Promise.all([
+    const [m, a, legacy] = await Promise.all([
       api.get('/api/model-access/models'),
       api.get('/api/model-access/assignments'),
+      api.get('/api/model-access/legacy'),
     ])
     models.value = m.data
     assignments.value = a.data.assignments
+    legacyStatus.value = legacy.data?.detected || legacy.data?.claimed ? legacy.data : null
     if (options.syncDrafts !== false) {
       for (const item of assignments.value) {
         draft[item.work_type] = {
@@ -564,6 +630,10 @@ function candidates(workType: string) {
     if (workType === 'video_understanding') return !!(caps.json?.value && caps.video?.value)
     return !!(caps.text?.value && caps.json?.value)
   })
+}
+
+function modelLabel(model: any) {
+  return model.display_name || model.model_key
 }
 
 function toggleExpand(id: number) {
@@ -820,6 +890,30 @@ async function refreshLatency(row: any) {
   } catch { /* axios 已提示 */ }
 }
 
+async function testProvider(row: any) {
+  testingProvider.value = row.id
+  try {
+    const { data } = await api.post(`/api/model-access/providers/${row.id}/test`)
+    ElMessage({ message: data.message || (data.ok ? '连接成功' : '连接失败'), type: data.ok ? 'success' : 'warning' })
+    await loadProviders()
+  } catch { /* axios 已提示 */ } finally {
+    testingProvider.value = null
+  }
+}
+
+async function discoverProviderModels(row: any) {
+  discoveringProvider.value = row.id
+  discoveredProviderModels.value = null
+  try {
+    const { data } = await api.post(`/api/model-access/providers/${row.id}/discover-models`)
+    const names = data.models || []
+    discoveredProviderModels.value = { providerId: row.id, models: names }
+    ElMessage.success(`读取到 ${names.length} 个模型`)
+  } catch { /* axios 已提示 */ } finally {
+    discoveringProvider.value = null
+  }
+}
+
 function fmtBalance(row: any) {
   if (row.balance_amount === null || row.balance_amount === undefined) return '—'
   return `¥${Number(row.balance_amount).toFixed(2)}`
@@ -873,19 +967,54 @@ async function markVideoCapability(row: any) {
 }
 
 let probePollTimer: number | undefined
+// 3s * 140 ≈ 7 minutes.  After that the UI must stop pretending work is still
+// running: refresh once, surface the server state, and re-enable the buttons.
+const PROBE_POLL_LIMIT = 140
 
 function startProbePolling(attempt = 0) {
   window.clearTimeout(probePollTimer)
-  if (attempt >= 140) return
+  if (attempt >= PROBE_POLL_LIMIT) {
+    finishProbeTimeout()
+    return
+  }
   probePollTimer = window.setTimeout(async () => {
     try {
       const { data } = await api.get('/api/model-access/models')
       models.value = data
     } catch {
+      // Network errors are transient; keep the cursor so a recovered backend
+      // can still deliver the final state.
+      if (attempt + 1 < PROBE_POLL_LIMIT) startProbePolling(attempt + 1)
+      else finishProbeTimeout()
       return
     }
     if (models.value.some((m) => m.probe_status === 'testing')) startProbePolling(attempt + 1)
   }, 3000)
+}
+
+async function finishProbeTimeout() {
+  window.clearTimeout(probePollTimer)
+  try {
+    // Ask the server to reconcile stale probes instead of leaving rows stuck
+    // in "testing" forever.  Healthy running jobs are not touched.
+    const { data } = await api.post('/api/model-access/probes/reconcile', { older_than_minutes: 7 })
+    models.value = data.models || []
+    ElMessage({
+      type: data.recovered ? 'warning' : 'info',
+      duration: 8000,
+      message: data.recovered
+        ? `模型检测超时，已恢复 ${data.recovered} 个卡住的检测状态；现在可以重新检测`
+        : '模型检测轮询已超时，已刷新最新状态',
+    })
+  } catch {
+    // Falling back to a read keeps the user informed even if reconciliation
+    // itself fails; the buttons are enabled because no poll is running.
+    try {
+      const { data } = await api.get('/api/model-access/models')
+      models.value = data
+    } catch { /* axios 已提示 */ }
+    ElMessage({ type: 'warning', duration: 8000, message: '模型检测轮询已超时，未能确认最终状态；可重新检测' })
+  }
 }
 
 async function toggleEnabled(row: any) {
@@ -945,6 +1074,38 @@ onBeforeUnmount(() => window.clearTimeout(probePollTimer))
 .xingsuan-actions { display: flex; align-items: center; gap: 14px; }
 .xingsuan-note { color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; }
 .xingsuan-actions .ui-btn { text-decoration: none; white-space: nowrap; }
+.vision-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px 18px;
+  padding: 12px 18px;
+  border: 1px solid var(--ink);
+  border-left: 4px solid var(--accent);
+  background: var(--surface);
+}
+.vision-mark {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  font-size: 18px;
+}
+.vision-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vision-copy strong { color: var(--ink); font-size: var(--fs-base); }
+.vision-copy span { color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.5; }
+.vision-note { color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; }
+.vision-hint {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.vision-empty { color: var(--warn, #b7791f); font-size: var(--fs-sm); line-height: 1.5; margin: 0; }
 .xingsuan-link {
   display: inline-flex;
   align-items: center;
@@ -995,8 +1156,33 @@ onBeforeUnmount(() => window.clearTimeout(probePollTimer))
 .provider-main { min-width: 0; flex: 1; }
 .provider-main > div:first-child { display: flex; align-items: center; gap: 8px; }
 .provider-main .hint { margin-top: 3px; }
-.provider-actions { display: flex; gap: 8px; flex: none; }
+.provider-actions { display: flex; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 .provider-metrics { display: flex; gap: 18px; margin-top: 7px; }
+.provider-main .err { color: var(--danger, #c0392b); }
+.legacy-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+.legacy-strip.warn {
+  border-color: var(--warn, #b7791f);
+  color: var(--ink);
+}
+.legacy-assignment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.discovered-models { border: 1px solid var(--line); background: var(--surface-2); padding: 10px 12px; }
+.discovered-models .ui-panel-head { margin-bottom: 8px; }
+.model-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 180px; overflow: auto; }
 .metric {
   display: flex; align-items: baseline; gap: 6px; padding: 0; border: 0;
   background: none; cursor: pointer; font: inherit; color: inherit;
@@ -1025,6 +1211,10 @@ onBeforeUnmount(() => window.clearTimeout(probePollTimer))
   .xingsuan-note { white-space: normal; }
 }
 @media (max-width: 1100px) { .assignment-grid { grid-template-columns: 1fr; } }
+@media (max-width: 860px) {
+  .vision-strip { grid-template-columns: auto minmax(0, 1fr); }
+  .vision-note { grid-column: 2; white-space: normal; }
+}
 @media (max-width: 900px) { .call-detail { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 620px) { .call-detail { grid-template-columns: 1fr; } }
 </style>

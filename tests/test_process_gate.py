@@ -214,7 +214,7 @@ def test_select_targets_picks_advanced_only_for_ready_video(_engine):
 
 
 def test_enqueue_process_jobs_creates_jobs_and_sets_status(_engine):
-    """自动门控入队：只有 advanced→understand_video，并即时置 pending 状态。"""
+    """自动门控注册 DAG：先执行转录，视频理解等待前置。"""
     from sqlalchemy.orm import sessionmaker
 
     from app.models import JobQueue
@@ -229,9 +229,21 @@ def test_enqueue_process_jobs_creates_jobs_and_sets_status(_engine):
     assert n == 1  # warm 是 basic，无 job（转录走既有独立管线）
 
     jobs = {j.job_type: j for j in db.query(JobQueue).all()}
-    assert set(jobs) == {"understand_video"}
-    assert jobs["understand_video"].payload["asset_id"] == hot_asset.id
+    assert set(jobs) == {"transcribe"}
+    assert jobs["transcribe"].payload["asset_id"] == hot_asset.id
     assert all(j.priority == 120 for j in jobs.values())
+    from app.models import PipelineStep
+
+    steps = {
+        row.step: row
+        for row in db.query(PipelineStep).join(
+            __import__("app.models", fromlist=["PipelineRun"]).PipelineRun,
+            PipelineStep.run_id == __import__("app.models", fromlist=["PipelineRun"]).PipelineRun.id,
+        ).filter(__import__("app.models", fromlist=["PipelineRun"]).PipelineRun.asset_id == hot_asset.id)
+    }
+    assert steps["transcribe"].status == "queued"
+    assert steps["understand_video"].status == "waiting_prerequisite"
+    assert steps["understand_video"].job_id is None
 
     db.refresh(warm_asset)
     db.refresh(hot_asset)
@@ -254,10 +266,11 @@ def test_enqueue_process_jobs_dedup_and_already_processed(_engine):
     assert enqueue_process_jobs(db, [hot, done], settings=settings) == 1
     # 同一批再来一次：hot 的 job 仍在队列（dedup 吸收），done 已 advanced → 返回值 0。
     assert enqueue_process_jobs(db, [hot, done], settings=settings) == 0
-    assert db.query(JobQueue).filter_by(job_type="understand_video").count() == 1
-    assert db.query(JobQueue).filter_by(job_type="understand_video").one().payload[
+    assert db.query(JobQueue).filter_by(job_type="transcribe").count() == 1
+    assert db.query(JobQueue).filter_by(job_type="transcribe").one().payload[
         "asset_id"
     ] == hot_asset.id
+    assert db.query(JobQueue).filter_by(job_type="understand_video").count() == 0
     db.close()
 
 
@@ -324,7 +337,9 @@ def test_enqueue_inflight_budget_caps_single_item_calls(_engine):
         created += enqueue_process_jobs(db, [c], settings=settings)
 
     assert created == 3
-    assert db.query(JobQueue).filter_by(job_type="understand_video").count() == 3
+    # 预算按“视频理解已登记”计，而不是等它真正入队才计；转录任务只建 3 条。
+    assert db.query(JobQueue).filter_by(job_type="transcribe").count() == 3
+    assert db.query(JobQueue).filter_by(job_type="understand_video").count() == 0
     db.close()
 
 
@@ -341,14 +356,20 @@ def test_enqueue_inflight_budget_counts_running_and_frees_on_done(_engine):
     c1, a1 = _mk_ready(db, "hot1", like=5000, comment=0)
     assert enqueue_process_jobs(db, [c1], settings=settings) == 1
     # 该 job 被 worker 领走（running）仍占额度：第 2 条够热也不入队。
-    job = db.query(JobQueue).filter_by(job_type="understand_video").one()
+    job = db.query(JobQueue).filter_by(job_type="transcribe").one()
     job.status = "running"
     db.commit()
     c2, a2 = _mk_ready(db, "hot2", like=6000, comment=0)
     assert enqueue_process_jobs(db, [c2], settings=settings) == 0
 
-    # job 完成后额度释放 → 第 2 条可入队。
+    # 转录完成后 workflow 才放行理解；模拟这个终态，额度应保持占用直到理解完成。
+    from app.services import workflow_engine
+
+    workflow_engine.complete_step(db, job=job, failed=False)
+    db.commit()
+    job = db.query(JobQueue).filter_by(job_type="understand_video").one()
     job.status = "done"
+    workflow_engine.complete_step(db, job=job, failed=False)
     db.commit()
     assert enqueue_process_jobs(db, [c2], settings=settings) == 1
     db.close()

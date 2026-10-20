@@ -194,8 +194,8 @@ def _comment_jobs(session):
     return session.scalars(select(JobQueue).where(JobQueue.job_type == "fetch_comments")).all()
 
 
-def test_with_comments_true_bypasses_gate_for_low_heat(session, monkeypatch):
-    _, sub = _seed(session, platform="douyin", with_comments=True)
+def test_comment_force_bypasses_gate_for_low_heat(session, monkeypatch):
+    _, sub = _seed(session, platform="douyin", comment_mode="force")
     # 热度远低于默认门控下限（min_comments=20 / min_likes=100）
     _patch_fetch(monkeypatch, "douyin", [_item("aw1", metrics={"play": 5, "like": 1, "comment": 0})])
 
@@ -205,8 +205,8 @@ def test_with_comments_true_bypasses_gate_for_low_heat(session, monkeypatch):
     assert len(_comment_jobs(session)) == 1
 
 
-def test_with_comments_false_keeps_gate(session, monkeypatch):
-    _, sub = _seed(session, platform="douyin", with_comments=False)
+def test_comment_gate_keeps_gate(session, monkeypatch):
+    _, sub = _seed(session, platform="douyin", comment_mode="gate")
     _patch_fetch(monkeypatch, "douyin", [_item("aw1", metrics={"play": 5, "like": 1, "comment": 0})])
 
     run = _run(session, sub)
@@ -231,8 +231,8 @@ def test_with_comments_true_still_skips_unsupported_platform(session):
     assert _comment_jobs(session) == []
 
 
-def test_with_comments_is_idempotent(session, monkeypatch):
-    _, sub = _seed(session, platform="douyin", with_comments=True)
+def test_comment_force_is_idempotent(session, monkeypatch):
+    _, sub = _seed(session, platform="douyin", comment_mode="force")
     _patch_fetch(monkeypatch, "douyin", [_item("aw1", metrics={"play": 5, "like": 1, "comment": 0})])
     _run(session, sub)
 

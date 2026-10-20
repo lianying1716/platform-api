@@ -478,7 +478,12 @@ async def _qr_image_b64(page, selector: str) -> str:
     if src.startswith("data:image"):
         return src.split(",", 1)[1]
     if src.startswith("http"):
-        async with httpx.AsyncClient(headers={"User-Agent": _UA}, follow_redirects=True, timeout=15) as client:
+        from app.core.egress import client_kwargs
+
+        async with httpx.AsyncClient(
+            headers={"User-Agent": _UA}, follow_redirects=True, timeout=15,
+            **client_kwargs("douyin" if "douyin" in src else "bilibili"),
+        ) as client:
             resp = await client.get(src)
             return base64.b64encode(resp.content).decode()
     # 兜底：直接截图二维码元素
@@ -530,8 +535,11 @@ async def _read_qr_image_now(page, selector: str) -> str | None:
         return src.split(",", 1)[1]
     if src.startswith("http"):
         try:
+            from app.core.egress import client_kwargs
+
             async with httpx.AsyncClient(
-                headers={"User-Agent": _UA}, follow_redirects=True, timeout=15
+                headers={"User-Agent": _UA}, follow_redirects=True, timeout=15,
+                **client_kwargs("douyin" if "douyin" in src else "bilibili"),
             ) as client:
                 resp = await client.get(src)
             return base64.b64encode(resp.content).decode()

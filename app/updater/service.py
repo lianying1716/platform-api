@@ -130,14 +130,31 @@ def _do_recreate(version: str) -> dict:
     return {"ok": r.returncode == 0, "error": r.stderr[-300:]}
 
 
-def _do_health(version: str) -> bool:
+def _do_health(version: str) -> dict:
+    """Probe the API's structured version endpoint.
+
+    A bare HTTP 200 is not enough: the container tag may not have switched, or
+    migrations may still be pending.  Return evidence so the engine can decide.
+    """
     import urllib.request
+    import json
 
     try:
         with urllib.request.urlopen(_API_HEALTH_URL, timeout=5) as resp:
-            return resp.status == 200
+            if resp.status != 200:
+                return {"reachable": False, "status": resp.status}
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+            return {
+                "reachable": True,
+                "status": 200,
+                "app_version": str(body.get("app_version") or ""),
+                "db_in_sync": body.get("db_in_sync") is True,
+                "db_revision": body.get("db_revision") or "",
+                "db_head": body.get("db_head") or "",
+                "target_version": version,
+            }
     except Exception:  # noqa: BLE001 探测失败即视为不健康，交由引擎回滚
-        return False
+        return {"reachable": False, "error": "version endpoint unreachable"}
 
 
 def _do_pin(version: str) -> dict:
@@ -176,9 +193,59 @@ def _do_rollback(version: str) -> dict:
     return {"ok": up.returncode == 0, "error": up.stderr[-200:]}
 
 
+def _do_restore(backup_path: str) -> dict:
+    """Restore the DB dump from a pre-upgrade backup.
+
+    The manifest is the contract: only packages produced by ``_do_backup`` or
+    ``scripts/backup.sh`` are accepted.  We restore the DB before switching the
+    image tag back, because an old image must not start against a newer schema.
+    """
+    import json
+    import tarfile
+
+    if not backup_path or not os.path.isfile(backup_path):
+        return {"ok": False, "error": f"备份不存在：{backup_path}"}
+    try:
+        with tarfile.open(backup_path, "r:gz") as tar:
+            members = {m.name: m for m in tar.getmembers()}
+            if "manifest.json" not in members or "db.dump" not in members:
+                return {"ok": False, "error": "备份缺少 manifest.json 或 db.dump"}
+            manifest = json.load(tar.extractfile(members["manifest.json"]))  # type: ignore[arg-type]
+            if "db.dump" not in manifest.get("includes", []):
+                return {"ok": False, "error": "manifest 未声明 db.dump，拒绝恢复"}
+            dump = tar.extractfile(members["db.dump"])
+            if dump is None:
+                return {"ok": False, "error": "无法读取 db.dump"}
+            payload = dump.read()
+    except (OSError, tarfile.TarError, ValueError) as exc:
+        return {"ok": False, "error": f"读取备份失败：{exc}"}
+    if not payload:
+        return {"ok": False, "error": "db.dump 为空"}
+
+    # pg_restore --clean --if-exists makes the restore idempotent enough to
+    # retry; it runs inside the same db service used for backups.
+    restore = subprocess.run(
+        [
+            "docker", "compose", "-f", _COMPOSE_FILE, "exec", "-T", _POSTGRES_SERVICE,
+            "pg_restore", "-U", os.environ.get("POSTGRES_USER", "platform"),
+            "-d", os.environ.get("POSTGRES_DB", "platform"), "--clean", "--if-exists",
+            "--no-owner", "--no-privileges",
+        ],
+        input=payload,
+        capture_output=True,
+        timeout=600,
+        check=False,
+    )
+    if restore.returncode != 0:
+        err = (restore.stderr or b"")[-300:].decode("utf-8", "replace")
+        return {"ok": False, "error": f"pg_restore 失败：{err}"}
+    return {"ok": True}
+
+
 _engine = UpgradeEngine(
     backup=_do_backup, pull=_do_pull, recreate=_do_recreate,
     health=_do_health, rollback=_do_rollback, pin=_do_pin,
+    restore=_do_restore,
 )
 
 
@@ -193,6 +260,10 @@ def _current_version() -> str:
 
 class UpgradeIn(BaseModel):
     version: str
+    # The updater cannot infer whether a future release has irreversible
+    # migrations; the release manifest must state it.  Defaulting to True keeps
+    # old clients working, but callers should pass False when unsure.
+    reversible: bool = True
 
 
 @app.get("/health")
@@ -223,5 +294,10 @@ def upgrade(body: UpgradeIn, x_updater_token: str = Header(default="")):
         raise HTTPException(status_code=409, detail="已有升级在进行中，请稍候")
 
     from_version = _current_version()
-    threading.Thread(target=_engine.start, args=(body.version,), kwargs={"from_version": from_version}, daemon=True).start()
+    threading.Thread(
+        target=_engine.start,
+        args=(body.version,),
+        kwargs={"from_version": from_version, "reversible": body.reversible},
+        daemon=True,
+    ).start()
     return {"accepted": True, "version": body.version, "from_version": from_version}

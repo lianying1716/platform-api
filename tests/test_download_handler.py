@@ -88,10 +88,11 @@ async def test_download_failure_marks_error_not_done(session, monkeypatch):
         return DownloadResult(ok=False, message="Fresh cookies are needed")
 
     monkeypatch.setattr(handlers.media_download, "download", fake_download)
-    await handlers.handle_download(session, {"asset_id": asset.id})
+    outcome = await handlers.handle_download(session, {"asset_id": asset.id})
     session.refresh(asset)
     assert asset.download_status == "error"
     assert "Fresh cookies" in (asset.error or "")
+    assert outcome.ok is False
 
 @pytest.mark.asyncio
 async def test_douyin_uses_direct_play_url(session, monkeypatch):

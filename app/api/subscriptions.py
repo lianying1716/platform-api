@@ -8,16 +8,17 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core import security
 from app.core.crypto import decrypt_credential
 from app.db import get_db
-from app.models import ContentSource, CreatorProfile, PlatformAccount, Subscription, SyncRun
+from app.models import ContentSource, CreatorProfile, PlatformAccount, StorageRoot, Subscription, SyncRun
 from app.modules import get_adapter
-from app.services.sync_service import run_subscription_sync
+from app.application.commands.sync import SyncCommandError, enqueue_sync
+from app.domain.capabilities import ALL_QUALITIES, require_quality, require_source_type
 
 router = APIRouter(prefix="/api", tags=["subscriptions"], dependencies=[Depends(security.require_admin)])
 
@@ -32,7 +33,8 @@ class SubscriptionIn(BaseModel):
     enabled: bool = True
     sync_videos: bool = False
     auto_download: bool = False
-    interval_minutes: int = Field(360, ge=10)
+    # None means inherit; do not use 360 as a fake "unset" value.
+    interval_minutes: int | None = Field(None, ge=10)
     subdir_template: str = "{platform}/{account}/{creator}/{date}"
     # 订阅级存储根覆盖：None = 继承账号绑定（再回退默认根）。
     storage_root_id: int | None = None
@@ -42,17 +44,77 @@ class SubscriptionIn(BaseModel):
     max_items: int = Field(50, ge=1, le=500)
     only_new: bool = True
     download_quality: str = "best"
-    with_comments: bool = False
+    comment_mode: str = "gate"
     # 订阅级自动加工开关（显式 opt-in；绕过热度门控直接入队）。
-    auto_transcribe: bool = False
-    auto_analyze: bool = False
+    auto_transcribe: bool | None = None
+    auto_analyze: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _translate_legacy_comment_bool(cls, data):
+        if isinstance(data, dict) and "with_comments" in data and "comment_mode" not in data:
+            data = dict(data)
+            data["comment_mode"] = "force" if data.pop("with_comments") else "gate"
+        return data
 
     @field_validator("download_quality")
     @classmethod
     def _check_download_quality(cls, value: str) -> str:
-        allowed = {"best", "1080", "720", "audio"}
+        allowed = set(ALL_QUALITIES)
         if value not in allowed:
             raise ValueError(f"download_quality 必须是 {sorted(allowed)} 之一")
+        return value
+
+    @field_validator("comment_mode")
+    @classmethod
+    def _check_comment_mode(cls, value: str) -> str:
+        if value not in ("off", "gate", "force"):
+            raise ValueError("comment_mode 必须是 off/gate/force 之一")
+        return value
+
+
+class SubscriptionPatch(BaseModel):
+    """Partial subscription update.
+
+    PATCH exists so a switch can change exactly one field without rebuilding the
+    whole form.  ``None`` is meaningful for nullable fields (inherit storage or
+    processing defaults), so route handlers must use ``model_fields_set`` rather
+    than truthiness when applying changes.
+    """
+
+    account_id: int | None = None
+    source_type: str | None = None
+    remote_id: str | None = None
+    title: str | None = None
+    enabled: bool | None = None
+    sync_videos: bool | None = None
+    auto_download: bool | None = None
+    interval_minutes: int | None = Field(None, ge=10)
+    subdir_template: str | None = None
+    storage_root_id: int | None = None
+    min_play: int | None = Field(None, ge=0)
+    publish_after_days: int | None = Field(None, ge=0)
+    max_items: int | None = Field(None, ge=1, le=500)
+    only_new: bool | None = None
+    download_quality: str | None = None
+    comment_mode: str | None = None
+    auto_transcribe: bool | None = None
+    auto_analyze: bool | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("download_quality")
+    @classmethod
+    def _check_download_quality(cls, value: str | None) -> str | None:
+        if value is not None and value not in ALL_QUALITIES:
+            raise ValueError(f"download_quality 必须是 {sorted(ALL_QUALITIES)} 之一")
+        return value
+
+    @field_validator("comment_mode")
+    @classmethod
+    def _check_comment_mode(cls, value: str | None) -> str | None:
+        if value is not None and value not in ("off", "gate", "force"):
+            raise ValueError("comment_mode 必须是 off/gate/force 之一")
         return value
 
 
@@ -66,7 +128,7 @@ class SubscriptionOut(BaseModel):
     enabled: bool
     sync_videos: bool = False
     auto_download: bool
-    interval_minutes: int
+    interval_minutes: int | None = None
     subdir_template: str = "{platform}/{account}/{creator}/{date}"
     storage_root_id: int | None = None
     min_play: int = 0
@@ -74,9 +136,9 @@ class SubscriptionOut(BaseModel):
     max_items: int = 50
     only_new: bool = True
     download_quality: str = "best"
-    with_comments: bool = False
-    auto_transcribe: bool = False
-    auto_analyze: bool = False
+    comment_mode: str = "gate"
+    auto_transcribe: bool | None = None
+    auto_analyze: bool | None = None
     last_sync_at: datetime | None = None
     deleted_at: datetime | None = None
     # creator 订阅即"关注的博主"；其头像供列表直接显示
@@ -96,6 +158,10 @@ async def remote_sources(account_id: int, source_type: str = "favorite", db: Ses
     if account.credential is None:
         raise HTTPException(status_code=400, detail="账号未录入凭证")
     adapter = get_adapter(account.platform)
+    try:
+        require_source_type(account.platform, source_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     lister = getattr(adapter, "list_sources", None)
     if lister is None:
         raise HTTPException(status_code=400, detail=f"{adapter.label} 暂不支持列出订阅源")
@@ -134,7 +200,14 @@ def create_subscription(body: SubscriptionIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="账号不存在")
     if account.is_system or account.status != "active":
         raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用，无法创建订阅")
+    try:
+        require_source_type(account.platform, body.source_type)
+        require_quality(account.platform, body.download_quality)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     data = body.model_dump()
+    # Legacy client compatibility: accept the old boolean and translate it to
+    # the canonical mode.  New clients should send comment_mode directly.
     if "enabled" not in body.model_fields_set:
         # 未显式指定时：只有「关注列表」默认开启关系跟踪，收藏/点赞等默认关闭。
         data["enabled"] = body.source_type == "creator"
@@ -145,23 +218,70 @@ def create_subscription(body: SubscriptionIn, db: Session = Depends(get_db)):
     return sub
 
 
-@router.put("/subscriptions/{sub_id}", response_model=SubscriptionOut)
-def update_subscription(sub_id: int, body: SubscriptionIn, db: Session = Depends(get_db)):
-    sub = db.get(Subscription, sub_id)
-    if sub is None or sub.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="订阅不存在")
-    if body.account_id != sub.account_id:
-        account = db.get(PlatformAccount, body.account_id)
+_NON_NULL_PATCH_FIELDS = {
+    "account_id", "source_type", "remote_id", "title", "enabled", "sync_videos",
+    "auto_download", "subdir_template", "min_play", "publish_after_days",
+    "max_items", "only_new", "download_quality", "comment_mode",
+}
+
+
+def _apply_subscription_changes(sub: Subscription, changes: dict, db: Session) -> None:
+    """Validate and apply only explicitly supplied fields to one subscription."""
+    for key in _NON_NULL_PATCH_FIELDS & changes.keys():
+        if changes[key] is None:
+            raise HTTPException(status_code=422, detail=f"{key} 不能为 null")
+
+    source_type = changes.get("source_type", sub.source_type)
+    quality = changes.get("download_quality", sub.download_quality)
+    try:
+        require_source_type(sub.platform, source_type)
+        require_quality(sub.platform, quality)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if "account_id" in changes and changes["account_id"] != sub.account_id:
+        account = db.get(PlatformAccount, changes["account_id"])
         if account is None:
             raise HTTPException(status_code=404, detail="账号不存在")
         if account.is_system or account.status != "active":
             raise HTTPException(status_code=422, detail="账号已停用、系统账号或不可用，无法绑定订阅")
         if account.platform != sub.platform:
             raise HTTPException(status_code=422, detail="订阅不能转移到其他平台账号")
-    for k, v in body.model_dump().items():
-        # 全字段覆盖：只有显式带来的字段才写，避免局部更新把开关重置回默认值。
-        if k in body.model_fields_set or k not in ("enabled", "only_new", "sync_videos"):
-            setattr(sub, k, v)
+
+    if "storage_root_id" in changes and changes["storage_root_id"] is not None:
+        if db.get(StorageRoot, changes["storage_root_id"]) is None:
+            raise HTTPException(status_code=404, detail="存储根目录不存在")
+
+    for key, value in changes.items():
+        setattr(sub, key, value)
+
+
+@router.put("/subscriptions/{sub_id}", response_model=SubscriptionOut)
+def update_subscription(sub_id: int, body: SubscriptionIn, db: Session = Depends(get_db)):
+    sub = db.get(Subscription, sub_id)
+    if sub is None or sub.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="订阅不存在")
+    _apply_subscription_changes(sub, body.model_dump(exclude_unset=True), db)
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+@router.patch("/subscriptions/{sub_id}", response_model=SubscriptionOut)
+def patch_subscription(sub_id: int, body: SubscriptionPatch, db: Session = Depends(get_db)):
+    """Update only the named fields.
+
+    This is the canonical endpoint for toggles.  A PATCH with ``{"enabled":
+    false}`` must never reset a custom storage root, a tri-state processing
+    override, or any capability setting that was not sent.
+    """
+    sub = db.get(Subscription, sub_id)
+    if sub is None or sub.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="订阅不存在")
+    changes = body.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="至少需要提供一个要修改的字段")
+    _apply_subscription_changes(sub, changes, db)
     db.commit()
     db.refresh(sub)
     return sub
@@ -182,20 +302,13 @@ def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
     return {"ok": True, "deactivated_sources": len(sources), "kept_contents": len(sources)}
 
 
-@router.post("/subscriptions/{sub_id}/sync")
+@router.post("/subscriptions/{sub_id}/sync", status_code=202)
 async def trigger_sync(sub_id: int, db: Session = Depends(get_db)):
-    sub = db.get(Subscription, sub_id)
-    if sub is None or sub.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="订阅不存在")
-    run = await run_subscription_sync(db, sub)
-    return {
-        "run_id": run.id,
-        "status": run.status,
-        "fetched": run.fetched,
-        "added": run.added,
-        "updated": run.updated,
-        "error": run.error,
-    }
+    try:
+        job = enqueue_sync(db, sub_id, force=True)
+    except SyncCommandError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"job_id": job.id, "status": "queued"}
 
 
 @router.get("/subscriptions/{sub_id}/runs")
@@ -206,7 +319,9 @@ def sync_runs(sub_id: int, db: Session = Depends(get_db)):
     return [
         {
             "id": r.id,
+            "job_id": r.job_id,
             "started_at": r.started_at.isoformat() if r.started_at else None,
+            "heartbeat_at": r.heartbeat_at.isoformat() if r.heartbeat_at else None,
             "finished_at": r.finished_at.isoformat() if r.finished_at else None,
             "status": r.status,
             "fetched": r.fetched,
@@ -216,3 +331,24 @@ def sync_runs(sub_id: int, db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+@router.get("/subscriptions/{sub_id}/runs/{run_id}")
+def sync_run_detail(sub_id: int, run_id: int, db: Session = Depends(get_db)):
+    run = db.scalar(
+        select(SyncRun).where(SyncRun.id == run_id, SyncRun.subscription_id == sub_id)
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="同步记录不存在")
+    return {
+        "id": run.id,
+        "job_id": run.job_id,
+        "status": run.status,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "heartbeat_at": run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "fetched": run.fetched,
+        "added": run.added,
+        "updated": run.updated,
+        "error": run.error,
+    }

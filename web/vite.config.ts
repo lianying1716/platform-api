@@ -11,6 +11,28 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Budget: entry shell < 100 kB.  ECharts' core is a third-party chunk of
+    // ~550 kB (lazy, loaded with the dashboard charts); splitting its internal
+    // directories creates circular chunk edges, so it is kept whole on purpose.
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          // Route pages are lazy-loaded; keep only large shared vendors explicit.
+          if (id.includes('node_modules/zrender')) return 'vendor-charts-zrender'
+          if (id.includes('node_modules/echarts')) return 'vendor-charts-core'
+          if (id.includes('node_modules/element-plus')) return 'vendor-element'
+          if (id.includes('node_modules/@element-plus')) return 'vendor-element'
+          if (
+            id.includes('node_modules/vue/') ||
+            id.includes('node_modules/@vue/') ||
+            id.includes('node_modules/vue-router/')
+          ) {
+            return 'vendor-vue'
+          }
+        },
+      },
+    },
   },
   server: {
     port: 5173,

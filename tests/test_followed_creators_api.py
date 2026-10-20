@@ -4,6 +4,8 @@
 所以「在订阅源里改/删」与「在关注列表里改」永远一致，不可能漂移。
 """
 
+from datetime import datetime
+
 import pytest
 
 from app.models import AccountCredential, CreatorProfile, PlatformAccount, Subscription
@@ -63,6 +65,7 @@ def test_refresh_upserts_and_lists(client, session, monkeypatch):
     rows = client.get(f"/api/followed-creators?platform=bilibili&account_id={acc.id}").json()
     assert [c["author_name"] for c in rows] == ["老饭骨", "影视飓风"]
     assert rows[0]["avatar"] == "http://a/1.jpg"
+    assert rows[0]["avatar_url"].startswith("/api/media/avatars/")
     assert rows[0]["home_url"] == "https://space.bilibili.com/1001"
     # 关注列表默认开启「关系跟踪」（对齐抖小云），但博主视频同步默认关闭，需手动开
     assert rows[0]["sync_enabled"] is True
@@ -198,7 +201,7 @@ def test_no_drift_when_disabled_from_subscriptions_api(client, session, monkeypa
     body = {k: body[k] for k in (
         "account_id", "source_type", "remote_id", "title", "enabled", "auto_download",
         "interval_minutes", "subdir_template", "min_play", "publish_after_days",
-        "max_items", "only_new", "download_quality", "with_comments")}
+        "max_items", "only_new", "download_quality", "comment_mode")}
     body["enabled"] = False
     assert client.put(f"/api/subscriptions/{sub.id}", json=body).status_code == 200
 
@@ -310,24 +313,75 @@ def test_toggle_rejects_non_creator_subscription(client, session):
     assert client.put(f"/api/followed-creators/{sub.id}", json={"sync_enabled": True}).status_code == 404
 
 
-def test_immediate_sync_runs_subscription(client, session, monkeypatch):
-    from app.modules.bilibili import BilibiliAdapter
+def test_immediate_sync_enqueues_force_job(client, session):
+    """API 只提交命令；不在 API 进程内跑平台抓取。"""
+    from app.models import JobQueue
 
     acc = _account(session)
-    monkeypatch.setattr(BilibiliAdapter, "list_followings", _fake_followings([_author()]))
-    client.post("/api/followed-creators/refresh", json={"account_id": acc.id})
-    sub = session.query(Subscription).filter_by(source_type="creator").one()
-
-    async def _fake_fetch(self, credential, source_type, remote_id, limit):
-        return []
-
-    monkeypatch.setattr(BilibiliAdapter, "fetch_source", _fake_fetch)
-    r = client.post(f"/api/followed-creators/{sub.id}/sync")
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "success"
+    sub = Subscription(
+        account_id=acc.id,
+        platform="bilibili",
+        source_type="creator",
+        remote_id="1001",
+        title="老饭骨",
+        enabled=False,
+        sync_videos=False,
+    )
+    session.add(sub)
+    session.commit()
     session.refresh(sub)
-    assert sub.enabled is True              # 立即同步会顺带开启同步
-    assert sub.last_sync_at is not None
+
+    r = client.post(f"/api/followed-creators/{sub.id}/sync")
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["status"] == "queued" and body["job_id"] > 0
+
+    session.expire_all()
+    row = session.get(Subscription, sub.id)
+    assert row.enabled is True and row.sync_videos is True
+    assert row.last_sync_at is None, "同步尚未执行，不能提前写成功时间"
+    job = session.get(JobQueue, body["job_id"])
+    assert job.job_type == "sync" and job.payload == {
+        "subscription_id": sub.id,
+        "force": True,
+    }
+
+
+def test_immediate_sync_unknown_creator_404(client):
+    assert client.post("/api/followed-creators/9999/sync").status_code == 404
+
+
+def test_job_status_endpoint_resolves_sync_run(client, session):
+    """提交后前端通过 job_id 查到 job 与对应 run，不靠猜接口返回值。"""
+    from app.core.queue import enqueue
+    from app.models import JobQueue, SyncRun
+
+    acc = _account(session)
+    sub = Subscription(
+        account_id=acc.id,
+        platform="bilibili",
+        source_type="favorite",
+        remote_id="fav-1",
+        enabled=True,
+    )
+    session.add(sub)
+    session.commit()
+    job = enqueue(session, "sync", {"subscription_id": sub.id, "force": True})
+    run = SyncRun(
+        subscription_id=sub.id,
+        job_id=job.id,
+        status="success",
+        added=2,
+        started_at=datetime.utcnow(),
+        finished_at=datetime.utcnow(),
+    )
+    session.add(run)
+    session.commit()
+
+    data = client.get(f"/api/pipeline/jobs/{job.id}").json()
+    assert data["status"] == "queued"
+    assert data["run_id"] == run.id
+
 
 
 # ---------------------------------------------------------------- 缓存 / 风控

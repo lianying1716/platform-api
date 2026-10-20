@@ -8,7 +8,7 @@
 from collections import Counter
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
@@ -73,7 +73,7 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
         db.scalar(
             select(func.count(MediaAsset.id))
             .join(ContentItem, MediaAsset.content_id == ContentItem.id)
-            .where(*asset_filter)
+            .where(MediaAsset.deleted_at.is_(None), *asset_filter)
         )
         or 0
     )
@@ -167,7 +167,7 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
     transcribed_rows = db.execute(
         select(ContentItem.platform, func.count(MediaAsset.id))
         .join(MediaAsset, MediaAsset.content_id == ContentItem.id)
-        .where(MediaAsset.transcribe_status == "done", *content_filter)
+        .where(MediaAsset.deleted_at.is_(None), MediaAsset.transcribe_status == "done", *content_filter)
         .group_by(ContentItem.platform)
     ).all()
     for plat, cnt in transcribed_rows:
@@ -205,7 +205,7 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
         db.scalar(
             select(func.count(MediaAsset.id))
             .join(ContentItem, MediaAsset.content_id == ContentItem.id)
-            .where(MediaAsset.transcribe_status == "done", *asset_filter)
+            .where(MediaAsset.deleted_at.is_(None), MediaAsset.transcribe_status == "done", *asset_filter)
         )
         or 0
     )
@@ -213,7 +213,7 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
         db.scalar(
             select(func.count(MediaAsset.id))
             .join(ContentItem, MediaAsset.content_id == ContentItem.id)
-            .where(MediaAsset.understand_status == "done", *asset_filter)
+            .where(MediaAsset.deleted_at.is_(None), MediaAsset.understand_status == "done", *asset_filter)
         )
         or 0
     )
@@ -224,16 +224,25 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
     from app.core import storage
 
     asset_rows = db.execute(
-        select(MediaAsset, ContentItem).join(ContentItem, MediaAsset.content_id == ContentItem.id)
-        .where(*asset_filter)
+        select(
+            MediaAsset.id,
+            MediaAsset.storage_root_id,
+            MediaAsset.relative_path,
+            MediaAsset.video_file,
+            ContentItem.platform,
+        ).join(ContentItem, MediaAsset.content_id == ContentItem.id)
+        .where(MediaAsset.deleted_at.is_(None), *asset_filter)
     ).all()
-    size_map = storage.sizes_for_assets(db, [a for a, _c in asset_rows])
+    size_map = storage.sizes_for_asset_rows(
+        db,
+        ((asset_id, root_id, rel, video) for asset_id, root_id, rel, video, _platform in asset_rows),
+    )
     used_bytes = 0
     storage_by_platform: dict[str, int] = {}
-    for asset, content in asset_rows:
-        size = size_map.get(asset.id, 0)
+    for asset_id, _root_id, _rel, _video, platform in asset_rows:
+        size = size_map.get(asset_id, 0)
         used_bytes += size
-        key = content.platform or "unknown"
+        key = platform or "unknown"
         storage_by_platform[key] = storage_by_platform.get(key, 0) + size
 
     roots = db.scalars(select(StorageRoot).order_by(StorageRoot.id)).all()
@@ -320,7 +329,11 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
 
 
 @router.get("/analytics/creators")
-def analytics_creators(db: Session = Depends(get_db), limit: int = 20, account_id: int | None = None):
+def analytics_creators(
+    db: Session = Depends(get_db),
+    limit: int = Query(20, ge=1, le=200),
+    account_id: int | None = None,
+):
     """作者维度：发布量 + 最新累计互动。优先补 creator_profile 的粉丝/认证信息。"""
     stmt = select(
             ContentItem.author_id,
@@ -355,6 +368,7 @@ def analytics_creators(db: Session = Depends(get_db), limit: int = 20, account_i
                 "platform": plat,
                 "content_count": cnt,
                 "avatar": p.avatar if p else "",
+                "avatar_url": f"/api/media/avatars/{p.id}" if p and p.avatar else "",
                 "follower_count": follower_count_of(p),
                 "verified": p.verified if p else False,
                 "profile_id": p.id if p else None,
@@ -364,7 +378,7 @@ def analytics_creators(db: Session = Depends(get_db), limit: int = 20, account_i
 
 
 @router.get("/analytics/keywords")
-def analytics_keywords(db: Session = Depends(get_db), limit: int = 20):
+def analytics_keywords(db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=200)):
     """关键词维度：各采集任务近期新增内容量。"""
     rows = db.execute(
         select(CrawlRun.task_id, func.sum(CrawlRun.added).label("added"), func.count(CrawlRun.id).label("runs"))
@@ -440,7 +454,10 @@ def _category_map(db: Session, content_ids: list[int]) -> dict[int, str]:
     if not content_ids:
         return {}
     asset_rows = db.execute(
-        select(MediaAsset.id, MediaAsset.content_id).where(MediaAsset.content_id.in_(content_ids))
+        select(MediaAsset.id, MediaAsset.content_id).where(
+            MediaAsset.content_id.in_(content_ids),
+            MediaAsset.deleted_at.is_(None),
+        )
     ).all()
     asset_ids = [aid for aid, _ in asset_rows]
     ua = (
@@ -496,7 +513,10 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
     median_play = _median(plays)
 
     asset_rows = db.execute(
-        select(MediaAsset.id, MediaAsset.content_id).where(MediaAsset.content_id.in_(content_ids))
+        select(MediaAsset.id, MediaAsset.content_id).where(
+            MediaAsset.content_id.in_(content_ids),
+            MediaAsset.deleted_at.is_(None),
+        )
     ).all()
     asset_by_content: dict[int, int] = {}
     for aid, cid in asset_rows:

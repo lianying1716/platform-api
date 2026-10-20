@@ -47,6 +47,19 @@ def test_create_provider_encrypts_and_redacts(client, session):
     assert row is not None and row.api_key_encrypted and "sk-secret-value" not in row.api_key_encrypted
 
 
+def test_legacy_status_is_visible_without_secret_values(client, session):
+    session.add(SystemSetting(key="llm_base_url", value="https://legacy.example/v1"))
+    session.add(SystemSetting(key="llm_model", value="legacy-model"))
+    session.commit()
+
+    response = client.get("/api/model-access/legacy")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["detected"] is True
+    assert "legacy-model" not in json.dumps(body)
+    assert "sk-" not in json.dumps(body)
+
+
 def test_import_models_and_list_not_expose_ciphertext(client, session):
     provider = AiProvider(
         name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",
@@ -180,6 +193,66 @@ def test_provider_connection_change_keeps_capabilities_visible_as_stale(client, 
     assert models[0]["capabilities"]["text"]["source"] == "stale"
     assert models[0]["capabilities"]["text"]["value"] is False
     assert models[0]["capabilities"]["text"]["detail"] == "供应商连接配置已变更，需重新检测"
+
+
+def test_api_key_change_marks_capabilities_stale(client, session):
+    from app.core.crypto import encrypt_credential
+
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",
+        api_key_encrypted=encrypt_credential({"api_key": "old-key"}),
+        enabled=True, config_revision=1,
+    )
+    session.add(provider)
+    session.flush()
+    session.add(AiModel(
+        provider_id=provider.id,
+        model_key="m1",
+        capabilities={"text": {"value": True, "source": "probe", "config_revision": 1}},
+        probe_status="passed",
+    ))
+    session.commit()
+
+    response = client.patch(
+        f"/api/model-access/providers/{provider.id}", json={"api_key": "new-key"}
+    )
+    assert response.status_code == 200, response.text
+    session.refresh(provider)
+    assert provider.config_revision == 2
+    models = client.get("/api/model-access/models").json()
+    assert models[0]["capabilities"]["text"]["source"] == "stale"
+
+
+def test_provider_connection_change_only_clears_its_own_pending_flag(client, session):
+    changed = AiProvider(
+        name="changed", preset_key="custom", protocol="openai",
+        base_url="https://changed.example/v1", api_key_encrypted="cipher", config_revision=1,
+    )
+    other = AiProvider(
+        name="other", preset_key="custom", protocol="openai",
+        base_url="https://other.example/v1", api_key_encrypted="cipher", config_revision=1,
+    )
+    session.add_all([changed, other])
+    session.flush()
+    changed_model = AiModel(provider_id=changed.id, model_key="changed-model", capabilities={})
+    other_model = AiModel(provider_id=other.id, model_key="other-model", capabilities={})
+    session.add_all([changed_model, other_model])
+    session.flush()
+    session.add_all([
+        ModelAssignment(work_type="text_analysis", primary_model_id=changed_model.id, legacy_pending_validation=True),
+        ModelAssignment(work_type="cover_classify", primary_model_id=other_model.id, legacy_pending_validation=True),
+    ])
+    session.commit()
+
+    response = client.patch(f"/api/model-access/providers/{changed.id}", json={"base_url": "https://changed2.example/v1"})
+    assert response.status_code == 200, response.text
+    session.expire_all()
+    changed_flag = session.scalar(select(ModelAssignment).where(ModelAssignment.work_type == "text_analysis"))
+    other_flag = session.scalar(select(ModelAssignment).where(ModelAssignment.work_type == "cover_classify"))
+    # Connection changes never assert "validated": the pending warning must stay
+    # until a real probe succeeds or the user manually marks the capability.
+    assert changed_flag.legacy_pending_validation is True
+    assert other_flag.legacy_pending_validation is True
 
 
 def test_api_key_channel_ignores_admin_cookie(anon_client, session):

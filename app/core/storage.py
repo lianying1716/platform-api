@@ -4,6 +4,7 @@
 Windows 盘符与 UNC。外部 API 不得提交绝对输出路径。
 """
 
+import os
 import re
 from datetime import datetime
 from pathlib import Path, PurePath, PureWindowsPath
@@ -14,6 +15,10 @@ from sqlalchemy.orm import Session
 from app.models import MediaAsset, StorageRoot
 
 _SAFE = re.compile(r"[^\w\-.一-鿿]+")
+
+
+class StorageUnavailable(RuntimeError):
+    """No usable storage root (or an unsafe root) for a filesystem operation."""
 
 
 def get_default_root(db: Session) -> StorageRoot | None:
@@ -87,6 +92,46 @@ def reject_absolute(path: str) -> None:
         raise ValueError("路径不允许包含 ..")
 
 
+def safe_asset_filename(name: str, *, label: str = "文件名") -> str:
+    """Validate a single stored filename (not a path).
+
+    Download adapters normally return ``Path.name``, but the database is also
+    reachable by archive import and history.  Treating ``video_file='../x'`` as
+    a trusted name would let playback, deletion and inference escape the asset
+    directory.  The contract is deliberately stricter than ``join_root``.
+    """
+    value = (name or "").strip()
+    if not value:
+        return ""
+    if "/" in value or "\\" in value or ".." in PurePath(value).parts:
+        raise ValueError(f"{label}必须是单层文件名，不能包含路径分隔符或 ..")
+    if value in (".", ".."):
+        raise ValueError(f"{label}非法")
+    return value
+
+
+def ensure_within_directory(directory: str, candidate: str) -> str:
+    """Resolve both sides and fail closed when ``candidate`` escapes ``directory``.
+
+    ``resolve(strict=False)`` catches symlinked ancestors while still allowing a
+    missing leaf; callers decide whether the leaf should exist.
+    """
+    base = Path(directory).resolve()
+    target = Path(candidate).resolve(strict=False)
+    try:
+        target.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"路径越出素材目录: {candidate}") from exc
+    return str(target)
+
+
+def resolve_asset_file_path(directory: str, filename: str, *, label: str = "文件名") -> str:
+    name = safe_asset_filename(filename, label=label)
+    if not name:
+        return ""
+    return ensure_within_directory(directory, str(Path(directory) / name))
+
+
 def join_root(root_path: str, relative_path: str, *files: str) -> str:
     """拼出最终物理路径（按 root 风格）。仅后端内部使用。"""
     rel = relative_path.replace("\\", "/").strip("/")
@@ -97,30 +142,95 @@ def join_root(root_path: str, relative_path: str, *files: str) -> str:
             if seg:
                 base = base / seg
         for f in files:
-            base = base / f
+            name = safe_asset_filename(f)
+            if name:
+                base = base / name
         return str(base)
     base = PurePath(root_path)
     for seg in rel.split("/"):
         if seg:
             base = base / seg
     for f in files:
-        base = base / f
+        name = safe_asset_filename(f)
+        if name:
+            base = base / name
     return str(base)
+
+
+def resolve_asset_root(db: Session, asset: "MediaAsset") -> StorageRoot:
+    """Return the storage root that owns an asset, without guessing a fallback path."""
+    root = None
+    if asset.storage_root_id is not None:
+        root = db.get(StorageRoot, asset.storage_root_id)
+        if root is None:
+            # 显式绑定已经失效时绝不能回退到默认根：那会把文件写到另一个盘，
+            # 更糟的是删除素材时可能删错目录。绑定失效是数据损坏，必须显式失败。
+            raise StorageUnavailable(
+                f"素材 #{asset.id} 绑定的存储根 #{asset.storage_root_id} 不存在"
+            )
+    if root is None:
+        root = get_default_root(db)
+    if root is None:
+        raise StorageUnavailable("未配置存储根目录，无法定位素材文件")
+    if not (root.path or "").strip():
+        raise StorageUnavailable(f"存储根 #{root.id} 路径为空")
+    return root
 
 
 def resolve_asset_dir(db: Session, asset: "MediaAsset") -> str:
     """拼出素材的物理目录（storage_root + relative_path）。仅后端内部使用。
 
-    asset 未绑定 storage_root 时回退到默认根；都没有则只返回 relative_path。
+    asset 未绑定 storage_root 时回退到默认根；都没有时抛 ``StorageUnavailable``，
+    绝不退回进程 CWD（那会静默把文件写到部署目录）。最终目录必须仍在存储根内，
+    这样即使历史数据或存储根内的符号链接指向外部，后续破坏性操作也会拒绝。
     """
-    root = None
-    if asset.storage_root_id is not None:
-        root = db.get(StorageRoot, asset.storage_root_id)
-    if root is None:
-        root = get_default_root(db)
-    if root is None:
-        return asset.relative_path or ""
-    return join_root(root.path, asset.relative_path or "")
+    root = resolve_asset_root(db, asset)
+    try:
+        # 存储根在写入 API 上已校验；这里再校验一次，兜住早期版本/手工写库留下的
+        # 相对路径。否则进程 CWD 会在解析时被当成根目录，静默落错位置。
+        validate_root_path(root.path)
+        relative_path = (asset.relative_path or "").strip()
+        reject_absolute(relative_path)
+    except ValueError as exc:
+        raise StorageUnavailable(f"存储路径不安全：{exc}") from exc
+    directory = join_root(root.path, relative_path)
+    try:
+        return ensure_within_directory(root.path, directory)
+    except ValueError as exc:
+        # Windows paths configured on a non-Windows host cannot be resolved by
+        # pathlib meaningfully; there is no local file to delete in that case.
+        is_windows_root = bool(PureWindowsPath(root.path).drive) or root.path.startswith("\\\\")
+        if is_windows_root and os.name != "nt":
+            return directory
+        raise StorageUnavailable(f"存储路径不安全：{exc}") from exc
+
+
+def validate_root_path(path: str, *, name: str = "存储根") -> str:
+    """Validate a storage root supplied by an administrator.
+
+    Absolute POSIX paths, Windows drive paths and UNC paths are all accepted;
+    relative paths, empty values and path traversal are rejected.  The returned
+    value is stripped without normalising case or separators (a Windows mount can
+    be configured from a Linux host).
+    """
+    value = (path or "").strip()
+    if not value:
+        raise ValueError(f"{name}路径不能为空")
+    is_posix_abs = value.startswith("/")
+    is_windows_abs = bool(PureWindowsPath(value).drive) and not value.startswith("\\")
+    is_unc = value.startswith("\\\\")
+    if not (is_posix_abs or is_windows_abs or is_unc):
+        raise ValueError(f"{name}必须是绝对路径、Windows 盘符或 UNC 路径")
+    if ".." in PurePath(value.replace("\\", "/")).parts:
+        raise ValueError(f"{name}不能包含 ..")
+    return value
+
+
+def normalize_root_key(path: str) -> str:
+    """Comparison key for duplicate roots (case-insensitive on Windows paths)."""
+    value = (path or "").strip().replace("\\", "/").rstrip("/")
+    is_windows = bool(PureWindowsPath(path or "").drive) or (path or "").startswith("\\\\")
+    return value.lower() if is_windows else value
 
 
 def probe_root(path: str) -> tuple[bool, str]:
@@ -185,7 +295,10 @@ def resolve_asset_file(db: Session, asset: "MediaAsset") -> str:
     directory = resolve_asset_dir(db, asset)
     if not directory:
         return ""
-    return os.path.join(directory, asset.video_file)
+    try:
+        return resolve_asset_file_path(directory, asset.video_file, label="视频文件名")
+    except ValueError:
+        return ""
 
 
 def root_file_sizes(path: str, *, max_files: int = 200_000) -> dict[str, int]:
@@ -259,6 +372,49 @@ def sizes_for_assets(db: Session, assets) -> dict[int, int]:
             prefix = f"{rel}/"
             size = sum(v for k, v in files.items() if k.startswith(prefix))
         result[a.id] = size
+    return result
+
+
+def sizes_for_asset_rows(db: Session, rows) -> dict[int, int]:
+    """Same calculation as ``sizes_for_assets`` for lightweight row tuples.
+
+    Dashboard aggregation needs only ``(asset_id, root_id, relative_path,
+    video_file)`` and must not materialise every MediaAsset/ContentItem ORM
+    object.  Keep the file-index lookup shared so both paths have identical
+    fallback semantics.
+    """
+    from app.models import MediaAsset  # noqa: F401  (kept for type symmetry)
+
+    rows = list(rows)
+    if not rows:
+        return {}
+    default_root = get_default_root(db)
+    root_ids = {root_id for _aid, root_id, _rel, _video in rows if root_id is not None}
+    roots: dict[int, str] = {}
+    for rid in root_ids:
+        r = db.get(StorageRoot, rid)
+        if r is not None:
+            roots[rid] = r.path
+    cache: dict[str, dict[str, int]] = {}
+    result: dict[int, int] = {}
+    for asset_id, root_id, relative_path, video_file in rows:
+        root_path = roots.get(root_id) if root_id is not None else None
+        if root_path is None:
+            root_path = default_root.path if default_root is not None else None
+        if root_path is None:
+            result[asset_id] = 0
+            continue
+        if root_path not in cache:
+            cache[root_path] = cached_root_file_sizes(root_path)
+        files = cache[root_path]
+        rel = (relative_path or "").strip("/")
+        size = 0
+        if video_file:
+            size = files.get(f"{rel}/{video_file}" if rel else video_file, 0)
+        if not size and rel:
+            prefix = f"{rel}/"
+            size = sum(value for key, value in files.items() if key.startswith(prefix))
+        result[asset_id] = size
     return result
 
 

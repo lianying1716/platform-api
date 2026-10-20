@@ -34,13 +34,26 @@ from app.services import foundation
 _SYNC_FETCH_LIMIT = 50
 
 
-async def run_subscription_sync(db: Session, subscription: Subscription) -> SyncRun:
+async def run_subscription_sync(
+    db: Session,
+    subscription: Subscription,
+    *,
+    force: bool = False,
+    job_id: int | None = None,
+) -> SyncRun:
     """执行一次订阅同步，返回 SyncRun。"""
-    run = SyncRun(subscription_id=subscription.id, status="running")
+    now = datetime.utcnow()
+    run = SyncRun(
+        subscription_id=subscription.id,
+        job_id=job_id,
+        status="running",
+        started_at=now,
+        heartbeat_at=now,
+    )
     db.add(run)
     # 无论成败都记一次尝试时间：调度器据此退避，避免失败订阅被反复入队打平台
     # （风控期尤其重要）。
-    subscription.last_attempt_at = datetime.utcnow()
+    subscription.last_attempt_at = now
     db.commit()
     db.refresh(run)
 
@@ -61,6 +74,14 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
         return _finish(db, run, "error", error=SILENT_MESSAGE)
 
     adapter = get_adapter(subscription.platform)
+    try:
+        from app.domain.capabilities import require_source_type
+        from app.domain.download import DownloadPolicy
+
+        require_source_type(subscription.platform, subscription.source_type)
+        DownloadPolicy(subscription.download_quality).validate_for(subscription.platform)
+    except ValueError as exc:
+        return _finish(db, run, "error", error=str(exc))
     fetch = getattr(adapter, "fetch_source", None)
     if fetch is None:
         return _finish(db, run, "error", error=f"{adapter.label} 暂不支持订阅同步")
@@ -73,7 +94,7 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     fetch_limit = min(batch, _SYNC_FETCH_LIMIT)
     try:
         credential = decrypt_credential(account.credential.ciphertext)
-        items = await _fetch_source_cached(db, subscription, fetch, credential, fetch_limit)
+        items = await _fetch_source_cached(db, subscription, fetch, credential, fetch_limit, force=force)
     except Exception as exc:  # noqa: BLE001 网络/风控异常不应让平台崩
         return _finish(db, run, "error", error=f"拉取失败: {exc}")
 
@@ -91,13 +112,13 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
         if is_new:
             added += 1
             if subscription.auto_download and content.content_type == "video":
-                _ensure_download(db, content)
+                _ensure_download(db, content, subscription.download_quality)
         elif not subscription.only_new:
             # 全量同步会覆盖刷新已有内容：必须能观测到"确实刷新了几条"。
             updated += 1
     subscription.last_sync_at = datetime.utcnow()
+    events.publish("sync_done", {"subscription_id": subscription.id, "added": added}, db=db)
     db.commit()
-    events.publish("sync_done", {"subscription_id": subscription.id, "added": added})
     # 评论富集：动态门控后入队（不阻塞，worker 抓）。指标快照已在上方 commit，门控才读得到。
     from app.core.comment_settings import get_comment_settings
     from app.services.comment_gate import enqueue_comment_jobs
@@ -108,7 +129,7 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
             touched,
             platform=subscription.platform,
             settings=get_comment_settings(db),
-            bypass_gate=bool(subscription.with_comments),
+            mode=subscription.comment_mode,
         )
     except Exception:  # noqa: BLE001 评论富集是增强项，失败不得翻转本次同步的成功状态
         db.rollback()
@@ -126,7 +147,9 @@ async def run_subscription_sync(db: Session, subscription: Subscription) -> Sync
     return _finish(db, run, "success", fetched=fetched_count, added=added, updated=updated)
 
 
-async def _fetch_source_cached(db: Session, sub: Subscription, fetch, credential, limit: int) -> list[dict]:
+async def _fetch_source_cached(
+    db: Session, sub: Subscription, fetch, credential, limit: int, *, force: bool = False
+) -> list[dict]:
     """带缓存 + 风控冷却的抓取（仅订阅同步路径用）。
 
     - 15 分钟 TTL：频繁的手动同步不会重复打平台。
@@ -142,7 +165,7 @@ async def _fetch_source_cached(db: Session, sub: Subscription, fetch, credential
 
     cache_key = f"creator_videos:{sub.platform}:{sub.account_id}:{sub.remote_id}"
     cooldown_key = f"cooldown:{sub.platform}:{sub.account_id}:videos"
-    cached = fetch_cache.get_cache(db, cache_key)
+    cached = None if force else fetch_cache.get_cache(db, cache_key)
     if cached is not None:
         return cached.get("items") or []
     if fetch_cache.is_cooling(db, cooldown_key):
@@ -344,13 +367,18 @@ def _record_metric(db: Session, content: ContentItem, item: dict) -> None:
     )
 
 
-def _ensure_download(db: Session, content: ContentItem) -> None:
+def _ensure_download(db: Session, content: ContentItem, quality: str = "best") -> None:
     asset = db.scalar(select(MediaAsset).where(MediaAsset.content_id == content.id))
     if asset is None:
         asset = MediaAsset(content_id=content.id, download_status="pending")
         db.add(asset)
         db.flush()
-    enqueue(db, "download", {"asset_id": asset.id, "url": content.url}, commit=False)
+    enqueue(
+        db,
+        "download",
+        {"asset_id": asset.id, "url": content.url, "quality": quality},
+        commit=False,
+    )
 
 
 def _finish(
@@ -362,12 +390,14 @@ def _finish(
     error: str = "",
     updated: int = 0,
 ) -> SyncRun:
+    now = datetime.utcnow()
     run.status = status
     run.fetched = fetched
     run.added = added
     run.updated = updated
     run.error = error[:500]
-    run.finished_at = datetime.utcnow()
+    run.finished_at = now
+    run.heartbeat_at = None
     db.commit()
     db.refresh(run)
     return run

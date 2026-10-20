@@ -10,7 +10,7 @@ import hashlib
 import logging
 import re
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -22,6 +22,99 @@ _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+# 文章展示只允许静态排版标签；脚本、表单、iframe、事件属性和非 http(s) 链接
+# 一律在入库前移除。前端仍会做第二道清洗，这里负责保证 API/Skills/导出拿到的
+# 数据本身是安全的。
+_ALLOWED_TAGS = {
+    "p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li",
+    "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "img", "a",
+    "figure", "figcaption", "pre", "code", "table", "thead", "tbody",
+    "tr", "th", "td", "hr", "div", "span",
+}
+_ALLOWED_ATTRS = {"href", "src", "alt", "title", "width", "height", "class"}
+
+
+def _normalize_resource_url(value: str) -> str:
+    """Normalize a fetched resource URL without confusing ``//host`` with a path.
+
+    WeChat routinely serves images as protocol-relative URLs.  Treating those
+    as same-origin paths leaves the browser to request this app instead of the
+    image host, and the CSP then blocks or the proxy never sees the source.
+    """
+    value = (value or "").strip()
+    if value.startswith("//"):
+        return f"https:{value}"
+    return value
+
+
+def _is_safe_resource_url(value: str) -> bool:
+    """Match the browser's URL interpretation, not just a string prefix.
+
+    Browsers normalize ``/\\evil.example`` and ``/\\/evil.example`` to a
+    protocol-relative host.  A prefix check for ``/`` would therefore turn an
+    apparent same-origin link into an external navigation.
+    """
+    # WHATWG URL parsers treat backslashes in a path position as slashes.
+    normalized = value.replace("\\", "/")
+    parsed = urlparse(normalized)
+    if parsed.scheme:
+        return parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname)
+    # Resolve exactly as the browser would.  Same-origin paths keep our host;
+    # anything that gains a different host is a disguised external URL.
+    resolved = urlparse(urljoin("https://article.invalid/", normalized))
+    return resolved.scheme == "https" and resolved.hostname == "article.invalid"
+
+
+def sanitize_article_html(content) -> str:
+    """清洗文章正文，返回只含白名单标签/属性的静态 HTML。"""
+    for tag in content.find_all(True):
+        if tag.name not in _ALLOWED_TAGS:
+            tag.decompose()
+            continue
+        for attr in list(tag.attrs):
+            if attr not in _ALLOWED_ATTRS:
+                del tag.attrs[attr]
+        for attr in ("href", "src"):
+            value = tag.get(attr)
+            if value is not None:
+                value = _normalize_resource_url(str(value))
+                if not _is_safe_resource_url(value):
+                    del tag.attrs[attr]
+                else:
+                    tag[attr] = value
+    return str(content)
+
+
+def rewrite_article_images(content, *, asset_id: int | None = None) -> list[str]:
+    """Return remote image URLs and optionally rewrite them to signed local URLs.
+
+    Browser-side ``<img>`` requests bypass the server's SSRF guard.  Rewriting
+    every remote image to the API proxy is therefore the only complete boundary.
+    Only paths that the browser resolves back to this origin are left alone.
+    Disguised external forms such as ``/\\host`` have already been removed by
+    the sanitizer and must never be treated as local images.
+    """
+    from app.core.security import sign_article_image
+
+    sources: list[str] = []
+    for tag in content.find_all("img"):
+        raw = _normalize_resource_url(str(tag.get("src") or ""))
+        if not raw or not _is_safe_resource_url(raw):
+            tag.decompose()
+            continue
+        if raw.startswith("/") and _is_safe_resource_url(raw):
+            sources.append(raw)
+            continue
+        index = len(sources)
+        sources.append(raw)
+        if asset_id is not None:
+            signature = sign_article_image(asset_id, index)
+            tag["src"] = f"/api/articles/{asset_id}/images/{index}?sig={signature}"
+            tag["data-source-index"] = str(index)
+        else:
+            del tag["src"]
+    return sources
 
 
 class ArticleImportError(ValueError):
@@ -117,7 +210,7 @@ def parse_article_html(html: str, url: str) -> dict:
         "cover_url": _meta(soup, "og:image"),
         "published_at": _parse_time(html, soup),
         "text": text,
-        "html": str(content),
+        "html": sanitize_article_html(content),
     }
 
 
@@ -131,8 +224,12 @@ async def fetch_article(url: str, *, cookie: str = "") -> dict:
     }
     if cookie:
         headers["Cookie"] = cookie
+    from app.core.egress import client_kwargs
+
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        async with httpx.AsyncClient(
+            timeout=20, follow_redirects=False, **client_kwargs("wechat_mp")
+        ) as client:
             resp = await client.get(url, headers=headers)
         if 300 <= resp.status_code < 400:
             raise ArticleImportError("目标链接发生重定向，已拒绝")

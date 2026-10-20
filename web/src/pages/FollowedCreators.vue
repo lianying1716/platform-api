@@ -81,7 +81,7 @@
             <Avatar
               v-if="isCreator(row)"
               class="ava"
-              :src="row.creator_avatar"
+              :src="row.avatar_url"
               :name="row.author_name || row.title || row.remote_id"
               :size="54"
               @click="openHome(row)"
@@ -91,7 +91,7 @@
             </span>
             <div style="min-width: 0">
               <div class="name">
-                <a v-if="isCreator(row) && row.home_url" :href="row.home_url" target="_blank" rel="noopener">
+                <a v-if="isCreator(row) && safeExternalUrl(row.home_url)" :href="safeExternalUrl(row.home_url)" target="_blank" rel="noopener noreferrer">
                   {{ row.author_name || row.title || row.remote_id }}
                 </a>
                 <span v-else>{{ row.author_name || row.title || row.remote_id }}</span>
@@ -103,13 +103,18 @@
                   粉丝 {{ (row.follower_count || 0) > 0 ? compact(row.follower_count || 0) : '—' }}
                 </template>
                 <template v-else>
-                  {{ row.remote_id }} · 每 {{ row.interval_minutes }} 分
+                  {{ row.remote_id }} · {{ row.interval_minutes == null ? '继承全局间隔' : `每 ${row.interval_minutes} 分` }}
                 </template>
               </div>
             </div>
             <div class="grow" />
             <PlatformMark :platform="row.platform" :show-label="false" size="sm" muted />
-            <button class="ui-icon-btn" title="立即同步" @click="syncRow(row)">↻</button>
+            <button
+              class="ui-icon-btn"
+              title="立即同步"
+              :disabled="syncing === row.id"
+              @click="syncRow(row)"
+            >{{ syncing === row.id ? '…' : '↻' }}</button>
           </div>
 
           <!-- 博主：两条独立链路。1) 关注关系默认跟踪；2) 博主名下视频要手动开关。 -->
@@ -234,7 +239,13 @@
           <el-switch v-model="form.enabled" />
           <span v-if="form.source_type === 'creator'" class="detail">关闭＝暂停跟踪这段关注关系</span>
         </el-form-item>
-        <el-form-item label="周期(分钟)"><el-input-number v-model="form.interval_minutes" :min="10" :step="10" /></el-form-item>
+        <el-form-item label="周期">
+          <el-select v-model="form.interval_mode" style="width: 180px">
+            <el-option label="继承全局随机区间" value="inherit" />
+            <el-option label="固定间隔" value="fixed" />
+          </el-select>
+          <el-input-number v-if="form.interval_mode === 'fixed'" v-model="form.interval_minutes" :min="10" :step="10" style="margin-left: 8px" />
+        </el-form-item>
         <el-form-item label="最低播放量">
           <el-input-number v-model="form.min_play" :min="0" :step="1000" />
           <span class="detail">0 = 不限</span>
@@ -252,23 +263,34 @@
         <div class="form-sec">下载</div>
         <el-form-item label="自动下载"><el-switch v-model="form.auto_download" /></el-form-item>
         <el-form-item label="下载画质">
-          <el-select v-model="form.download_quality" style="width: 200px">
-            <el-option label="最佳画质" value="best" />
-            <el-option label="1080P" value="1080" />
-            <el-option label="720P" value="720" />
-            <el-option label="仅音频" value="audio" />
+          <el-select v-model="form.download_quality" style="width: 200px" :disabled="!currentQualityOptions.length">
+            <el-option v-for="q in currentQualityOptions" :key="q.value" :label="q.label" :value="q.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="同步评论"><el-switch v-model="form.with_comments" /></el-form-item>
+        <el-form-item v-if="currentCapability?.comments" label="同步评论">
+          <el-radio-group v-model="form.comment_mode">
+            <el-radio-button value="off">不抓</el-radio-button>
+            <el-radio-button value="gate">热度门控</el-radio-button>
+            <el-radio-button value="force">强制抓取</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
 
         <div class="form-sec">加工</div>
         <el-form-item label="自动转录">
-          <el-switch v-model="form.auto_transcribe" />
-          <span class="detail">新素材下载完成后自动转录</span>
+          <el-select v-model="form.auto_transcribe" style="width: 180px">
+            <el-option label="继承全局" :value="null" />
+            <el-option label="开启" :value="true" />
+            <el-option label="关闭" :value="false" />
+          </el-select>
+          <span class="detail">未单独设置时跟随「设置 → 视频理解」的全局默认</span>
         </el-form-item>
         <el-form-item label="自动生成速览">
-          <el-switch v-model="form.auto_analyze" />
-          <span class="detail">转录后自动生成摘要 + 标签（速览）；依赖转录，未转录会先补转录</span>
+          <el-select v-model="form.auto_analyze" style="width: 180px">
+            <el-option label="继承全局" :value="null" />
+            <el-option label="开启" :value="true" />
+            <el-option label="关闭" :value="false" />
+          </el-select>
+          <span class="detail">转录后自动生成摘要 + 标签；未单独设置时跟随全局默认</span>
         </el-form-item>
 
         <div class="form-sec">存储</div>
@@ -342,11 +364,13 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, reactive, ref } from 'vue'
 import Avatar from '../components/Avatar.vue'
 import PlatformMark from '../components/PlatformMark.vue'
-import { api, type Account } from '../api'
+import { api, type Account, type PlatformInfo } from '../api'
+import { safeExternalUrl } from '../utils/safeUrl'
+import { parseUtc } from '../utils/time'
 
 /** 统一后的"我跟踪的来源"：博主 = creator 来源，收藏夹/合集 = 其他来源。 */
 interface TrackRow {
@@ -360,7 +384,7 @@ interface TrackRow {
   // creator 专用二级开关：是否同步该博主名下视频
   sync_videos: boolean
   auto_download: boolean
-  interval_minutes: number
+  interval_minutes: number | null
   subdir_template: string
   storage_root_id: number | null
   min_play: number
@@ -368,11 +392,13 @@ interface TrackRow {
   max_items: number
   only_new: boolean
   download_quality: string
-  with_comments: boolean
-  auto_transcribe: boolean
-  auto_analyze: boolean
+  comment_mode: string
+  auto_transcribe: boolean | null
+  auto_analyze: boolean | null
   last_sync_at: string | null
   creator_avatar: string
+  avatar: string
+  avatar_url: string
   // creator 专属（由后端从 creator_profile 合成）
   author_name?: string
   home_url?: string
@@ -383,7 +409,7 @@ interface TrackRow {
 
 interface RemoteSource { remote_id: string; title: string }
 interface SyncRunRow {
-  id: number; started_at: string | null; status: string
+  id: number; job_id: number | null; started_at: string | null; status: string
   fetched: number; added: number; updated: number; error: string
 }
 
@@ -391,36 +417,20 @@ const PLATFORM_LABELS: Record<string, string> = {
   douyin: '抖音', bilibili: 'B站', xhs: '小红书', zhihu: '知乎',
 }
 const SUPPORTED = ['douyin', 'bilibili', 'xhs', 'zhihu']
-const MANUAL_SOURCE_PLATFORMS = new Set(['xhs', 'zhihu'])
 const SOURCE_TYPES: Record<string, string> = {
   favorite: '收藏', collect_folder: '收藏夹', collection: '合集',
   series: '短剧', creator: '博主',
 }
 // 每种平台的来源类型选项（抽屉表单里只显示该平台真正支持的）
-const DOUYIN_SOURCE_TYPES = [
-  { value: 'favorite', label: '我的收藏' },
-  { value: 'collect_folder', label: '自定义收藏夹' },
-  { value: 'collection', label: '收藏的合集' },
-  { value: 'series', label: '收藏的短剧' },
-  { value: 'creator', label: '博主（我关注的）' },
-]
-const BILIBILI_SOURCE_TYPES = [
-  { value: 'favorite', label: '收藏夹' },
-  { value: 'collection', label: '合集' },
-  { value: 'creator', label: '博主（我关注的）' },
-]
-const MANUAL_CREATOR_SOURCE_TYPES = [
-  { value: 'creator', label: '博主（手动添加）' },
-]
 const DEFAULT_SUBDIR = '{platform}/{account}/{creator}/{date}'
 
+const platformInfo = ref<PlatformInfo[]>([])
+const currentCapability = computed(() => platformInfo.value.find((p) => p.platform === currentFormPlatform.value))
 const sourceTypeOptions = computed(() => {
-  const acc = accounts.value.find((a) => a.id === form.account_id)
-  const platform = acc?.platform || activePlatform.value
-  if (platform === 'douyin') return DOUYIN_SOURCE_TYPES
-  if (platform === 'bilibili') return BILIBILI_SOURCE_TYPES
-  return MANUAL_CREATOR_SOURCE_TYPES
+  const cap = platformInfo.value.find((p) => p.platform === currentFormPlatform.value)
+  return cap?.source_types || []
 })
+const currentQualityOptions = computed(() => currentCapability.value?.download_qualities || [])
 
 const accounts = ref<Account[]>([])
 const rows = ref<TrackRow[]>([])
@@ -454,6 +464,7 @@ const form = reactive({
   enabled: true,
   sync_videos: false,
   auto_download: false,
+  interval_mode: 'inherit' as 'inherit' | 'fixed',
   interval_minutes: 360,
   subdir_template: DEFAULT_SUBDIR,
   min_play: 0,
@@ -461,9 +472,9 @@ const form = reactive({
   max_items: 50,
   only_new: true,
   download_quality: 'best',
-  with_comments: false,
-  auto_transcribe: false,
-  auto_analyze: false,
+  comment_mode: 'gate',
+  auto_transcribe: null as boolean | null,
+  auto_analyze: null as boolean | null,
   // 存储：账户级根目录（默认继承账号）或指定根 + 子目录模板
   storage_mode: 'account' as 'account' | 'custom',
   storage_root_id: null as number | null,
@@ -486,9 +497,9 @@ const currentFormPlatform = computed(() =>
   accounts.value.find((a) => a.id === form.account_id)?.platform || activePlatform.value,
 )
 const currentFormPlatformLabel = computed(() => PLATFORM_LABELS[currentFormPlatform.value] || currentFormPlatform.value)
-const manualSourceOnly = computed(() => MANUAL_SOURCE_PLATFORMS.has(currentFormPlatform.value))
+const manualSourceOnly = computed(() => !(currentCapability.value?.follow_import ?? false))
 const canImportFollowings = computed(() =>
-  Boolean(currentAccount.value && !MANUAL_SOURCE_PLATFORMS.has(currentAccount.value.platform)),
+  Boolean(currentAccount.value && platformInfo.value.find((p) => p.platform === currentAccount.value?.platform)?.follow_import),
 )
 const manualSourcePlaceholder = computed(() => {
   if (currentFormPlatform.value === 'xhs') return '小红书博主 user_id（主页链接 /user/profile/ 后的 ID）'
@@ -600,8 +611,14 @@ async function load() {
 }
 
 async function loadAccounts() {
-  accounts.value = (await api.get('/api/accounts')).data
-  storageRoots.value = (await api.get('/api/system/storage-roots')).data
+  const [accountRows, roots, platforms] = await Promise.all([
+    api.get('/api/accounts'),
+    api.get('/api/system/storage-roots'),
+    api.get('/api/platforms'),
+  ])
+  accounts.value = accountRows.data
+  storageRoots.value = roots.data
+  platformInfo.value = platforms.data
   syncAccountSelection()
 }
 
@@ -649,8 +666,9 @@ async function toggleEnabled(row: TrackRow) {
       // 只改「关注关系」这一个开关，不能顺手改动 sync_videos。
       await api.put(`/api/followed-creators/${row.id}`, { sync_enabled: next })
     } else {
-      await api.put(`/api/subscriptions/${row.id}`, subPayload(row, { enabled: next, sync_videos: row.sync_videos }))
+      await api.patch(`/api/subscriptions/${row.id}`, { enabled: next })
     }
+    ElMessage.success(next ? '同步已开启' : '同步已关闭')
   } catch (e: any) {
     row.enabled = !next
     ElMessage.error(e?.response?.data?.detail || '操作失败')
@@ -684,8 +702,9 @@ async function toggleFull(row: TrackRow) {
     if (row.source_type === 'creator') {
       await api.put(`/api/followed-creators/${row.id}`, { full_sync: nextFull })
     } else {
-      await api.put(`/api/subscriptions/${row.id}`, subPayload(row, { only_new: !nextFull }))
+      await api.patch(`/api/subscriptions/${row.id}`, { only_new: !nextFull })
     }
+    ElMessage.success(nextFull ? '已切换为全量同步' : '已切换为仅同步新内容')
   } catch (e: any) {
     row.only_new = nextFull
     ElMessage.error(e?.response?.data?.detail || '操作失败')
@@ -699,11 +718,13 @@ async function syncRow(row: TrackRow) {
       ? `/api/followed-creators/${row.id}/sync`
       : `/api/subscriptions/${row.id}/sync`
     const { data } = await api.post(url)
-    if (data.status === 'success') {
-      const upd = data.updated ? `，全量刷新 ${data.updated} 条` : ''
-      ElMessage.success(`同步完成：抓取 ${data.fetched} 条，新增 ${data.added} 条${upd}`)
-    } else {
-      ElMessage({ message: data.error || `同步未完成（${data.status}）`, type: 'warning' })
+    ElMessage.success(`已提交同步任务 #${data.job_id}`)
+    const run = await waitForSyncJob(row, data.job_id)
+    if (run?.status === 'success') {
+      const upd = run.updated ? `，全量刷新 ${run.updated} 条` : ''
+      ElMessage.success(`同步完成：抓取 ${run.fetched} 条，新增 ${run.added} 条${upd}`)
+    } else if (run?.status === 'error') {
+      ElMessage.error(run.error || '同步失败')
     }
     await load()
   } finally {
@@ -711,8 +732,29 @@ async function syncRow(row: TrackRow) {
   }
 }
 
+async function waitForSyncJob(row: TrackRow, jobId: number): Promise<SyncRunRow | null> {
+  const deadline = Date.now() + 10 * 60 * 1000
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+    const { data: job } = await api.get(`/api/pipeline/jobs/${jobId}`)
+    if (job.status === 'error') {
+      return { id: 0, job_id: jobId, started_at: null, status: 'error', fetched: 0, added: 0, updated: 0, error: job.error }
+    }
+    if (job.run_id) {
+      const { data: run } = await api.get(`/api/subscriptions/${row.id}/runs/${job.run_id}`)
+      if (run.status !== 'running') return run
+    }
+    if (job.status === 'done') {
+      return { id: 0, job_id: jobId, started_at: null, status: 'success', fetched: 0, added: 0, updated: 0, error: '' }
+    }
+  }
+  ElMessage.warning('同步仍在后台执行，可在同步历史中查看结果')
+  return null
+}
+
 function openHome(row: TrackRow) {
-  if (row.home_url) window.open(row.home_url, '_blank', 'noopener')
+  const target = safeExternalUrl(row.home_url)
+  if (target) window.open(target, '_blank', 'noopener')
 }
 
 async function openRuns(row: TrackRow) {
@@ -734,6 +776,10 @@ function openCreate() {
     form.source_type = 'creator'
     subPickMode.value = 'manual'
   }
+  if (currentCapability.value && currentQualityOptions.value.length
+      && !currentQualityOptions.value.some((q) => q.value === form.download_quality)) {
+    form.download_quality = currentQualityOptions.value[0].value
+  }
   dialog.value = true
 }
 
@@ -743,13 +789,12 @@ function openEdit(row: TrackRow) {
     account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
     title: row.title, enabled: row.enabled, sync_videos: row.sync_videos,
     auto_download: row.auto_download,
-    interval_minutes: row.interval_minutes, subdir_template: row.subdir_template,
-    // PUT 是全字段覆盖：这里必须回带 storage_root_id，否则开关/全量等局部更新会
-    // 把订阅级自定义存储根静默清空（回落到账号目录）。
+    interval_mode: row.interval_minutes == null ? 'inherit' : 'fixed',
+    interval_minutes: row.interval_minutes ?? 360, subdir_template: row.subdir_template,
     storage_root_id: row.storage_root_id ?? null,
     min_play: row.min_play, publish_after_days: row.publish_after_days,
     max_items: row.max_items, only_new: row.only_new,
-    download_quality: row.download_quality, with_comments: row.with_comments,
+    download_quality: row.download_quality, comment_mode: row.comment_mode,
     auto_transcribe: row.auto_transcribe, auto_analyze: row.auto_analyze,
     // 回显该来源已指定的存储根；未指定则继承账号目录（账号绑定在账号中心管理）。
     storage_mode: row.storage_root_id ? 'custom' : 'account',
@@ -775,27 +820,13 @@ async function doRemove() {
   }
 }
 
-function subPayload(row: TrackRow, extra: Record<string, unknown> = {}) {
-  return {
-    account_id: row.account_id, source_type: row.source_type, remote_id: row.remote_id,
-    title: row.title, enabled: row.enabled, sync_videos: row.sync_videos,
-    auto_download: row.auto_download,
-    interval_minutes: row.interval_minutes, subdir_template: row.subdir_template,
-    min_play: row.min_play, publish_after_days: row.publish_after_days,
-    max_items: row.max_items, only_new: row.only_new,
-    download_quality: row.download_quality, with_comments: row.with_comments,
-    auto_transcribe: row.auto_transcribe, auto_analyze: row.auto_analyze,
-    ...extra,
-  }
-}
-
 function resetForm() {
   Object.assign(form, {
     account_id: null, source_type: 'favorite', remote_id: '', title: '',
-    enabled: true, sync_videos: false, auto_download: false, interval_minutes: 360,
+    enabled: true, sync_videos: false, auto_download: false, interval_mode: 'inherit', interval_minutes: 360,
     subdir_template: DEFAULT_SUBDIR, min_play: 0, publish_after_days: 0,
-    max_items: 50, only_new: true, download_quality: 'best', with_comments: false,
-    auto_transcribe: false, auto_analyze: false,
+    max_items: 50, only_new: true, download_quality: 'best', comment_mode: 'gate',
+    auto_transcribe: null, auto_analyze: null,
     storage_mode: 'account', storage_root_id: null,
   })
   sources.value = []
@@ -810,8 +841,12 @@ function onFormAccountChange() {
   // 切账号后把不支持的来源类型回退到该平台的第一项
   const allowed = sourceTypeOptions.value.map((o) => o.value)
   if (!allowed.includes(form.source_type)) {
-    form.source_type = allowed[0]
+    form.source_type = allowed[0] || ''
     form.remote_id = ''
+  }
+  const qualities = currentQualityOptions.value.map((q) => q.value)
+  if (qualities.length && !qualities.includes(form.download_quality)) {
+    form.download_quality = qualities[0]
   }
   subPickMode.value = manualSourceOnly.value ? 'manual' : 'list'
   if (subPickMode.value === 'list') loadSources()
@@ -819,6 +854,7 @@ function onFormAccountChange() {
 function onSourceTypeChange() {
   form.remote_id = ''
   sources.value = []
+  form.comment_mode = 'gate'
   if (manualSourceOnly.value) subPickMode.value = 'manual'
   if (subPickMode.value === 'list') loadSources()
 }
@@ -856,15 +892,16 @@ async function submit() {
     const common = {
       title: form.title, enabled: form.enabled, sync_videos: form.sync_videos,
       auto_download: form.auto_download,
-      interval_minutes: form.interval_minutes, subdir_template: form.subdir_template,
+      interval_minutes: form.interval_mode === 'inherit' ? null : form.interval_minutes,
+      subdir_template: form.subdir_template,
       storage_root_id: rootOverride,
       min_play: form.min_play, publish_after_days: form.publish_after_days,
       max_items: form.max_items, only_new: form.only_new,
-      download_quality: form.download_quality, with_comments: form.with_comments,
+      download_quality: form.download_quality, comment_mode: form.comment_mode,
       auto_transcribe: form.auto_transcribe, auto_analyze: form.auto_analyze,
     }
     if (editing.value) {
-      await api.put(`/api/subscriptions/${editing.value.id}`, subPayload(editing.value, common))
+      await api.patch(`/api/subscriptions/${editing.value.id}`, common)
     } else {
       await api.post('/api/subscriptions', {
         account_id: form.account_id, source_type: form.source_type, remote_id: form.remote_id,
@@ -889,8 +926,8 @@ function compact(v: number) {
 }
 function fmt(v: string | null) {
   if (!v) return '—'
-  const d = new Date(v)
-  if (Number.isNaN(d.getTime())) return '—'
+  const d = parseUtc(v)
+  if (!d) return '—'
   return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 

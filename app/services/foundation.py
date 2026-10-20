@@ -168,6 +168,32 @@ def log_task(
         logger.exception("task_log 写入失败，已忽略")
 
 
+def purge_old_task_logs(db: Session, *, older_than_days: int = 30) -> tuple[int, int, int]:
+    """Bounded retention: task timelines are diagnostics, not business records."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import delete
+
+    from app.models import AdminSession, ApiRateWindow, AuthRateEvent, EventOutbox
+
+    cutoff = datetime.utcnow() - timedelta(days=max(1, older_than_days))
+    result = db.execute(delete(TaskLog).where(TaskLog.created_at < cutoff))
+    delivered = db.execute(delete(EventOutbox).where(EventOutbox.created_at < cutoff))
+    windows = db.execute(delete(ApiRateWindow).where(ApiRateWindow.window_start < cutoff))
+    login_windows = db.execute(delete(AuthRateEvent).where(AuthRateEvent.created_at < cutoff))
+    sessions = db.execute(
+        delete(AdminSession).where(
+            (AdminSession.expires_at < cutoff) | (AdminSession.revoked_at < cutoff)
+        )
+    )
+    db.commit()
+    return (
+        int(result.rowcount or 0),
+        int(delivered.rowcount or 0),
+        int(windows.rowcount or 0) + int(login_windows.rowcount or 0) + int(sessions.rowcount or 0),
+    )
+
+
 def rollback_if_broken(db: Session) -> None:
     """session 进入"待回滚"状态时清干净，避免后续 commit 抛 PendingRollbackError。"""
     try:

@@ -54,6 +54,21 @@ def test_probe_text_image_video_success(monkeypatch, session, tmp_path):
     assert out.probe_status == "passed"
 
 
+@pytest.mark.parametrize("answer", ["红色", "红", "RED", "red"])
+def test_probe_image_accepts_chinese_color_answers(monkeypatch, session, answer):
+    provider, model = _seed(session)
+    monkeypatch.setattr(model_probe, "_decrypt_key", lambda _p: "k")
+    monkeypatch.setattr(model_probe, "_red_image", lambda _color=None: b"PNG")
+    monkeypatch.setattr(model_probe, "_choose_probe_color", lambda: "red")
+
+    async def fake_chat(*args, **kwargs):
+        return {"text": json.dumps({"has_image": True, "color": answer}, ensure_ascii=False), "usage": {}, "model": "m"}
+
+    monkeypatch.setattr(model_probe, "_chat", fake_chat)
+    out = asyncio.run(model_probe.probe_model(session, model.id, text=False, image=True, video=False))
+    assert out.capabilities["image"]["value"] is True
+
+
 def test_probe_video_skipped_without_ffmpeg(monkeypatch, session):
     _provider, model = _seed(session)
     monkeypatch.setattr(model_probe, "_decrypt_key", lambda _p: "k")
@@ -67,6 +82,39 @@ def test_probe_video_skipped_without_ffmpeg(monkeypatch, session):
     assert out.capabilities["video"]["value"] is False
     assert "ffmpeg" in out.capabilities["video"]["detail"]
     assert out.probe_status in ("partial", "failed")
+
+
+def test_probe_without_key_marks_failed_not_testing(monkeypatch, session):
+    _provider, model = _seed(session)
+    model.probe_status = "testing"
+    session.commit()
+    monkeypatch.setattr(model_probe, "_decrypt_key", lambda _p: "")
+
+    with pytest.raises(ValueError, match="访问密钥"):
+        asyncio.run(model_probe.probe_model(session, model.id))
+
+    session.refresh(model)
+    assert model.probe_status == "failed"
+    assert "访问密钥" in model.probe_error
+
+
+def test_failed_probe_keeps_legacy_pending_validation(monkeypatch, session):
+    from app.models import ModelAssignment
+
+    _provider, model = _seed(session)
+    session.add(ModelAssignment(work_type="text_analysis", primary_model_id=model.id, legacy_pending_validation=True))
+    session.commit()
+    monkeypatch.setattr(model_probe, "_decrypt_key", lambda _p: "k")
+    monkeypatch.setattr(model_probe.shutil, "which", lambda _name: None)
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("upstream down")
+
+    monkeypatch.setattr(model_probe, "_probe_json_mode_with", fail)
+    asyncio.run(model_probe.probe_model(session, model.id, image=False, video=False))
+    session.expire_all()
+    assignment = session.query(ModelAssignment).one()
+    assert assignment.legacy_pending_validation is True
 
 
 def test_manual_video_capability(session):

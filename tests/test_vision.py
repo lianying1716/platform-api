@@ -1,14 +1,15 @@
-"""视频理解 provider 适配器测试（payload 拼装 / JSON 容错 / 请求注入，不联网）。
+"""视频理解模块测试（payload 纯函数 / JSON 容错 / 统一网关注入，不联网）。
 
 覆盖：
 - `build_payload` 两种 provider（qwen OpenAI 兼容 `video_url` / gemini 原生 `inlineData`）的
   端点、body 结构与自定义 mime；未知 provider 抛错。
 - `parse_structured` 对 Markdown 代码围栏、纯 JSON、夹带文本的容错与失败抛错。
-- `understand` 读文件、体积上限、base_url 拼接、鉴权头注入、两种 provider 的响应文本提取。
+- `understand` 读文件、体积上限，并且只能经注入的 ``ModelAccessService`` 回调调用。
 """
 
 import asyncio
 import base64
+import types
 
 import pytest
 
@@ -130,216 +131,106 @@ def test_parse_structured_invalid_raises():
 
 # --------------------------------------------------------------------------- understand
 
+class _Gateway:
+    def __init__(self, text, *, capture=None, fail=None):
+        self.text = text
+        self.capture = capture
+        self.fail = fail
 
-def test_understand_qwen(monkeypatch, tmp_path):
-    vid = tmp_path / "clip.mp4"
+    async def __call__(self, *, request, parse_result, video_request=False, **kwargs):
+        if self.capture is not None:
+            self.capture.update({"request": request, "video_request": video_request})
+        if self.fail is not None:
+            raise self.fail
+        return types.SimpleNamespace(data=parse_result(self.text), usage={})
+
+
+def _understand(tmp_path, text='{"summary":"s"}', *, provider="qwen", capture=None, name="clip.mp4", max_mb=15, timeout=300, fail=None):
+    vid = tmp_path / name
     vid.write_bytes(b"\x00\x01\x02\x03")
-    cap: dict = {}
-    monkeypatch.setattr(
-        v,
-        "_post_json",
-        _fake(
-            {
-                "model": "qwen3.8-flash",
-                "choices": [{"message": {"content": '{"summary":"s"}'}}],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "prompt_tokens_details": {"video_tokens": 2590},
-                },
-            },
-            capture=cap,
-        ),
-    )
+    if capture is None:
+        capture = {}
+    gateway = _Gateway(text, capture=capture, fail=fail)
     out = asyncio.run(
         v.understand(
-            str(vid),
-            "分析一下",
-            provider="qwen",
-            base_url="https://api.xsai5.xyz/v1/",
-            api_key="sk-1",
-            model="qwen3.8-flash",
+            str(vid), "分析", provider=provider, max_mb=max_mb, timeout=timeout,
+            call_model=gateway,
         )
     )
-    assert out["text"] == '{"summary":"s"}'
-    assert out["usage"]["prompt_tokens_details"]["video_tokens"] == 2590
-    assert out["model"] == "qwen3.8-flash"
+    return out, capture
+
+
+def test_understand_qwen(tmp_path):
+    out, cap = _understand(tmp_path)
+    assert '"summary"' in out["text"]
     assert out["provider"] == "qwen"
-    # base 去尾斜杠后拼端点；Bearer 鉴权；视频为文件内容 base64
-    assert cap["url"] == "https://api.xsai5.xyz/v1/chat/completions"
-    assert cap["headers"]["Authorization"] == "Bearer sk-1"
-    inline = cap["body"]["messages"][0]["content"][1]["video_url"]["url"]
+    request = cap["request"]
+    assert request["transport"] == "openai_video_url"
     expected = base64.b64encode(b"\x00\x01\x02\x03").decode()
-    assert inline == "data:video/mp4;base64," + expected
+    assert request["video_b64"] == expected
+    assert request["mime"] == "video/mp4"
+    assert cap["video_request"] is True
 
 
-def test_understand_gemini(monkeypatch, tmp_path):
-    vid = tmp_path / "clip.mp4"
-    vid.write_bytes(b"DATA")
-    cap: dict = {}
-    monkeypatch.setattr(
-        v,
-        "_post_json",
-        _fake(
-            {
-                "candidates": [
-                    {"content": {"parts": [{"text": '{"summary":'}, {"text": '"g"}'}]}}
-                ],
-                "usageMetadata": {"promptTokenCount": 5},
-            },
-            capture=cap,
-        ),
-    )
-    out = asyncio.run(
-        v.understand(
-            str(vid),
-            "分析",
-            provider="gemini",
-            base_url="https://api.xsai5.xyz/v1",
-            api_key="g-key",
-            model="gemini-3.8-flash",
-        )
-    )
-    assert out["text"] == '{"summary":"g"}'
-    assert out["usage"] == {"promptTokenCount": 5}
+def test_understand_gemini(tmp_path):
+    out, cap = _understand(tmp_path, provider="gemini")
     assert out["provider"] == "gemini"
-    # base 含 /v1（OpenAI 兼容约定）时，gemini 原生端点须拼到站点根，不能出现 /v1/v1beta
-    assert cap["url"] == "https://api.xsai5.xyz/v1beta/models/gemini-3.8-flash:generateContent"
-    assert cap["headers"]["x-goog-api-key"] == "g-key"
+    assert cap["request"]["transport"] == "gemini_inline"
 
 
-def test_understand_gemini_base_without_v1(monkeypatch, tmp_path):
-    # base 不含 /v1 时仍应得到正确的原生端点（不重复追加、不误删）
-    vid = tmp_path / "clip.mp4"
-    vid.write_bytes(b"DATA")
-    cap: dict = {}
-    monkeypatch.setattr(
-        v,
-        "_post_json",
-        _fake(
-            {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
-            capture=cap,
-        ),
-    )
-    asyncio.run(
-        v.understand(
-            str(vid), "p", provider="gemini", base_url="https://api.xsai5.xyz",
-            api_key="g-key", model="gemini-3.8-flash"
-        )
-    )
-    assert cap["url"] == "https://api.xsai5.xyz/v1beta/models/gemini-3.8-flash:generateContent"
-
-
-def test_understand_gemini_base_with_v1_trailing_slash(monkeypatch, tmp_path):
-    # base 形如 .../v1/ 时同样归一到站点根
-    vid = tmp_path / "clip.mp4"
-    vid.write_bytes(b"DATA")
-    cap: dict = {}
-    monkeypatch.setattr(
-        v,
-        "_post_json",
-        _fake(
-            {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
-            capture=cap,
-        ),
-    )
-    asyncio.run(
-        v.understand(
-            str(vid), "p", provider="gemini", base_url="https://api.xsai5.xyz/v1/",
-            api_key="g-key", model="gemini-3.8-flash"
-        )
-    )
-    assert cap["url"] == "https://api.xsai5.xyz/v1beta/models/gemini-3.8-flash:generateContent"
-
-
-def test_understand_defaults_mime_from_extension(monkeypatch, tmp_path):
-    vid = tmp_path / "clip.webm"
-    vid.write_bytes(b"X")
-    cap: dict = {}
-    monkeypatch.setattr(
-        v, "_post_json", _fake({"choices": [{"message": {"content": "ok"}}]}, capture=cap)
-    )
-    asyncio.run(
-        v.understand(
-            str(vid), "p", provider="qwen", base_url="http://x/v1", api_key="k", model="m"
-        )
-    )
-    inline = cap["body"]["messages"][0]["content"][1]["video_url"]["url"]
-    assert inline.startswith("data:video/webm;base64,")
+def test_understand_defaults_mime_from_extension(tmp_path):
+    _, cap = _understand(tmp_path, name="clip.webm")
+    assert cap["request"]["mime"] == "video/webm"
 
 
 def test_understand_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         asyncio.run(
             v.understand(
-                str(tmp_path / "nope.mp4"),
-                "p",
-                provider="qwen",
-                base_url="http://x/v1",
-                api_key="k",
-                model="m",
+                str(tmp_path / "nope.mp4"), "p", provider="qwen",
+                call_model=_Gateway("{}"),
             )
         )
 
 
-def test_understand_oversize_raises_before_network(monkeypatch, tmp_path):
+def test_understand_oversize_raises_before_gateway(tmp_path):
     vid = tmp_path / "big.mp4"
     vid.write_bytes(b"\x00" * 2048)
+    called = False
 
-    async def boom(url, headers, body, timeout):
-        raise AssertionError("体积超限时不应发起请求")
+    async def gateway(**_kwargs):
+        nonlocal called
+        called = True
 
-    monkeypatch.setattr(v, "_post_json", boom)
     with pytest.raises(ValueError):
         asyncio.run(
-            v.understand(
-                str(vid),
-                "p",
-                provider="qwen",
-                base_url="http://x/v1",
-                api_key="k",
-                model="m",
-                max_mb=0.0005,  # ≈524 字节 < 2048 字节
-            )
+            v.understand(str(vid), "p", provider="qwen", max_mb=0.0005, call_model=gateway)
         )
+    assert called is False
 
 
-def test_understand_passes_timeout(monkeypatch, tmp_path):
+def test_understand_passes_timeout(tmp_path):
+    _, cap = _understand(tmp_path, timeout=123)
+    assert cap["request"]["timeout"] == 123
+
+
+def test_understand_missing_gateway_is_programming_error(tmp_path):
     vid = tmp_path / "c.mp4"
     vid.write_bytes(b"Y")
-    cap: dict = {}
-    monkeypatch.setattr(
-        v, "_post_json", _fake({"choices": [{"message": {"content": "ok"}}]}, capture=cap)
-    )
-    asyncio.run(
-        v.understand(
-            str(vid), "p", provider="qwen", base_url="http://x/v1",
-            api_key="k", model="m", timeout=123
-        )
-    )
-    assert cap["timeout"] == 123
+    with pytest.raises(RuntimeError, match="ModelAccessService"):
+        asyncio.run(v.understand(str(vid), "p", provider="qwen"))
 
 
-def test_understand_qwen_missing_choices_raises(monkeypatch, tmp_path):
-    vid = tmp_path / "c.mp4"
-    vid.write_bytes(b"Y")
-    monkeypatch.setattr(v, "_post_json", _fake({"choices": []}))
+def test_understand_unknown_provider_raises(tmp_path):
+    with pytest.raises(ValueError):
+        _understand(tmp_path, provider="nope")
+
+
+def test_understand_invalid_json_raises(tmp_path):
     with pytest.raises(Exception):
-        asyncio.run(
-            v.understand(
-                str(vid), "p", provider="qwen", base_url="http://x/v1",
-                api_key="k", model="m"
-            )
-        )
+        _understand(tmp_path, text="完全不是 JSON")
 
 
-def test_understand_gemini_missing_candidates_raises(monkeypatch, tmp_path):
-    vid = tmp_path / "c.mp4"
-    vid.write_bytes(b"Y")
-    monkeypatch.setattr(v, "_post_json", _fake({"candidates": []}))
-    with pytest.raises(Exception):
-        asyncio.run(
-            v.understand(
-                str(vid), "p", provider="gemini", base_url="http://x",
-                api_key="k", model="m"
-            )
-        )
+def test_understand_gateway_error_propagates(tmp_path):
+    with pytest.raises(RuntimeError, match="upstream"):
+        _understand(tmp_path, fail=RuntimeError("upstream 503"))

@@ -2,7 +2,7 @@
   <div class="ui-page">
     <div class="ui-head">
       <h1>关键词采集</h1>
-      <span class="sub">按关键词发现作品 · 支持门槛触发评论抓取</span>
+      <span class="sub">按关键词发现作品 · 评论策略由任务显式控制</span>
     </div>
 
     <div class="toolbar">
@@ -14,7 +14,7 @@
     </div>
     <p class="hint">
       关键词采集走平台原生适配器，需先在「账号中心」完成对应平台登录；采集结果进素材库，
-      达到热度门槛的作品才会触发评论抓取。
+      评论可选不抓、按热度门控或强制抓取；未开启评论的平台不会展示该选项。
     </p>
 
     <div v-loading="loading">
@@ -37,11 +37,11 @@
             <div><dt>单次上限</dt><dd class="num">{{ row.limit_per_run }} 条</dd></div>
             <div><dt>周期</dt><dd>{{ intervalText(row.interval_minutes) }}</dd></div>
             <div><dt>最低播放</dt><dd class="num">{{ row.min_play > 0 ? compact(row.min_play) : '不限' }}</dd></div>
-            <div><dt>上次运行</dt><dd class="num">{{ fmt(row.last_run_at) }}</dd></div>
+            <div><dt>上次入队</dt><dd class="num">{{ fmt(row.last_attempt_at || row.last_run_at) }}</dd></div>
           </dl>
           <div class="task-tags">
-            <span class="ui-badge" :class="{ warn: row.with_comments }">
-              {{ row.with_comments ? '抓评论' : '不抓评论' }}
+            <span class="ui-badge" :class="{ warn: row.comment_mode !== 'off' }">
+              {{ commentModeText(row.comment_mode) }}
             </span>
             <span class="ui-badge" :class="{ acc: row.to_candidate }">
               {{ row.to_candidate ? '进候选池' : '仅入库' }}
@@ -113,8 +113,12 @@
             <el-option label="每周" :value="10080" />
           </el-select>
         </el-form-item>
-        <el-form-item label="抓评论">
-          <el-switch v-model="form.with_comments" />
+        <el-form-item v-if="currentCapability?.comments" label="评论">
+          <el-radio-group v-model="form.comment_mode">
+            <el-radio-button value="off">不抓</el-radio-button>
+            <el-radio-button value="gate">热度门控</el-radio-button>
+            <el-radio-button value="force">强制抓取</el-radio-button>
+          </el-radio-group>
         </el-form-item>
         <el-form-item label="视频进候选池">
           <el-switch v-model="form.to_candidate" />
@@ -150,18 +154,17 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, reactive, ref } from 'vue'
 import PlatformMark from '../components/PlatformMark.vue'
-import { api } from '../api'
+import { api, type PlatformInfo } from '../api'
+import { parseUtc } from '../utils/time'
 
-const platforms = [
-  { value: 'xhs', label: '小红书' },
-  { value: 'douyin', label: '抖音' },
-  { value: 'bilibili', label: 'B站' },
-  { value: 'kuaishou', label: '快手' },
-  { value: 'zhihu', label: '知乎' },
-]
+const platformInfo = ref<PlatformInfo[]>([])
+const platforms = computed(() => platformInfo.value
+  .filter((p) => p.keyword_crawl)
+  .map((p) => ({ value: p.platform, label: p.label })))
+const currentCapability = computed(() => platformInfo.value.find((p) => p.platform === form.platform))
 
 interface CrawlTask {
   id: number
@@ -170,12 +173,13 @@ interface CrawlTask {
   keyword: string
   sort: string
   limit_per_run: number
-  with_comments: boolean
+  comment_mode: string
   to_candidate: boolean
   min_play: number
   interval_minutes: number
   enabled: boolean
   last_run_at: string | null
+  last_attempt_at: string | null
 }
 
 const tasks = ref<CrawlTask[]>([])
@@ -198,7 +202,7 @@ const form = reactive({
   keyword: '',
   sort: 'popular',
   limit_per_run: 50,
-  with_comments: false,
+  comment_mode: 'off',
   to_candidate: true,
   min_play: 0,
   interval_minutes: 1440,
@@ -222,9 +226,12 @@ function intervalText(m: number) {
   if (m % 60 === 0) return `每 ${m / 60} 小时`
   return `每 ${m} 分钟`
 }
+function commentModeText(mode: string) {
+  return ({ off: '不抓评论', gate: '评论门控', force: '强制抓评论' } as Record<string, string>)[mode] || mode
+}
 function fmt(v: string | null) {
   if (!v) return '—'
-  return new Date(v.endsWith('Z') ? v : v + 'Z').toLocaleString('zh-CN', { hour12: false })
+  return parseUtc(v)?.toLocaleString('zh-CN', { hour12: false }) ?? '—'
 }
 function compact(n: number) {
   if (n >= 1e8) return `${(n / 1e8).toFixed(1)}亿`
@@ -244,9 +251,10 @@ async function load() {
 
 function openCreate() {
   editing.value = null
+  const first = platforms.value[0]?.value || 'xhs'
   Object.assign(form, {
-    platform: 'xhs', account_id: null, keyword: '', sort: 'popular', limit_per_run: 50,
-    with_comments: false, to_candidate: true, min_play: 0, interval_minutes: 1440, enabled: true,
+    platform: first, account_id: null, keyword: '', sort: 'popular', limit_per_run: 50,
+    comment_mode: 'off', to_candidate: true, min_play: 0, interval_minutes: 1440, enabled: true,
   })
   dialog.value = true
 }
@@ -266,6 +274,8 @@ async function submit() {
     ElMessage.success('已保存')
     dialog.value = false
     await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
     submitting.value = false
   }
@@ -274,15 +284,44 @@ async function submit() {
 async function toggle(row: CrawlTask) {
   // 先落库再改 UI，避免请求失败后界面与后端不一致
   const next = !row.enabled
-  await api.put(`/api/crawl-tasks/${row.id}`, { ...row, enabled: next })
-  row.enabled = next
+  try {
+    await api.put(`/api/crawl-tasks/${row.id}`, {
+      platform: row.platform,
+      account_id: row.account_id,
+      keyword: row.keyword,
+      sort: row.sort,
+      limit_per_run: row.limit_per_run,
+      comment_mode: row.comment_mode,
+      to_candidate: row.to_candidate,
+      min_play: row.min_play,
+      interval_minutes: row.interval_minutes,
+      enabled: next,
+    })
+    row.enabled = next
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '操作失败')
+  }
 }
 
 async function run(row: CrawlTask) {
   running.value = row.id
   try {
-    await api.post(`/api/crawl-tasks/${row.id}/run`)
-    ElMessage.success('已加入采集队列')
+    const { data } = await api.post(`/api/crawl-tasks/${row.id}/run`)
+    ElMessage.success(`已加入采集队列 #${data.job_id}`)
+    const deadline = Date.now() + 10 * 60 * 1000
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      const { data: job } = await api.get(`/api/pipeline/jobs/${data.job_id}`)
+      if (job.status === 'error') {
+        ElMessage.error(job.error || '采集失败')
+        break
+      }
+      if (job.status === 'done') {
+        ElMessage.success('采集完成')
+        await load()
+        break
+      }
+    }
   } finally {
     running.value = null
   }
@@ -310,7 +349,7 @@ function openEdit(row: CrawlTask) {
     keyword: row.keyword,
     sort: row.sort,
     limit_per_run: row.limit_per_run,
-    with_comments: row.with_comments,
+    comment_mode: row.comment_mode,
     to_candidate: row.to_candidate,
     min_play: row.min_play,
     interval_minutes: row.interval_minutes,
@@ -336,6 +375,7 @@ async function loadAccounts() {
 }
 
 onMounted(async () => {
+  platformInfo.value = (await api.get('/api/platforms')).data
   await loadAccounts()
   await load()
 })

@@ -4,12 +4,12 @@ import pytest
 
 def test_crawl_platforms_registered():
     """两家采集平台必须在 REGISTRY 中，否则账号中心无法录入 Cookie。"""
-    from app.api.crawl_tasks import _CRAWL_PLATFORMS
+    from app.domain.capabilities import CRAWL_PLATFORMS
     from app.modules import REGISTRY
 
     for p in ("kuaishou", "zhihu"):
         assert p in REGISTRY, f"{p} 缺少账号适配器"
-    assert _CRAWL_PLATFORMS - set(REGISTRY) == set()
+    assert CRAWL_PLATFORMS - set(REGISTRY) == set()
 
 
 def test_cookie_adapters_parse_manual_input():

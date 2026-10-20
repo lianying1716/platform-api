@@ -2,7 +2,7 @@
   <div class="ui-page">
     <div class="ui-head">
       <h1>素材库</h1>
-      <span class="sub">共 {{ assets.length }} 条 · 视频可播放，文章可阅读</span>
+      <span class="sub">共 {{ total }} 条 · 视频可播放，文章可阅读</span>
       <div class="grow" />
       <button class="ui-btn" @click="load">刷新</button>
       <button class="ui-btn" @click="importDialog = true">导入文章</button>
@@ -19,7 +19,7 @@
           {{ v.label }}
         </button>
       </div>
-      <el-select v-model="filters.platform" placeholder="平台" clearable size="small" style="width: 130px" @change="load">
+      <el-select v-model="filters.platform" placeholder="平台" clearable size="small" style="width: 130px" @change="reloadFromFirstPage">
         <el-option label="B站" value="bilibili" />
         <el-option label="抖音" value="douyin" />
         <el-option label="快手" value="kuaishou" />
@@ -27,7 +27,7 @@
         <el-option label="小红书" value="xhs" />
         <el-option label="微信公众号" value="wechat_mp" />
       </el-select>
-      <el-select v-model="filters.account_id" placeholder="账号" clearable size="small" style="width: 170px" @change="load">
+      <el-select v-model="filters.account_id" placeholder="账号" clearable size="small" style="width: 170px" @change="reloadFromFirstPage">
         <el-option
           v-for="a in filteredAccounts"
           :key="a.id"
@@ -35,16 +35,16 @@
           :value="a.id"
         />
       </el-select>
-      <el-select v-model="filters.category" placeholder="分类" clearable size="small" style="width: 150px" @change="load">
+      <el-select v-model="filters.category" placeholder="分类" clearable size="small" style="width: 150px" @change="reloadFromFirstPage">
         <el-option v-for="(label, key) in taxonomy" :key="key" :label="label" :value="key" />
       </el-select>
-      <el-select v-model="filters.transcribe_status" placeholder="转录状态" clearable size="small" style="width: 130px" @change="load">
+      <el-select v-model="filters.transcribe_status" placeholder="转录状态" clearable size="small" style="width: 130px" @change="reloadFromFirstPage">
         <el-option label="待转录" value="pending" />
         <el-option label="已完成" value="done" />
         <el-option label="失败" value="error" />
       </el-select>
       <!-- 排序：全部倒序，默认最新（本次入库顺序） -->
-      <el-select v-model="filters.sort" size="small" style="width: 150px" @change="load">
+      <el-select v-model="filters.sort" size="small" style="width: 150px" @change="reloadFromFirstPage">
         <el-option label="最新（默认）" value="latest" />
         <el-option label="按发布时间" value="published_at" />
         <el-option label="按同步时间" value="synced_at" />
@@ -72,7 +72,7 @@
           >
             <!-- 封面走服务端代理：抖音/B站封面是签名防盗链地址，直连会过期或 403。
                  加载失败时自动退回占位符，避免留下空白/破图。 -->
-            <img v-if="(a.has_cover || a.cover_url) && !coverFailed(a.asset_id)"
+            <img v-if="a.has_cover && a.cover_allowed !== false && !coverFailed(a.asset_id)"
               :src="coverSrc(a.asset_id)" alt=""
               loading="lazy" @error="markCoverFailed(a.asset_id)" />
             <span v-else class="ph">
@@ -99,7 +99,7 @@
               <span class="ava" :style="authorAvatarUrl(a) ? { backgroundImage: `url(${authorAvatarUrl(a)})` } : {}">
                 {{ authorAvatarUrl(a) ? '' : (a.author_name || '?').slice(0, 1) }}
               </span>
-              <a v-if="a.author_home_url" :href="a.author_home_url" target="_blank" rel="noopener" class="aname">
+              <a v-if="safeExternalUrl(a.author_home_url)" :href="safeExternalUrl(a.author_home_url)" target="_blank" rel="noopener noreferrer" class="aname">
                 {{ a.author_name || a.author_id }}
               </a>
               <span v-else class="aname">{{ a.author_name || '未知博主' }}</span>
@@ -179,6 +179,13 @@
       </div>
     </div>
 
+    <!-- 分页：总数来自 X-Total-Count，不只是当前页长度。 -->
+    <div v-if="totalPages > 1" class="ui-pager">
+      <button class="ui-btn sm" :disabled="page <= 1 || loading" @click="goPage(page - 1)">上一页</button>
+      <span class="pager-info">第 {{ page }} / {{ totalPages }} 页 · 每页 {{ pageSize }} 条</span>
+      <button class="ui-btn sm" :disabled="page >= totalPages || loading" @click="goPage(page + 1)">下一页</button>
+    </div>
+
     <!-- 视频播放器（走 Range 流式接口，可拖进度条） -->
     <div v-if="player" class="ui-modal" @click.self="player = null">
       <div class="ui-modal-box player-box">
@@ -210,12 +217,12 @@
         <div class="ui-panel-head">
           <h2>{{ article.title }}</h2>
           <div class="grow" />
-          <a v-if="article.url" class="ui-btn sm" :href="article.url" target="_blank" rel="noopener">打开原文</a>
+          <a v-if="safeExternalUrl(article.url)" class="ui-btn sm" :href="safeExternalUrl(article.url)" target="_blank" rel="noopener noreferrer">打开原文</a>
           <button class="ui-btn ghost sm" @click="article = null">关闭</button>
         </div>
         <div class="ui-modal-body article-body">
           <p class="art-meta">{{ article.author_name }} · {{ fmtDate(article.published_at) }}</p>
-          <div v-if="article.html" class="art-html" v-html="article.html" />
+          <SafeHtml v-if="article.html" :html="article.html" class="art-html" />
           <pre v-else class="art-text">{{ article.text }}</pre>
         </div>
       </div>
@@ -230,7 +237,13 @@
       </template>
     </el-dialog>
 
-    <el-drawer v-model="drawer" title="素材详情" size="58%" @close="closeDrawer">
+    <el-drawer
+      v-model="drawer"
+      title="素材详情"
+      size="min(860px, 92vw)"
+      append-to-body
+      @close="closeDrawer"
+    >
       <div v-if="detail" class="dt">
         <!-- 头部：标题 + 来源 -->
         <header class="dt-head">
@@ -248,6 +261,16 @@
             <span class="dt-block-title">分档加工</span>
             <el-tag size="small" type="info">当前档位：{{ tierLabel(detail.status?.tier) }}</el-tag>
             <el-tag size="small" :type="t(proc.understand_status)">理解 {{ sStatus(proc.understand_status) }}</el-tag>
+          </div>
+          <div v-if="pipelineSteps.length" class="wf-steps">
+            <div v-for="step in pipelineSteps" :key="step.step" class="wf-step" :class="stepTone(step.status)">
+              <span class="wf-dot" aria-hidden="true" />
+              <span class="wf-name">{{ stepLabel(step.step) }}</span>
+              <span class="wf-state">{{ stepStateText(step.status) }}</span>
+              <span v-if="step.status === 'waiting_prerequisite' && step.blocked_by?.length" class="wf-blocked">
+                等待 {{ step.blocked_by.map(stepLabel).join('、') }}
+              </span>
+            </div>
           </div>
           <div class="tier-actions">
             <el-button size="small" :loading="procBusy" :disabled="procBusy" @click="runProcess('basic')">转录（普通）</el-button>
@@ -276,8 +299,8 @@
         <!-- Tab: 文件 / 链接 -->
         <section v-show="detailTab === 'files'" class="dt-pane">
           <div class="dt-field">
-            <span class="dt-k">文件目录</span>
-            <code class="dt-dir" :title="detail.file?.full_dir || ''">{{ detail.file?.full_dir || '—' }}</code>
+            <span class="dt-k">相对目录</span>
+            <code class="dt-dir" :title="detail.file?.relative_path || ''">{{ detail.file?.relative_path || '—' }}</code>
           </div>
           <div class="dt-field">
             <span class="dt-k">视频文件</span>
@@ -285,11 +308,12 @@
           </div>
           <div class="dt-actions">
             <a
-              v-if="detail.content?.url"
+              v-if="safeExternalUrl(detail.content?.url)"
               class="ui-btn primary sm"
-              :href="detail.content.url" target="_blank" rel="noopener"
+              :href="safeExternalUrl(detail.content?.url)" target="_blank" rel="noopener noreferrer"
             >打开原链接</a>
             <span v-else class="c-meta">该素材没有原始链接</span>
+            <button class="ui-btn danger sm" @click="removeAsset">删除</button>
           </div>
         </section>
 
@@ -316,6 +340,11 @@
 
         <!-- Tab: 视频理解 -->
         <section v-show="detailTab === 'understand'" class="dt-pane">
+
+        <p class="dt-hint vision-hint">
+          视频理解必须使用支持视觉输入的模型；纯文本模型看不到画面。
+          <router-link to="/models">前往模型接入</router-link>
+        </p>
 
         <div v-if="understanding" class="understand">
           <p>
@@ -359,6 +388,10 @@
 
         <!-- Tab: 爆款拆解 -->
         <section v-show="detailTab === 'breakdown'" class="dt-pane">
+        <p class="dt-hint vision-hint">
+          爆款拆解依赖逐镜头画面分析，请先把「视频理解」分配给支持视觉输入的模型（如 Kimi K3、MiMo、Qwen3.8 Flash、Gemini 3.8 Flash）。
+          <router-link to="/models">前往模型接入</router-link>
+        </p>
         <p class="dt-hint">
           <b>深度报告</b>：手动触发的完整拆解，会综合转录、视频理解、评论与后端算好的互动数据，
           产出「为什么火 + 怎么复刻」。它比「分析」速览更慢、更费 token，但结论更完整。
@@ -368,9 +401,13 @@
             {{ breakdown ? '重新拆解' : '生成爆款拆解' }}
           </el-button>
           <el-tag v-if="isBdActive()" size="small" type="warning">拆解中…</el-tag>
+          <el-tag v-else-if="bdStatus === 'waiting_prerequisite'" size="small" type="info">等待前置步骤</el-tag>
           <el-tag v-else-if="bdStatus === 'error'" size="small" type="danger">失败</el-tag>
           <span class="c-meta">复用转录 / 视频理解 / 评论 / 指标，产出「为什么火 + 怎么复刻」</span>
         </div>
+        <p v-if="bdStatus === 'waiting_prerequisite'" class="dt-hint">
+          拆解需要先完成转录和视频理解；完成后会自动继续，不需要重复点击。
+        </p>
         <p v-if="bdStatus === 'error' && bdError" class="err">{{ bdError }}</p>
 
         <div v-if="breakdown" class="bd-report">
@@ -475,16 +512,24 @@
 <script setup lang="ts">
 // 显式组件名：Layout 的 keep-alive include 按组件名匹配，切页返回时保留本页数据。
 defineOptions({ name: 'AssetsPage' })
-import { ElMessage } from 'element-plus'
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import PlatformMark from '../components/PlatformMark.vue'
+import SafeHtml from '../components/SafeHtml.vue'
 import { api } from '../api'
+import { parseUtc } from '../utils/time'
+import { safeExternalUrl } from '../utils/safeUrl'
 import { coverSrc, localAssetUrl, mediaSrc } from '../demo/runtime'
 
 const route = useRoute()
 
 const assets = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = 60
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 const selected = ref<any[]>([])
 const loading = ref(false)
 const drawer = ref(false)
@@ -521,7 +566,7 @@ async function loadAccounts() {
 const failedCovers = reactive(new Set<string>())
 function coverFailed(id: string) { return failedCovers.has(id) }
 function markCoverFailed(id: string) { failedCovers.add(id) }
-const authorAvatarUrl = (a: any) => localAssetUrl(a.author_avatar)
+const authorAvatarUrl = (a: any) => localAssetUrl(a.author_avatar_url)
 
 const typeTabs = [
   { k: '', label: '全部' },
@@ -530,7 +575,7 @@ const typeTabs = [
 ]
 function setType(k: string) {
   filters.content_type = k
-  load()
+  reloadFromFirstPage()
 }
 
 // 卡片选集：默认只在已选或已有勾选时显示勾选框
@@ -578,7 +623,8 @@ function isAnalyzed(a: any) {
 // 同步时间在卡片里只到分钟，避免 04:09:55 被截断成 04:0…
 function fmtMinute(v: string | null | undefined) {
   if (!v) return '—'
-  const d = new Date(/Z$/.test(v) || v.includes('+') ? v : v + 'Z')
+  const d = parseUtc(v)
+  if (!d) return '—'
   return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
@@ -607,6 +653,7 @@ const dimensionNames = ref<Record<string, string>>({})
 // 抽屉打开时用它初始化勾选框，否则设置页开关没有消费方（回归修复）。
 const globalUseCover = ref(false)
 const procBusy = ref(false)
+const pipelineSteps = ref<any[]>([])
 
 let procTimer: number | undefined
 
@@ -639,13 +686,16 @@ function syncProcTimer() {
 // 是否在途：本地已请求（pending/doing）或服务端明确 doing 才轮询。
 function isBdActive() {
   if (bdStatus.value === 'doing') return true
+  if (bdStatus.value === 'queued' || bdStatus.value === 'running') return true
   return bdRequested.value && bdStatus.value === 'pending'
 }
 function stopBdPoll() {
   if (bdTimer) { clearInterval(bdTimer); bdTimer = undefined }
 }
 function syncBdTimer() {
-  if (drawer.value && detail.value && isBdActive()) {
+  const hasInFlightStep = pipelineSteps.value.some((step: any) =>
+    ['queued', 'running', 'ready'].includes(step.status))
+  if (drawer.value && detail.value && (isBdActive() || hasInFlightStep)) {
     if (!bdTimer) bdTimer = window.setInterval(() => loadBreakdown(detail.value.asset_id), 3000)
   } else {
     stopBdPoll()
@@ -656,6 +706,19 @@ const procStatusText: Record<string, string> = {
   pending: '待处理', doing: '进行中', done: '完成', error: '失败',
 }
 function sStatus(v: string) { return procStatusText[v] ?? (v || '—') }
+
+const STEP_LABELS: Record<string, string> = {
+  transcribe: '语音转文字', analyze: '分析速览', understand_video: '视频理解', breakdown: '爆款拆解',
+}
+function stepLabel(v: string) { return STEP_LABELS[v] || v }
+const STEP_STATE_TEXT: Record<string, string> = {
+  waiting_prerequisite: '等待前置', ready: '待入队', queued: '排队中',
+  running: '进行中', done: '完成', error: '失败', skipped: '已跳过',
+}
+function stepStateText(v: string) { return STEP_STATE_TEXT[v] || v }
+function stepTone(v: string) {
+  return ({ done: 'ok', error: 'bad', running: 'run', queued: 'warn', waiting_prerequisite: 'wait' } as Record<string, string>)[v] || ''
+}
 
 function dimensionName(key: string) {
   return dimensionNames.value[key] || key
@@ -748,13 +811,15 @@ const hasCommentInsights = computed(() => {
 
 async function loadBreakdown(assetId: number) {
   const { data } = await api.get(`/api/assets/${assetId}/breakdown`)
-  bdStatus.value = data.status
+  const breakdownStep = data.pipeline?.steps?.find((row: any) => row.step === 'breakdown')
+  bdStatus.value = breakdownStep?.status || data.status
+  pipelineSteps.value = data.pipeline?.steps || []
   if (data.status === 'done') {
     breakdown.value = data
     bdError.value = ''
   } else {
     breakdown.value = null
-    bdError.value = data.error || ''
+    bdError.value = data.error || breakdownStep?.error || ''
   }
   syncBdTimer()
 }
@@ -842,7 +907,8 @@ function bytes(v: any) {
 }
 function fmtDate(v: string | null) {
   if (!v) return '—'
-  const d = new Date(v.endsWith('Z') ? v : v + 'Z')
+  const d = parseUtc(v)
+  if (!d) return '—'
   return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
 }
 // 分类中文名（来自系统设置的类型目录）
@@ -855,20 +921,38 @@ async function loadTaxonomy() {
 // 评论时间：后端为 UTC naive ISO（无 Z），补 'Z' 再按本地时区显示。
 function fmtTime(v: string | null) {
   if (!v) return ''
-  return new Date(v.endsWith('Z') ? v : v + 'Z').toLocaleString('zh-CN', { hour12: false })
+  return parseUtc(v)?.toLocaleString('zh-CN', { hour12: false }) ?? ''
 }
 
 async function load(silent = false) {
   // silent：keep-alive 复用时的后台刷新，不显示遮罩，先展示缓存内容再默默更新。
   if (!silent) loading.value = true
   try {
-    const { data } = await api.get('/api/assets', {
-      params: { ...filters, limit: 200 },
+    const { data, headers } = await api.get('/api/assets', {
+      params: { ...filters, limit: pageSize, offset: (page.value - 1) * pageSize },
     })
     assets.value = data
+    total.value = Number(headers['x-total-count'] ?? data.length)
+    // A deletion can shrink the result set under the current page.
+    if (page.value > totalPages.value) {
+      page.value = totalPages.value
+      return load(silent)
+    }
   } finally {
     if (!silent) loading.value = false
   }
+}
+
+function goPage(next: number) {
+  page.value = Math.min(Math.max(1, next), totalPages.value)
+  load()
+}
+
+// Any filter change starts a new result set, otherwise page 4 could show an
+// empty page while page 1 has matches.
+function reloadFromFirstPage() {
+  page.value = 1
+  load()
 }
 
 async function openDetail(id: number) {
@@ -883,6 +967,25 @@ async function openDetail(id: number) {
   bdError.value = ''
   bdRequested.value = false
   await loadBreakdown(id)
+}
+
+async function removeAsset() {
+  if (!detail.value) return
+  try {
+    await ElMessageBox.confirm(
+      '删除后素材会先从列表隐藏，worker 清理文件完成后才物理删除；确定继续？',
+      '删除素材',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    const { data } = await api.delete(`/api/assets/${detail.value.asset_id}`)
+    ElMessage.success(`已提交删除任务 #${data.job_id}`)
+    drawer.value = false
+    await load()
+  } catch { /* axios 已提示 */ }
 }
 
 function closeDrawer() {
@@ -938,13 +1041,20 @@ async function exportSel(format: string) {
 // 用「路由签名」而非本地 filters 判断是否需要重查——页内手动改的筛选不该被当成路由变化。
 let appliedQueryKey = ''
 function routeQueryKey() {
-  return `${route.query.platform || ''}|${route.query.account_id || ''}`
+  return `${route.query.platform || ''}|${route.query.account_id || ''}|${route.query.category || ''}`
 }
 function applyRouteQuery() {
   const qPlatform = String(route.query.platform || '')
   const qAccount = Number(route.query.account_id || 0)
-  if (qPlatform) filters.platform = qPlatform
-  if (qAccount) filters.account_id = qAccount
+  const qCategory = String(route.query.category || '')
+  // Navigation without query (e.g. clicking the sidebar item) means "all
+  // assets".  Only page-local filter edits are preserved; previously applied
+  // route filters must be cleared or the empty list is unexplainable.
+  filters.platform = qPlatform
+  filters.account_id = qAccount || null
+  filters.category = qCategory
+  // A new route signature starts a new result set, including its total.
+  page.value = 1
 }
 
 onMounted(() => {
@@ -954,6 +1064,19 @@ onMounted(() => {
   loadTaxonomy()
   load()
 })
+
+// Changing only the hash query (e.g. overview -> /assets?platform=..., then
+// sidebar -> /assets) keeps the same component instance, so neither onMounted
+// nor onActivated fires. Apply route filters from the watcher instead.
+watch(
+  () => routeQueryKey(),
+  (key) => {
+    if (key === appliedQueryKey) return
+    appliedQueryKey = key
+    applyRouteQuery()
+    load()
+  },
+)
 
 let firstActivate = true
 onActivated(() => {
@@ -967,7 +1090,7 @@ onActivated(() => {
   if (routeQueryKey() !== appliedQueryKey) {
     appliedQueryKey = routeQueryKey()
     applyRouteQuery()
-    load(true)
+    load()
   }
 })
 
@@ -986,6 +1109,9 @@ onUnmounted(() => {
 
 <style scoped>
 .ui-page { display: flex; flex-direction: column; gap: var(--sp-5); }
+/* 分页控件：居中的窄条，不与筛选条抢视觉。 */
+.ui-pager { display: flex; align-items: center; justify-content: center; gap: var(--sp-3); }
+.ui-pager .pager-info { color: var(--muted); font-size: var(--fs-sm); }
 .ui-filters { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 .ui-filters .grow { margin-left: auto; }
 
@@ -1000,7 +1126,7 @@ onUnmounted(() => {
   flex-direction: column;
   transition: transform .14s ease-out, box-shadow .14s ease-out;
 }
-.asset:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-2); }
+.asset:hover { box-shadow: var(--shadow-2); }
 .asset.picked { outline: 3px solid var(--accent); outline-offset: -3px; }
 
 .asset .cover {
@@ -1137,6 +1263,24 @@ onUnmounted(() => {
 .dt-block { border: 1px solid var(--ink); background: var(--surface-2); padding: 10px 12px; }
 .dt-pin { box-shadow: var(--shadow-1); }
 .dt-block-title { font-weight: 700; font-size: var(--fs-md); margin-right: 4px; }
+.wf-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0 2px; }
+.wf-step {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 24px;
+  padding: 2px 7px; border: 1px solid var(--line-soft); background: var(--surface);
+  font-size: var(--fs-xs); color: var(--ink-2);
+}
+.wf-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.wf-step.ok .wf-dot { background: var(--ok, #2f8f5b); }
+.wf-step.bad .wf-dot { background: var(--danger, #b83b3b); }
+.wf-step.run .wf-dot, .wf-step.warn .wf-dot { background: var(--accent); }
+.wf-step.wait { color: var(--muted); }
+.wf-name { font-weight: 600; color: var(--ink); }
+.wf-state { color: var(--muted); }
+.wf-blocked { color: var(--muted); border-left: 1px solid var(--line-soft); padding-left: 5px; }
+@media (max-width: 640px) {
+  .wf-step { width: 100%; }
+  .wf-blocked { margin-left: auto; }
+}
 
 /* 横向 tab 栏 */
 .dt-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--ink); overflow-x: auto; }
@@ -1155,6 +1299,13 @@ onUnmounted(() => {
 }
 .dt-pane { padding-top: 6px; min-height: 120px; }
 /* 区分「分析速览」与「爆款拆解·深度」：面板顶部一句话说明，避免用户混淆两个能力 */
+.vision-hint {
+  border-left: 3px solid var(--accent);
+  padding: 8px 10px;
+  background: var(--surface-2);
+}
+.vision-hint a { color: var(--accent); margin-left: 6px; text-decoration: none; }
+.vision-hint a:hover { text-decoration: underline; }
 .dt-hint {
   margin: 6px 0 12px; padding: 9px 12px;
   background: var(--surface-2); border-left: 3px solid var(--accent);

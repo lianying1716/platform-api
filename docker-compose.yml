@@ -16,10 +16,21 @@ services:
       PLATFORM_RUN_MIGRATIONS: "true"      # 由 api 负责迁移（契约 I2）
       PLATFORM_SERVE_FRONTEND: "true"
       PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
+      # Egress policy lives at deployment level (single source of truth for
+      # API + worker).  Empty keeps direct connections.
+      PLATFORM_OUTBOUND_PROXY: ${PLATFORM_OUTBOUND_PROXY:-}
+      PLATFORM_PLATFORM_PROXIES: ${PLATFORM_PLATFORM_PROXIES:-}
+      # Legacy llm_* variables are consumed once at startup and claimed into
+      # AiProvider; runtime business paths never read them.
+      PLATFORM_LLM_BASE_URL: ${PLATFORM_LLM_BASE_URL:-}
+      PLATFORM_LLM_API_KEY: ${PLATFORM_LLM_API_KEY:-}
+      PLATFORM_LLM_MODEL: ${PLATFORM_LLM_MODEL:-}
       PLATFORM_ACCOUNT_CHECK_INTERVAL: "15"
       # 一键升级：仅在设置了这两个变量时才启用（默认关闭 → 前端不显示升级按钮）。
       PLATFORM_UPDATER_URL: ${PLATFORM_UPDATER_URL:-}
       PLATFORM_UPDATER_TOKEN: ${PLATFORM_UPDATER_TOKEN:-}
+      # 检查更新读取 GitHub Releases；可选 token 避免共享出口 IP 的 60 次/小时限流。
+      PLATFORM_UPDATE_GITHUB_TOKEN: ${PLATFORM_UPDATE_GITHUB_TOKEN:-}
       # 存储目录可视化选择：允许在网页「选择目录」里浏览的白名单根（`:` 分隔）。
       # 留空 = 容器内安全默认（只放行 /data）。要让用户选到宿主目录，先把宿主目录
       # bind mount 进来（见下面 volumes 注释），再把容器内的挂载点列在这里。
@@ -55,6 +66,11 @@ services:
       PLATFORM_AUTO_CREATE_TABLES: "false"
       PLATFORM_RUN_MIGRATIONS: "false"     # worker 不迁移，等 api 健康后再起（契约 I2）
       PLATFORM_CREDENTIAL_ENC_KEY: ${PLATFORM_CREDENTIAL_ENC_KEY:-}
+      PLATFORM_OUTBOUND_PROXY: ${PLATFORM_OUTBOUND_PROXY:-}
+      PLATFORM_PLATFORM_PROXIES: ${PLATFORM_PLATFORM_PROXIES:-}
+      PLATFORM_LLM_BASE_URL: ${PLATFORM_LLM_BASE_URL:-}
+      PLATFORM_LLM_API_KEY: ${PLATFORM_LLM_API_KEY:-}
+      PLATFORM_LLM_MODEL: ${PLATFORM_LLM_MODEL:-}
     volumes:
       - platform-data:/data
       # 注意：worker 是真正落盘素材的进程，宿主候选目录也必须挂进 worker，

@@ -10,8 +10,8 @@
   - 网络/解析失败 → 抛异常（调用方回退通用模板）。
   - `use_cover=True` 但封面缺失/不可读/为空 → 抛异常（用户显式选了封面，不静默降级）。
 
-测试注入点：内部 `_post_json(url, headers, body, timeout)` 用 `httpx.AsyncClient`；
-`classify` 只经它发请求，测试 monkeypatch `_post_json`，不要 patch httpx。
+模型请求必须由调用方注入 ``call_model``（统一 ``ModelAccessService`` 网关）。
+本模块只负责构造提示词与请求体、解析模型输出，不读取任何供应商配置。
 """
 
 import base64
@@ -19,8 +19,6 @@ import json
 import mimetypes
 from pathlib import Path
 from typing import Callable
-
-import httpx
 
 # 转录送入分类器的最大字符数（设计 §4「前 ~600 字」）。
 _TRANSCRIPT_LIMIT = 600
@@ -106,14 +104,6 @@ def _coerce_signals(value: object) -> list[str]:
     return [s for s in value if isinstance(s, str)]
 
 
-async def _post_json(url: str, headers: dict, body: dict, timeout: float) -> dict:
-    """发一次 JSON POST 并返回响应 JSON；非 2xx 抛 httpx.HTTPStatusError。"""
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(url, headers=headers, json=body)
-        resp.raise_for_status()
-        return resp.json()
-
-
 async def classify(
     title: str,
     author: str,
@@ -122,10 +112,6 @@ async def classify(
     taxonomy: dict,
     *,
     cover_path: str | None,
-    base_url: str,
-    api_key: str,
-    model: str,
-    timeout: float = 30,
     use_cover: bool = False,
     call_model: Callable | None = None,
 ) -> dict:
@@ -135,18 +121,17 @@ async def classify(
         title/author/duration_sec/transcript: 文本信号（缺失用空跳过）。
         taxonomy: 枚举 -> 中文；不在其中的类型统一归 ``other``。
         cover_path: 可选封面路径；``use_cover=True`` 时随文本一并送入。
-        base_url/api_key/model: OpenAI 兼容端点配置（服务层从 DB/设置解析后注入）。
-        timeout: 单次请求超时秒数。
+        call_model: 统一模型网关回调；未注入即视为编程错误，禁止旁路直连。
 
     Returns:
         ``{"type": str, "confidence": float, "reason": str, "signals": list[str]}``
 
     Raises:
         FileNotFoundError/OSError/ValueError: 启用封面但封面缺失/不可读/为空。
-        httpx.HTTPError: 网络/HTTP 失败。
         KeyError/ValueError/json.JSONDecodeError: 响应结构或内容无法解析。
     """
-    base = (base_url or "").rstrip("/")
+    if call_model is None:
+        raise RuntimeError("判类必须经 ModelAccessService 调用，禁止直连模型接口")
     system, user_text = build_messages(title, author, duration_sec, transcript, taxonomy)
 
     content: object = user_text
@@ -158,7 +143,6 @@ async def classify(
         ]
 
     body = {
-        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": content},
@@ -166,12 +150,6 @@ async def classify(
         "temperature": 0.2,
         "response_format": {"type": "json_object"},
     }
-    if call_model is None:
-        base = (base_url or "").rstrip("/")
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        data = await _post_json(f"{base}/chat/completions", headers, body, timeout)
-        return _parse_classify_json(data["choices"][0]["message"]["content"], taxonomy)
-
     result = await call_model(
         request=body,
         parse_result=lambda raw: _parse_classify_json(raw, taxonomy),

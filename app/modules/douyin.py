@@ -216,7 +216,24 @@ def _ordered_urls(url_list: list) -> list[str]:
     return out
 
 
-def _best_bitrate(aw: dict) -> dict | None:
+def _bitrate_height(rate: dict) -> int:
+    """Best-effort height extracted from Douyin bitrate metadata."""
+    for key in ("height", "bit_rate_height", "resolution_height"):
+        try:
+            value = int(rate.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    # gear_name commonly contains labels like "1080p" / "720p".
+    text = str(rate.get("gear_name") or rate.get("quality_type") or "")
+    import re
+
+    match = re.search(r"(\\d{3,4})\\s*p", text, re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _best_bitrate(aw: dict, max_height: int | None = None) -> dict | None:
     """选最佳码率档（照抄抖小云 GetBestMatchedVideoUrl）。
 
     抖小云按配置优先 H.265，否则 H.264，同编码内取 ``bit_rate`` 最大的档。
@@ -233,13 +250,17 @@ def _best_bitrate(aw: dict) -> dict | None:
         except (TypeError, ValueError):
             return 0
 
+    if max_height is not None:
+        within = [r for r in usable if 0 < _bitrate_height(r) <= max_height]
+        if within:
+            usable = within
     h264 = [r for r in usable if int(r.get("is_h265") or 0) == 0]
     if h264:
         return max(h264, key=bw)
     return max(usable, key=bw) if usable else None
 
 
-def _play_url_list(aw: dict) -> list[str]:
+def _play_url_list(aw: dict, max_height: int | None = None) -> list[str]:
     """从 aweme 结构里取**全部**可直连下载的播放地址（去重、保序）。
 
     照抄抖小云：
@@ -252,7 +273,7 @@ def _play_url_list(aw: dict) -> list[str]:
     多档多镜像轮换才能把单条素材的失败率压下来。
     """
     video = aw.get("video") or {}
-    best = _best_bitrate(aw)
+    best = _best_bitrate(aw, max_height=max_height)
     ordered: list[str] = []
     if best:
         ordered += _ordered_urls((best.get("play_addr") or {}).get("url_list"))

@@ -38,11 +38,31 @@ def _seed_content(db, *, external_id="aw1", author_id="A", platform="douyin", ti
 
 
 def _seed_asset(db, content, *, video_file="v.mp4"):
-    from app.models import MediaAsset
+    from app.models import MediaAsset, Transcript, VideoUnderstanding
 
-    a = MediaAsset(content_id=content.id, relative_path=f"douyin/{content.id}", video_file=video_file)
+    a = MediaAsset(
+        content_id=content.id,
+        relative_path=f"douyin/{content.id}",
+        video_file=video_file,
+        download_status="done",
+        transcribe_status="done",
+        understand_status="done",
+    )
     db.add(a)
     db.flush()
+    db.add(Transcript(asset_id=a.id, full_text="测试转录", language="zh", model="base"))
+    db.add(
+        VideoUnderstanding(
+            asset_id=a.id,
+            category="other",
+            summary="测试理解",
+            dimensions={"visual": "画面"},
+            timeline=[{"t": 1, "event": "开场"}],
+            status="done",
+            model="base",
+        )
+    )
+    db.commit()
     return a
 
 
@@ -63,13 +83,8 @@ def _seed_snapshot(db, content_id, *, play, like=0, comment=0, favorite=0, share
     return s
 
 
-def _llm_settings(db):
-    """拆解需要 LLM 端点配置（DB 设置优先）；网络被 mock，仅需非空。"""
-    from app.models import SystemSetting
-
-    db.add(SystemSetting(key="llm_base_url", value="http://x/v1"))
-    db.add(SystemSetting(key="llm_api_key", value="k"))
-    db.add(SystemSetting(key="llm_model", value="m"))
+def _llm_settings(_db):
+    """Business paths no longer read llm_*; model wiring is patched at the gateway."""
 
 
 _REPORT = {
@@ -90,16 +105,13 @@ _REPORT = {
 def _patch_llm(monkeypatch, *, report=None, usage=None, model="gw-model", capture=None):
     """patch 服务调用的 `breakdown.run_llm`，返回新契约 {"data","usage","model"}。"""
 
-    # 服务传入的 model 来自 llm_model 设置("m")；返回值固定用网关模型名 `returned`，
-    # 便于断言服务落的是响应里的 model（而非入参）。
     returned = model
 
-    async def fake_run(system, user, *, base_url, api_key, model, timeout=90):
+    async def fake_run(system, user, *, call_model, timeout=90):
         if capture is not None:
             capture["system"] = system
             capture["user"] = user
-            capture["base_url"] = base_url
-            capture["model_arg"] = model
+            capture["gateway_injected"] = callable(call_model)
         return {
             "data": dict(report if report is not None else _REPORT),
             "usage": usage if usage is not None else {"total_tokens": 123},
@@ -141,7 +153,7 @@ def test_run_breakdown_persists_row(monkeypatch, session):
     assert row.comment_insights == _REPORT["comment_insights"]
     # 确定性数字 + 模型元数据
     assert row.data_context["play"] == 1000
-    assert row.understanding_available is False  # 未跑 L3
+    assert row.understanding_available is True  # 前置视频理解已完成
     assert row.model == "gw-model"  # 用响应里的 model，而非入参
     assert row.prompt_version == "v1"
     assert row.usage == {"total_tokens": 123}
@@ -183,8 +195,13 @@ def test_run_breakdown_uses_understanding_when_present(monkeypatch, session):
     a = _seed_asset(session, c)
     from app.models import Transcript, VideoUnderstanding
 
-    session.add(VideoUnderstanding(asset_id=a.id, summary="带货视频", dimensions={"product": "裙"}, timeline=[{"t": 1}]))
-    session.add(Transcript(asset_id=a.id, full_text="全文", segments=[{"start": 0, "end": 3, "text": "开场"}]))
+    row = session.query(VideoUnderstanding).filter_by(asset_id=a.id).one()
+    row.summary = "带货视频"
+    row.dimensions = {"product": "裙"}
+    row.timeline = [{"t": 1}]
+    transcript = session.query(Transcript).filter_by(asset_id=a.id).one()
+    transcript.full_text = "全文"
+    transcript.segments = [{"start": 0, "end": 3, "text": "开场"}]
     session.commit()
     _patch_llm(monkeypatch)
 
@@ -347,7 +364,7 @@ def test_run_breakdown_idempotent_without_force(monkeypatch, session):
     session.commit()
     calls = {"n": 0}
 
-    async def fake_run(system, user, *, base_url, api_key, model, timeout=90):
+    async def fake_run(system, user, *, call_model, timeout=90):
         calls["n"] += 1
         return {"data": dict(_REPORT), "usage": {}, "model": "m"}
 
@@ -388,7 +405,7 @@ def test_run_breakdown_llm_error_persists_error_and_raises(monkeypatch, session)
     a = _seed_asset(session, c)
     session.commit()
 
-    async def boom(system, user, *, base_url, api_key, model, timeout=90):
+    async def boom(system, user, *, call_model, timeout=90):
         raise RuntimeError("上游 503")
 
     monkeypatch.setattr(svc.breakdown, "run_llm", boom)
@@ -400,13 +417,23 @@ def test_run_breakdown_llm_error_persists_error_and_raises(monkeypatch, session)
     assert "503" in row.error
 
 
-def test_run_breakdown_no_llm_config_raises_and_marks_error(session):
-    """未配置 LLM Base URL -> 抛错，落 error（不得静默出空报告）。"""
+def test_run_breakdown_no_model_assignment_marks_actionable_error(session):
+    """没有工作分配 -> 网关给出可操作错误，落 error（不得静默出空报告）。"""
+    from sqlalchemy import select
+
+    from app.models import ViralBreakdown
+    from app.services.model_access_service import ModelCallError
+
     c = _seed_content(session)
     a = _seed_asset(session, c)
     session.commit()
-    with pytest.raises(ValueError, match="Base URL"):
+    with pytest.raises(ModelCallError) as ei:
         asyncio.run(svc.run_breakdown(session, a.id))
+    assert ei.value.primary_error_class == "not_configured"
+    row = session.scalar(select(ViralBreakdown).where(ViralBreakdown.asset_id == a.id))
+    session.refresh(row)
+    assert row.status == "error"
+    assert "没有配置可用模型" in row.error
 
 
 # ============================================================

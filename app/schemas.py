@@ -34,6 +34,11 @@ class PlatformInfo(BaseModel):
     credential_kind: str
     supports_qr: bool
     credential_fields: list[dict]
+    source_types: list[dict] = []
+    download_qualities: list[dict] = []
+    keyword_crawl: bool = False
+    comments: bool = False
+    follow_import: bool = False
 
 
 class AccountOut(BaseModel):

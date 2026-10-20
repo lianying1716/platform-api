@@ -230,8 +230,8 @@ uv sync --extra mcp                                             # 接入 Claude 
 
 ## 用哪些大模型
 
-- **分析 / 转录**：接任意 **OpenAI 兼容**接口。网页 **「系统设置 → 大模型」** 填 Base URL、
-  模型名、API Key，点「测试连接」即可，**不锁定供应商**；也可以完全离线跑本地模型。
+- **分析 / 转录**：在网页 **「模型接入」** 添加供应商、导入模型并分配工作槽位，
+  可以接 OpenAI 兼容、Anthropic 原生或 Gemini 原生接口，**不锁定供应商**。
 - 想省事的话，直接用作者自营的 **[星算 AI](https://xsai5.xyz)** —— 见下一节。
 
 ## 关于星算 AI（作者自营的闭源服务）
@@ -270,7 +270,7 @@ uv sync --extra mcp                                             # 接入 Claude 
 | `PLATFORM_DATABASE_URL` | 本地 PG `…:5433/platform` | 生产配 PostgreSQL DSN |
 | `PLATFORM_CREDENTIAL_ENC_KEY` | 空 | base64 的 32 字节凭证密钥，**生产首选** |
 | `PLATFORM_CREDENTIAL_KEY_FILE` | 空 | 密钥文件路径，可置于项目目录外 |
-| `PLATFORM_LLM_BASE_URL` / `_API_KEY` / `_MODEL` | 空 / `gpt-4o-mini` | 外部大模型（系统设置里的值优先） |
+| `PLATFORM_LLM_BASE_URL` / `_API_KEY` / `_MODEL` | 空 / 空 | 旧版模型配置，仅首次启动认领到「模型接入」；运行期不读取 |
 | `PLATFORM_ACCOUNT_CHECK_INTERVAL` | `15` | 账号体检间隔（分钟），0 关闭 |
 | `PLATFORM_RATE_LIMIT_PER_MINUTE` | `12` | 每平台出站限速（次/分钟），保守档 |
 

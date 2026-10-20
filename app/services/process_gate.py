@@ -152,7 +152,11 @@ def _ready_asset(db: Session, content_id: int) -> MediaAsset | None:
     """
     return db.scalar(
         select(MediaAsset)
-        .where(MediaAsset.content_id == content_id, MediaAsset.download_status == "done")
+        .where(
+            MediaAsset.content_id == content_id,
+            MediaAsset.download_status == "done",
+            MediaAsset.deleted_at.is_(None),
+        )
         .order_by(MediaAsset.id)
     )
 
@@ -242,10 +246,17 @@ def enqueue_process_jobs(
     在途预算（I1）：先统计队列中已有的 advanced 在途 job，只在 `budget` 剩余额度内建新 job。
     这使下载完成路径（每次 batch=1）也受 `budget` 约束，而非「够热就无限升档」。
     """
-    from app.core.queue import enqueue
-
     targets = select_targets(db, contents, settings=settings)
     used, pending = _budget_counts(db)
+    from app.services.workflow_engine import (
+        WorkflowInputError,
+        active_understand_reservations,
+        register_workflow,
+    )
+
+    reserved = active_understand_reservations(db)
+    reserved_assets = {asset_id for _job_type, asset_id in pending} | reserved
+    used = len(reserved_assets)
     # budget<=0 → 不新建（writer 侧已校验 budget>=0；这里对 0 也保持「无额度」语义）。
     remaining = max(0, int(settings["budget"]) - used)
     if remaining == 0:
@@ -254,14 +265,17 @@ def enqueue_process_jobs(
     created = 0
     for asset, tier, _reason in targets:
         job_type = _TIER_JOB[tier]
-        if (job_type, asset.id) in pending:
+        if (job_type, asset.id) in pending or asset.id in reserved:
             continue
         if created >= remaining:
             break  # 在途预算已用尽：够热也不再新建（超出部分留待后续运行再定档）
-        job = enqueue(db, job_type, {"asset_id": asset.id}, priority=_PROCESS_PRIORITY, commit=False)
-        key = (job.job_type, int((job.payload or {}).get("asset_id", asset.id)))
-        if key not in pending:
-            pending.add(key)
+        try:
+            result = register_workflow(db, asset.id, ["understand_video"])
+        except WorkflowInputError:
+            continue
+        if "understand_video" in result.created_steps:
+            pending.add((job_type, asset.id))
+            reserved.add(asset.id)
             created += 1
         # 入队即置状态，前端轮询能立刻看到（与手动 API 行为一致）。
         asset.understand_status = "pending"

@@ -1,44 +1,102 @@
-"""SSE 事件流：前端实时刷新任务/账号状态，避免轮询。
+"""SSE event stream backed by a durable outbox.
 
-进程内发布订阅。worker 在另一进程，故事件先落 asyncio.Queue 的仅限 API 进程内来源
-（账号体检、API 内触发的状态变更）。跨进程的 worker 进度通过前端轮询 /api/pipeline/jobs
-兜底，第一版不做跨进程事件总线（单机够用，避免引入 Redis pub/sub）。
+The worker and API are separate processes, so in-memory pub/sub cannot carry
+worker progress to the browser.  ``publish`` remains the single call site used
+by services, but now commits an ``event_outbox`` row when a database session is
+available.  API SSE readers poll that table, which also makes
+``Last-Event-ID`` replay possible after a reconnect.
+
+Calling ``publish`` without a session keeps the old in-process behaviour for
+unit tests and code paths that only report API-local state.
 """
 
 import asyncio
 import json
 from collections.abc import AsyncGenerator
+from datetime import datetime
 
 _subscribers: set[asyncio.Queue] = set()
 
 
-def publish(event: str, data: dict) -> None:
-    """向所有订阅者推送一条事件。非阻塞，队列满则丢弃最旧。"""
-    payload = {"event": event, "data": data}
-    for q in list(_subscribers):
-        try:
-            q.put_nowait(payload)
-        except asyncio.QueueFull:
-            pass
+def publish(event: str, data: dict, db=None) -> int | None:
+    """Publish an event durably when ``db`` is supplied.
+
+    Returns the outbox id on the durable path and ``None`` for the in-memory
+    fallback.  Database failures must not turn a successful business operation
+    into a failed one; callers that need durability can inspect the return value.
+    """
+    event_id = None
+    if db is not None:
+        from app.models import EventOutbox
+
+        row = EventOutbox(event=event[:64], data=data, created_at=datetime.utcnow())
+        db.add(row)
+        # The caller is usually inside a business transaction.  Flush makes the
+        # id available without committing; the event becomes visible only when
+        # that transaction commits.
+        db.flush()
+        event_id = row.id
+    return event_id
 
 
-async def subscribe() -> AsyncGenerator[str, None]:
-    """SSE 端点用：yield 出 text/event-stream 格式的字符串。"""
+def events_since(db, after_id: int, *, limit: int = 200) -> list[tuple[int, str, dict]]:
+    """Read committed events after an SSE cursor."""
+    from sqlalchemy import select
+
+    from app.models import EventOutbox
+
+    rows = db.scalars(
+        select(EventOutbox)
+        .where(EventOutbox.id > after_id)
+        .order_by(EventOutbox.id)
+        .limit(limit)
+    ).all()
+    return [(row.id, row.event, row.data or {}) for row in rows]
+
+
+async def subscribe(
+    *,
+    after_id: int = 0,
+    poll_seconds: float = 1.0,
+    session_factory=None,
+) -> AsyncGenerator[str, None]:
+    """SSE endpoint: replay outbox rows, then poll for new committed events."""
+    if session_factory is None:
+        from app.db import SessionLocal
+
+        session_factory = SessionLocal
+
     q: asyncio.Queue = asyncio.Queue(maxsize=100)
     _subscribers.add(q)
+    cursor = max(0, after_id)
     try:
-        # 连接建立先发一条 hello，前端据此确认通道可用
-        yield _format("hello", {"ok": True})
+        yield _format("hello", {"ok": True, "last_event_id": cursor})
         while True:
+            db = session_factory()
             try:
-                payload = await asyncio.wait_for(q.get(), timeout=25)
-                yield _format(payload["event"], payload["data"])
+                rows = events_since(db, cursor)
+            except Exception:
+                # A transient database failure must not kill the browser's
+                # stream; retry on the next poll after a keepalive.
+                rows = []
+            finally:
+                db.close()
+            if rows:
+                for event_id, event, data in rows:
+                    cursor = event_id
+                    yield _format(event, data, event_id)
+                continue
+            # The in-memory queue is only a latency hint; the outbox above is
+            # the source of truth.  Wait briefly for a notification, then loop
+            # back to the database so events from another process are visible.
+            try:
+                await asyncio.wait_for(q.get(), timeout=poll_seconds)
             except asyncio.TimeoutError:
-                # 心跳保活，防止反向代理掐断空闲连接
-                yield ": keepalive\n\n"
+                pass
     finally:
         _subscribers.discard(q)
 
 
-def _format(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+def _format(event: str, data: dict, event_id: int | None = None) -> str:
+    prefix = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{prefix}event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"

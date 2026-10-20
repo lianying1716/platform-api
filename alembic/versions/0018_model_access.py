@@ -267,10 +267,15 @@ def upgrade() -> None:
     _create_tables()
     _alter_result_columns()
 
-    from app.core.process_settings import resolve_process_settings_from_rows
-
     rows = _read_settings(bind)
-    effective = resolve_process_settings_from_rows(rows)
+    # This migration must remain reproducible with the defaults that existed when
+    # 0018 shipped.  Importing the live settings registry made an old migration
+    # change behaviour whenever new configuration fields were added or removed.
+    effective = {
+        "classify_model": (rows.get("process_classify_model") or "qwen3.8-flash").strip(),
+        "vision_model": (rows.get("process_vision_model") or "qwen3.8-flash").strip(),
+        "provider": (rows.get("process_provider") or "qwen").strip(),
+    }
     base_url = rows.get("llm_base_url", "").strip()
     model_key = rows.get("llm_model", "").strip()
     plain_key = rows.get("llm_api_key", "").strip()

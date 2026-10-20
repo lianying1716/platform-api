@@ -251,13 +251,12 @@ def main(argv=None) -> int:
 
         real_stats = inject_real(session)
         session.commit()
+        # 管理员会话：直接签发 token，TestClient 带 Authorization 头。
+        from app.core import security
+
+        token = security.issue_token(session)
     finally:
         session.close()
-
-    # 管理员会话：直接签发 token，TestClient 带 Authorization 头。
-    from app.core import security
-
-    token = security.issue_token()
     client = TestClient(app)
     client.headers.update({'Authorization': f'Bearer {token}'})
 

@@ -517,8 +517,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
-import EChart from '../components/charts/EChart.vue'
+import { computed, defineAsyncComponent, reactive, ref } from 'vue'
+// Load the sample's full chart capability only on this route.
+const EChart = defineAsyncComponent(async () => {
+  const { ensureAllCharts } = await import('../components/charts/echarts-all')
+  ensureAllCharts()
+  return (await import('../components/charts/EChart.vue')).default
+})
 import '../styles/ui.css'
 
 const pages = [

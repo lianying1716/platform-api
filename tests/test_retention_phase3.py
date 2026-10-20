@@ -118,7 +118,9 @@ def test_agent_delete_requires_confirm_and_writes_audit(client, session):
         headers=headers,
     )
     assert ok.status_code == 200
+    assert ok.json()["job_id"] > 0
     session.expire_all()
-    assert session.get(MediaAsset, asset_id) is None
+    asset = session.get(MediaAsset, asset_id)
+    assert asset is not None and asset.deleted_at is not None, "删除先软删除，worker 清完文件再物理删"
     audit = session.scalar(select(DeletionAudit).where(DeletionAudit.asset_id == asset_id))
-    assert audit is not None and audit.reason == "重复素材"
+    assert audit is not None and audit.reason == "重复素材" and audit.status == "pending"

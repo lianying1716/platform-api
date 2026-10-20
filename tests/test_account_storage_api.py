@@ -84,7 +84,6 @@ def test_process_settings_auto_flags_roundtrip(client, session):
             "min_heat", "min_likes_floor", "budget", "top_pct", "weight_like",
             "weight_comment", "weight_play", "video_max_mb", "cover_max_mb",
             "low_confidence_threshold", "classify_enabled", "use_cover",
-            "provider", "vision_model", "classify_model",
         )}, "auto_transcribe": True, "auto_analyze": True},
     )
     assert put.status_code == 200, put.text

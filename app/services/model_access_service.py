@@ -151,6 +151,8 @@ def capabilities_of(model: AiModel, provider: AiProvider | None = None) -> dict:
     """按 config_revision 与生效协议判定能力是否有效；stale/缺版本一律视为不可用。
 
     协议也是能力的前提：模型级协议被改动后，旧探测结论不再成立，必须重新检测。
+    ``legacy`` 表示旧版 llm_* 配置已被认领但尚未实测：它可以让存量实例继续运行，
+    但在供应商连接或协议变化后必须转为 stale，绝不能用旧结论静默继续调用。
     """
     if model is None or provider is None:
         return {}
@@ -158,6 +160,7 @@ def capabilities_of(model: AiModel, provider: AiProvider | None = None) -> dict:
     protocol = model_protocols.resolve_protocol(model, provider)
     raw = model.capabilities if isinstance(model.capabilities, dict) else {}
     out: dict[str, dict] = {}
+    trusted_sources = ("probe", "manual_override", "legacy")
     for name, value in raw.items():
         if not isinstance(value, dict):
             continue
@@ -166,10 +169,10 @@ def capabilities_of(model: AiModel, provider: AiProvider | None = None) -> dict:
         same_revision = int(item.get("config_revision") or 0) == revision
         # 旧记录可能没写 protocol：缺省视为与当前协议一致，避免升级即全量失效。
         same_protocol = str(item.get("protocol") or protocol) == protocol
-        if source not in ("probe", "manual_override") or not (same_revision and same_protocol):
+        if source not in trusted_sources or not (same_revision and same_protocol):
             item["value"] = False
-            item["source"] = "stale" if source in ("probe", "manual_override") else source
-            if source in ("probe", "manual_override"):
+            item["source"] = "stale" if source in trusted_sources else source
+            if source in trusted_sources:
                 item["detail"] = (
                     "模型协议已变更，需重新检测"
                     if same_revision and not same_protocol
@@ -196,9 +199,24 @@ def resolve_assignment(db: Session, work_type: str) -> ModelAssignment | None:
 
 
 def assignment_configured(db: Session, work_type: str) -> bool:
-    """该工作是否已有新模型分配；没有分配时业务层允许继续走旧 llm_* 兼容路径。"""
+    """该工作是否已有主模型或备用模型分配。"""
     row = resolve_assignment(db, work_type)
     return bool(row and (row.primary_model_id is not None or row.fallback_model_id is not None))
+
+
+def resolved_transport(db: Session, work_type: str) -> str:
+    """返回当前分配的默认视频传输方式，供调用方明确记录来源。
+
+    真正的请求构造仍由 ``ModelAccessService._invoke`` 按生效协议决定；这里只用于
+    视频理解入参中的兼容标签，避免再从 ``process_provider`` 猜供应商。
+    """
+    row = resolve_assignment(db, work_type)
+    model_id = (row.primary_model_id or row.fallback_model_id) if row else None
+    model = db.get(AiModel, model_id) if model_id else None
+    provider = db.get(AiProvider, model.provider_id) if model is not None else None
+    if model is None or provider is None:
+        return "openai_video_url"
+    return "gemini_inline" if model_protocols.resolve_protocol(model, provider) == "gemini" else "openai_video_url"
 
 
 class ModelAccessService:

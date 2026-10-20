@@ -86,7 +86,8 @@ async def enqueue_due_subscriptions() -> None:
         # 同步间隔：订阅自己设了 interval_minutes 就用它（固定值）；否则用设置页配置的
         # 全局随机区间（照抄抖小云"随机时间"的意图，避免固定整点节奏）。这里把随机放在
         # 判定这一层：每次到期后重新抽样，等价于"每次同步间隔都在区间内随机"。
-        from app.core.sync_settings import get_sync_settings, pick_interval_minutes
+        from app.core.settings_registry import resolve_subscription_interval
+        from app.core.sync_settings import get_sync_settings
 
         sync_cfg = get_sync_settings(db)
         queued = 0
@@ -94,8 +95,7 @@ async def enqueue_due_subscriptions() -> None:
             # 博主订阅：没开"同步博主视频"就只跟踪关注关系，不拉视频。
             if sub.source_type == "creator" and not sub.sync_videos:
                 continue
-            fixed = int(sub.interval_minutes or 0)
-            interval = max(10, fixed) if fixed > 0 else pick_interval_minutes(sync_cfg)
+            interval = resolve_subscription_interval(sub, sync_cfg)
             # 用「上次尝试」判到期：失败也退避满一个 interval，不在风控期反复打平台。
             last = sub.last_attempt_at or sub.last_sync_at
             if last is not None and (now - last).total_seconds() < interval * 60:
@@ -107,6 +107,49 @@ async def enqueue_due_subscriptions() -> None:
             logger.info("到期订阅入队 %s 个", queued)
     except Exception:  # noqa: BLE001 扫描失败不得让调度器崩
         logger.exception("订阅扫描异常")
+    finally:
+        db.close()
+
+
+async def enqueue_due_crawl_tasks() -> None:
+    """Enqueue enabled keyword-crawl tasks whose interval has elapsed.
+
+    ``last_attempt_at`` advances on enqueue, not only on success, so failed
+    tasks back off for a full interval instead of hammering the platform.
+    """
+    from app.application.commands.crawl import enqueue_crawl
+    from app.models import CrawlTask, PlatformAccount
+    from app.services.account_state import is_callable
+
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        tasks = db.scalars(
+            select(CrawlTask).where(CrawlTask.enabled.is_(True))
+        ).all()
+        queued = 0
+        for task in tasks:
+            # A fixed account must still be callable; otherwise the task would
+            # produce guaranteed failures.  Rotation tasks are checked in the
+            # service, where a healthy account is selected.
+            if task.account_id is not None:
+                account = db.get(PlatformAccount, task.account_id)
+                if account is None or not is_callable(account):
+                    continue
+            interval = max(10, int(task.interval_minutes or 1440))
+            last = task.last_attempt_at or task.last_run_at
+            if last is not None and (now - last).total_seconds() < interval * 60:
+                continue
+            job = enqueue_crawl(db, task.id, commit=False, dedup=True)
+            if job.status not in ("queued", "running"):
+                continue
+            task.last_attempt_at = now
+            queued += 1
+        if queued:
+            db.commit()
+            logger.info("到期采集任务入队 %s 个", queued)
+    except Exception:  # noqa: BLE001 扫描失败不得让调度器崩
+        logger.exception("采集任务扫描异常")
     finally:
         db.close()
 
@@ -134,6 +177,12 @@ def start_scheduler() -> None:
             "interval",
             minutes=settings.subscription_scan_interval,
             id="subscription_scan",
+        )
+        scheduler.add_job(
+            enqueue_due_crawl_tasks,
+            "interval",
+            minutes=settings.subscription_scan_interval,
+            id="crawl_scan",
         )
     scheduler.add_job(cleanup_browser_sessions, "interval", minutes=2, id="browser_gc")
     scheduler.add_job(cleanup_fetch_cache, "interval", minutes=30, id="fetch_cache_gc")

@@ -2,7 +2,7 @@
   <div class="ui-page">
     <div class="ui-head">
       <h1>系统设置</h1>
-      <span class="sub">存储目录 · 加工分档 · 类型提示词 · 依赖诊断</span>
+      <span class="sub">存储目录 · AI 时段 · 加工分档 · 类型提示词 · 依赖诊断</span>
     </div>
 
     <!-- 页签头用 V3 样式；el-tabs 只保留内容切换能力（导航条由 CSS 隐藏） -->
@@ -17,10 +17,13 @@
         <p class="tip">素材保存根目录，支持本机路径、NAS 挂载，Windows 盘符或 UNC（如 Z:\xsai 或 \\NAS\xsai）。</p>
         <div class="bar">
           <button class="ui-btn primary" @click="storageDialog = true">新增根目录</button>
+          <button class="ui-btn" :disabled="scanningOrphans || !roots.length" @click="scanOrphans">
+            {{ scanningOrphans ? '扫描中…' : '扫描孤儿文件' }}
+          </button>
           <span class="grow" />
           <span class="ui-badge">共 {{ roots.length }}</span>
         </div>
-        <section class="ui-panel" v-loading="loadingRoots">
+        <section class="ui-panel table-panel" v-loading="loadingRoots">
           <div v-if="!loadingRoots && !roots.length" class="ui-empty">
             <div class="big">还没有配置存储根目录</div>
             <p>选一个目录作为素材落盘位置，下载与转录都会写到这里。</p>
@@ -50,6 +53,23 @@
               </tr>
             </tbody>
           </table>
+        </section>
+        <section v-if="orphanReport" class="ui-panel">
+          <div class="ui-panel-head">
+            <h2>孤儿文件报告</h2>
+            <span class="ui-badge" :class="orphanReport.orphan_count ? 'warn' : 'ok'">
+              {{ orphanReport.orphan_count }} 个
+            </span>
+            <span class="grow" />
+            <button class="ui-btn ghost sm" @click="orphanReport = null">关闭</button>
+          </div>
+          <div class="ui-panel-body">
+            <p class="tip" style="margin-top: 0">只读报告，不会自动删除。相对路径如下：</p>
+            <ul v-if="orphanReport.orphans.length" class="orphan-list">
+              <li v-for="path in orphanReport.orphans" :key="path"><code>{{ path }}</code></li>
+            </ul>
+            <p v-else class="ui-empty" style="padding: 8px 0">没有发现孤儿文件。</p>
+          </div>
         </section>
       </el-tab-pane>
 
@@ -113,6 +133,86 @@
             <el-button type="primary" @click="saveCommentSettings">保存</el-button>
           </el-form-item>
         </el-form>
+      </el-tab-pane>
+
+      <!-- AI 任务时段 -->
+      <el-tab-pane label="AI 时段" name="ai-schedule">
+        <p class="tip">限制需要调用大模型的任务在哪些时段开始执行。窗口外的任务会留在队列里，到时段自动继续；已经开始的调用会跑完。</p>
+        <section class="ui-panel">
+          <div class="ui-panel-head">
+            <div>
+              <h2>AI 任务可运行时段</h2>
+              <div class="tip" style="margin: 4px 0 0">适用于 AI 速览、视频理解（含判类）和爆款拆解；下载、转录、采集不受影响。</div>
+            </div>
+            <span class="grow" />
+            <span class="ui-badge" :class="aiSchedule.is_open ? 'ok' : 'warn'">
+              {{ aiSchedule.is_open ? '当前开放' : '当前等待' }}
+            </span>
+          </div>
+          <div class="ui-panel-body">
+            <el-form label-width="140px" style="max-width: 760px">
+              <el-form-item label="启用时段限制">
+                <el-switch v-model="aiSchedule.enabled" />
+                <span class="detail">关闭时不限制，AI 任务随时开始</span>
+              </el-form-item>
+              <el-form-item label="时区">
+                <el-select v-model="aiSchedule.timezone" style="width: 220px">
+                  <el-option label="Asia/Shanghai（北京时间）" value="Asia/Shanghai" />
+                  <el-option label="UTC" value="UTC" />
+                </el-select>
+              </el-form-item>
+            </el-form>
+
+            <div class="ai-window-head">
+              <span class="strong">时段</span>
+              <span class="grow" />
+              <button class="ui-btn sm" type="button" @click="addAiWindow">新增时段</button>
+            </div>
+            <div v-if="!aiSchedule.windows.length" class="ui-empty ai-window-empty">
+              <div class="big">还没有时段</div>
+              <p>启用限制前先添加一个时段。</p>
+            </div>
+            <div v-else class="ai-window-list">
+              <div v-for="(w, idx) in aiSchedule.windows" :key="idx" class="ai-window-row">
+                <div class="ai-window-days">
+                  <button
+                    v-for="(d, di) in WEEKDAYS"
+                    :key="d.value"
+                    type="button"
+                    class="ai-day"
+                    :class="{ on: w.days.includes(d.value) }"
+                    @click="toggleAiDay(w, d.value)"
+                  >{{ d.label }}</button>
+                </div>
+                <span class="ai-window-sep">从</span>
+                <el-time-select v-model="w.start" start="00:00" step="00:30" end="23:30" style="width: 110px" />
+                <span class="ai-window-sep">到</span>
+                <el-time-select v-model="w.end" start="00:00" step="00:30" end="23:30" style="width: 110px" />
+                <span v-if="w.start >= w.end" class="ui-badge warn">跨午夜</span>
+                <span class="grow" />
+                <button class="ui-btn sm ghost danger" type="button" @click="removeAiWindow(idx)">删除</button>
+              </div>
+            </div>
+
+            <p class="tip ai-window-note">
+              跨午夜时，后半天仍算在开始日：例如周一 23:00–07:00 包含周二凌晨。
+              <span v-if="aiSchedule.summary?.length">当前规则：{{ aiSchedule.summary.join('；') }}（{{ aiSchedule.timezone }}）。</span>
+              {{ aiSchedule.next_open_at ? `下一次开放：${aiSchedule.next_open_local || fmtAiTime(aiSchedule.next_open_at)}` : '' }}
+            </p>
+            <el-alert
+              v-if="aiSchedule.enabled && aiSchedule.windows.length === 0"
+              type="warning"
+              :closable="false"
+              show-icon
+              title="启用限制前请至少添加一个时段，否则保存会失败。"
+              style="margin-bottom: 14px"
+            />
+            <div class="ui-bar">
+              <button class="ui-btn primary" type="button" :disabled="!aiScheduleDirty" @click="saveAiSchedule">保存</button>
+              <span class="detail">队列页会同步显示当前开放状态。</span>
+            </div>
+          </div>
+        </section>
       </el-tab-pane>
 
       <!-- 视频理解 -->
@@ -310,6 +410,16 @@
           show-icon
         />
 
+        <el-alert
+          v-if="update.checkedAt && update.ok === false"
+          type="error"
+          :closable="false"
+          style="margin-top: 12px; max-width: 720px"
+          title="检查更新失败"
+          :description="update.message || '无法获取最新版本，请稍后重试'"
+          show-icon
+        />
+
         <div style="margin-top: 20px; max-width: 720px">
           <el-alert
             v-if="!upgradeStatus.enabled"
@@ -401,7 +511,7 @@
       <div class="ui-modal-box">
         <div class="ui-panel-head"><h2>删除存储根目录</h2></div>
         <div class="ui-modal-body">
-          <p>确定删除「{{ rootTarget.name }}」({{ rootTarget.path }})？已入库素材的路径会失效。</p>
+          <p>确定删除「{{ rootTarget.name }}」({{ rootTarget.path }})？仍被账号、订阅或素材引用的根目录会被拒绝删除。</p>
         </div>
         <div class="ui-modal-foot">
           <button class="ui-btn" @click="rootTarget = null">取消</button>
@@ -492,16 +602,21 @@
 </template>
 
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api'
+import { parseUtc } from '../utils/time'
 
+const router = useRouter()
 const tab = ref('storage')
 // 页签清单：与下面 el-tab-pane 的 name 一一对应
 const tabs = [
   { k: 'storage', label: '存储目录' },
   { k: 'llm', label: '模型接入' },
   { k: 'comments', label: '评论抓取' },
+  { k: 'ai-schedule', label: 'AI 时段' },
   { k: 'process', label: '视频理解' },
   { k: 'breakdown', label: '爆款拆解' },
   { k: 'sync', label: '同步频率' },
@@ -512,10 +627,12 @@ const tabs = [
 const roots = ref<any[]>([])
 const checks = ref<any[]>([])
 const loadingRoots = ref(false)
+const scanningOrphans = ref(false)
+const orphanReport = ref<{ orphan_count: number; orphans: string[] } | null>(null)
 const loadingDiag = ref(false)
 // ---- 版本与升级 ----
 const ver = ref<any>({ app_version: '', git_commit: '', build_time: '', db_revision: '', db_head: '', db_in_sync: false })
-const update = ref<any>({ current: '', latest: '', available: false, url: '' })
+const update = ref<any>({ current: '', latest: '', available: false, url: '', ok: null, message: '', checkedAt: 0 })
 const upgradeStatus = ref<{ enabled: boolean; current: string }>({ enabled: false, current: '' })
 const checkingUpdate = ref(false)
 const upgrading = ref(false)
@@ -616,7 +733,6 @@ function chooseDir() {
   pickerDialog.value = false
 }
 
-const settings = reactive<any>({ llm_base_url: '', llm_model: '', llm_api_key: '', proxy_url: '', llm_api_key_set: false })
 const pwd = reactive({ old_password: '', new_password: '' })
 const commentSettings = reactive({
   top_pct: 0.2,
@@ -630,6 +746,95 @@ const commentSettings = reactive({
   interval: 1,
   with_sub_comments: false,
 })
+
+// ---- AI 任务时段 ----
+const WEEKDAYS = [
+  { value: 0, label: '一' },
+  { value: 1, label: '二' },
+  { value: 2, label: '三' },
+  { value: 3, label: '四' },
+  { value: 4, label: '五' },
+  { value: 5, label: '六' },
+  { value: 6, label: '日' },
+]
+const aiSchedule = reactive<any>({
+  enabled: false,
+  timezone: 'Asia/Shanghai',
+  windows: [],
+  summary: [],
+  next_open_local: null,
+  is_open: true,
+  next_open_at: null,
+})
+const aiScheduleSaved = ref('')
+const aiScheduleDirty = computed(() => JSON.stringify(aiScheduleSnapshot()) !== aiScheduleSaved.value)
+
+function aiScheduleSnapshot() {
+  return {
+    enabled: !!aiSchedule.enabled,
+    timezone: aiSchedule.timezone,
+    windows: (aiSchedule.windows || []).map((w: any) => ({
+      days: [...(w.days || [])].sort((a: number, b: number) => a - b),
+      start: w.start,
+      end: w.end,
+    })),
+  }
+}
+
+function addAiWindow() {
+  aiSchedule.windows.push({ days: [0, 1, 2, 3, 4], start: '09:00', end: '18:00' })
+}
+
+function removeAiWindow(idx: number) {
+  aiSchedule.windows.splice(idx, 1)
+}
+
+function toggleAiDay(w: any, day: number) {
+  const at = w.days.indexOf(day)
+  if (at >= 0) w.days.splice(at, 1)
+  else w.days.push(day)
+}
+
+function fmtAiTime(value: string | null) {
+  if (!value) return ''
+  return parseUtc(value)?.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) ?? ''
+}
+
+async function loadAiSchedule() {
+  try {
+    const { data } = await api.get('/api/system/ai-schedule')
+    aiSchedule.enabled = !!data.enabled
+    aiSchedule.timezone = data.timezone || 'Asia/Shanghai'
+    aiSchedule.windows = (data.windows || []).map((w: any) => ({ days: [...(w.days || [])], start: w.start, end: w.end }))
+    aiSchedule.summary = data.summary || []
+    aiSchedule.next_open_local = data.next_open_local || null
+    aiSchedule.is_open = !!data.is_open
+    aiSchedule.next_open_at = data.next_open_at || null
+    aiScheduleSaved.value = JSON.stringify(aiScheduleSnapshot())
+  } catch { /* 设置暂不可用时保留当前表单 */ }
+}
+
+async function saveAiSchedule() {
+  if (aiSchedule.enabled && !aiSchedule.windows.length) {
+    return ElMessage.warning('启用限制前请先添加时段')
+  }
+  if (aiSchedule.windows.some((w: any) => !w.days.length)) {
+    return ElMessage.warning('每个时段至少要选择一天')
+  }
+  if (aiSchedule.windows.some((w: any) => w.start === w.end)) {
+    return ElMessage.warning('时段的开始和结束不能相同')
+  }
+  try {
+    const { data } = await api.put('/api/system/ai-schedule', aiScheduleSnapshot())
+    aiSchedule.is_open = !!data.schedule?.is_open
+    aiSchedule.next_open_at = data.schedule?.next_open_at || null
+    aiScheduleSaved.value = JSON.stringify(aiScheduleSnapshot())
+    ElMessage.success('已保存')
+    await loadAiSchedule()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  }
+}
 const proc = reactive<any>({
   min_heat: 1000,
   min_likes_floor: 100,
@@ -733,6 +938,17 @@ async function loadRoots() {
   }
 }
 
+async function scanOrphans() {
+  scanningOrphans.value = true
+  try {
+    const { data } = await api.get('/api/system/storage-roots/orphans')
+    orphanReport.value = data
+    ElMessage.success(data.orphan_count ? `发现 ${data.orphan_count} 个孤儿文件` : '没有发现孤儿文件')
+  } finally {
+    scanningOrphans.value = false
+  }
+}
+
 async function createRoot() {
   if (!rootForm.name.trim() || !rootForm.path.trim()) return ElMessage.warning('名称和路径必填')
   await api.post('/api/system/storage-roots', rootForm)
@@ -751,46 +967,12 @@ function delRoot(row: any) {
 
 async function doDelRoot() {
   if (!rootTarget.value) return
-  await api.delete(`/api/system/storage-roots/${rootTarget.value.id}`)
-  rootTarget.value = null
-  await loadRoots()
-}
-
-async function loadSettings() {
-  const { data } = await api.get('/api/system/settings')
-  Object.assign(settings, data, { llm_api_key: '' })
-}
-
-async function saveSettings() {
-  await api.put('/api/system/settings', {
-    llm_base_url: settings.llm_base_url,
-    llm_model: settings.llm_model,
-    llm_api_key: settings.llm_api_key,
-    proxy_url: settings.proxy_url,
-  })
-  ElMessage.success('已保存')
-  settings.llm_api_key = ''
-  await loadSettings()
-}
-
-const testingLlm = ref(false)
-async function testLlm() {
-  testingLlm.value = true
   try {
-    // 用当前表单值（含未保存的）探测，方便边调边试
-    const { data } = await api.post('/api/system/settings/test-llm', {
-      llm_base_url: settings.llm_base_url,
-      llm_model: settings.llm_model,
-      llm_api_key: settings.llm_api_key,
-    })
-    if (data.ok) {
-      ElMessage.success(`连接成功（${data.elapsed_ms}ms）· 模型 ${data.model}`)
-    } else {
-      ElMessage.error(data.message || '连接失败')
-    }
-  } finally {
-    testingLlm.value = false
-  }
+    await api.delete(`/api/system/storage-roots/${rootTarget.value.id}`)
+    ElMessage.success('已删除存储根')
+    rootTarget.value = null
+    await loadRoots()
+  } catch { /* axios 已提示引用数量/原因 */ }
 }
 
 async function loadDiag() {
@@ -816,10 +998,13 @@ async function checkUpdate() {
   try {
     const { data } = await api.get('/api/system/update/check')
     if (data.ok === false) {
+      // Keep the failure in the page instead of only showing a transient toast.
+      // A rate-limited GitHub quota otherwise looks like the button did nothing.
+      update.value = { ...data, checkedAt: Date.now() }
       ElMessage.warning(data.message || '检查更新失败')
       return
     }
-    update.value = data
+    update.value = { ...data, checkedAt: Date.now() }
     if (data.available) ElMessage.success(`发现新版本 ${data.latest}`)
     else ElMessage.success('已是最新版本')
   } finally {
@@ -901,10 +1086,16 @@ async function confirmUpgrade() {
 
 async function changePwd() {
   if (pwd.new_password.length < 6) return ElMessage.warning('新密码至少 6 位')
-  await api.post('/api/auth/change-password', pwd)
-  ElMessage.success('密码已修改')
-  pwd.old_password = ''
-  pwd.new_password = ''
+  try {
+    await api.post('/api/auth/change-password', pwd)
+    // The server invalidates every old session. Drop the local token before
+    // navigating so the login page cannot mount with a dead credential.
+    localStorage.removeItem('token')
+    pwd.old_password = ''
+    pwd.new_password = ''
+    ElMessage.success('密码已修改，请重新登录')
+    router.push('/login')
+  } catch { /* axios 已提示 */ }
 }
 
 async function loadCommentSettings() {
@@ -957,9 +1148,9 @@ async function saveProcessSettings() {
 
 onMounted(() => {
   loadRoots()
-  loadSettings()
   loadDiag()
   loadCommentSettings()
+  loadAiSchedule()
   loadProcessSettings()
   loadBreakdownSettings()
   loadSyncSettings()
@@ -1030,5 +1221,38 @@ onUnmounted(stopPolling)
   color: #909399;
   font-size: 12px;
   margin-left: 8px;
+}
+
+.orphan-list {
+  list-style: none; margin: 0; padding: 0; max-height: 280px; overflow: auto;
+  border: 1px solid var(--line-soft); background: var(--surface-2);
+}
+.orphan-list li { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); min-width: 0; }
+.orphan-list li:last-child { border-bottom: 0; }
+.orphan-list code { overflow-wrap: anywhere; }
+
+/* AI 时段 */
+.ai-window-head { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; }
+.ai-window-head .grow { flex: 1; }
+.ai-window-list { display: flex; flex-direction: column; gap: 8px; }
+.ai-window-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid var(--line-soft); background: var(--surface-2);
+}
+.ai-window-row .grow { flex: 1; }
+.ai-window-days { display: flex; gap: 4px; }
+.ai-day {
+  width: 30px; height: 28px; padding: 0; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+  font: inherit; font-size: var(--fs-sm);
+}
+.ai-day.on { border-color: var(--ink); background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.ai-window-sep { color: var(--muted); font-size: var(--fs-sm); }
+.ai-window-note { margin: 12px 0 14px; }
+.ai-window-empty { padding: 24px 12px; border: 1px dashed var(--line); }
+
+@media (max-width: 720px) {
+  .ai-window-row { align-items: flex-start; }
+  .ai-window-days { flex-wrap: wrap; }
 }
 </style>

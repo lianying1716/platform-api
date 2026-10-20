@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { DEMO_MODE, demoReadOnlyMessage, loadSnapshot, resolveSnapshot } from './demo/runtime'
 
 export const api = axios.create({ baseURL: '/' })
@@ -43,6 +43,7 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && !location.hash.includes('/login')) {
       localStorage.removeItem('token')
       location.hash = '#/login'
+      ElMessage.error(typeof detail === 'string' ? detail : '登录已过期，请重新登录')
     } else if (detail) {
       ElMessage.error(typeof detail === 'string' ? detail : JSON.stringify(detail))
     } else if (error.response) {
@@ -66,6 +67,11 @@ export interface PlatformInfo {
   credential_kind: string
   supports_qr: boolean
   credential_fields: { key: string; label: string; required: boolean }[]
+  source_types: { value: string; label: string }[]
+  download_qualities: { value: string; label: string }[]
+  keyword_crawl: boolean
+  comments: boolean
+  follow_import: boolean
 }
 
 export interface Account {

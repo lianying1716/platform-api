@@ -28,7 +28,12 @@ def _seed_asset(db, *, author_id="A", platform="douyin", external_id="aw1", titl
     )
     db.add(c)
     db.flush()
-    a = MediaAsset(content_id=c.id, relative_path=f"douyin/{c.id}", video_file="v.mp4")
+    a = MediaAsset(
+        content_id=c.id,
+        relative_path=f"douyin/{c.id}",
+        video_file="v.mp4",
+        download_status="done",
+    )
     db.add(a)
     db.commit()
     return c, a
@@ -88,19 +93,22 @@ def test_post_breakdown_enqueues(client, _engine):
 
     r = client.post(f"/api/assets/{asset_id}/breakdown", json={})
     assert r.status_code == 200
-    assert r.json()["job_id"]
+    body = r.json()
+    assert body["status"] == "waiting_prerequisite"
+    assert body["job_id"] is None
 
     db = _session(_engine)
-    jobs = db.query(JobQueue).filter(JobQueue.job_type == "breakdown").all()
+    jobs = db.query(JobQueue).filter(JobQueue.job_type == "transcribe").all()
     assert len(jobs) == 1
-    assert jobs[0].payload == {"asset_id": asset_id, "force": False}
+    assert jobs[0].payload == {"asset_id": asset_id}
+    assert db.query(JobQueue).filter_by(job_type="breakdown").count() == 0
     row = db.query(ViralBreakdown).filter(ViralBreakdown.asset_id == asset_id).one()
     assert row.status == "pending"  # 入队即置 pending，GET 立刻可读
     db.close()
 
 
 def test_post_breakdown_force_payload(client, _engine):
-    from app.models import JobQueue
+    from app.models import JobQueue, PipelineStep, PipelineRun
 
     db = _session(_engine)
     _, asset = _seed_asset(db)
@@ -109,14 +117,17 @@ def test_post_breakdown_force_payload(client, _engine):
 
     assert client.post(f"/api/assets/{asset_id}/breakdown", json={"force": True}).status_code == 200
     db = _session(_engine)
-    jobs = db.query(JobQueue).filter(JobQueue.job_type == "breakdown").all()
-    assert jobs[0].payload["force"] is True
+    run = db.query(PipelineRun).filter_by(asset_id=asset_id).one()
+    step = db.query(PipelineStep).filter_by(run_id=run.id, step="breakdown").one()
+    assert step.payload["force"] is True
+    assert step.status == "waiting_prerequisite"
+    assert db.query(JobQueue).filter_by(job_type="breakdown").count() == 0
     db.close()
 
 
 def test_post_breakdown_force_string_false_normalized(client, _engine):
     """字符串 "false" 必须归一为 False（与 process/reclassify 同款 Pydantic 归一）。"""
-    from app.models import JobQueue
+    from app.models import JobQueue, PipelineStep, PipelineRun
 
     db = _session(_engine)
     _, asset = _seed_asset(db)
@@ -125,8 +136,10 @@ def test_post_breakdown_force_string_false_normalized(client, _engine):
 
     client.post(f"/api/assets/{asset_id}/breakdown", json={"force": "false"})
     db = _session(_engine)
-    jobs = db.query(JobQueue).filter(JobQueue.job_type == "breakdown").all()
-    assert jobs[0].payload["force"] is False
+    run = db.query(PipelineRun).filter_by(asset_id=asset_id).one()
+    step = db.query(PipelineStep).filter_by(run_id=run.id, step="breakdown").one()
+    assert step.payload["force"] is False
+    assert db.query(JobQueue).filter_by(job_type="breakdown").count() == 0
     db.close()
 
 
@@ -403,16 +416,26 @@ def test_breakdown_endpoint_end_to_end_done(client, _engine, monkeypatch):
     db = _session(_engine)
     _, asset = _seed_asset(db)
     asset_id = asset.id
-    from app.models import SystemSetting
+    from app.models import SystemSetting, Transcript, VideoUnderstanding
 
-    db.add(SystemSetting(key="llm_base_url", value="http://x/v1"))
-    db.add(SystemSetting(key="llm_api_key", value="k"))
-    db.add(SystemSetting(key="llm_model", value="m"))
+    db.add(SystemSetting(key="breakdown_prompt", value="m"))
+    db.add(Transcript(asset_id=asset.id, full_text="已经转录", language="zh", model="base"))
+    db.add(
+        VideoUnderstanding(
+            asset_id=asset.id,
+            category="other",
+            summary="已经理解",
+            dimensions={"visual": "画面"},
+            timeline=[{"t": 1, "event": "开场"}],
+            status="done",
+            model="base",
+        )
+    )
     _seed_metric(db, asset.content_id, play=500, like=50)
     db.commit()
     db.close()
 
-    async def fake_run_llm(system, user, *, base_url, api_key, model, timeout=90):
+    async def fake_run_llm(system, user, *, call_model, timeout=90):
         return {
             "data": {"verdict": "钩子好", "score": 77, "hook": {"hook_type": "反常识"}},
             "usage": {"total_tokens": 9},
