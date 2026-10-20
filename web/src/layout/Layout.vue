@@ -163,23 +163,6 @@ onUnmounted(() => {
 
 <style scoped>
 .ui-main, .ui-content { min-width: 0; }
-.ui-mobile-nav { display: none; }
-@media (max-width: 820px) {
-  .ui-app { grid-template-columns: 1fr; }
-  .ui-app .ui-side { display: none; }
-  .ui-mobile-nav {
-    display: flex; align-items: center; gap: 4px; overflow-x: auto;
-    padding: 8px 12px; margin: 0; background: var(--surface);
-    border-bottom: 1px solid var(--line); white-space: nowrap;
-  }
-  .ui-mobile-link {
-    flex: none; padding: 5px 9px; color: var(--ink-2); text-decoration: none;
-    font-size: var(--fs-sm); border: 1px solid var(--line); border-radius: 4px;
-  }
-  .ui-mobile-link.router-link-active { color: var(--accent); border-color: var(--accent); }
-  .ui-content { padding: 14px 12px; }
-  .ui-top { height: auto; flex-wrap: wrap; padding: 8px 12px; }
-}
 .ui-brand .bt { white-space: nowrap; font-size: 16px; }
 .ui-brand .bt-en {
   font-size: 10px;

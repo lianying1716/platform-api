@@ -487,9 +487,41 @@
 .ui-switchbar button.on { background: oklch(0.79 0.145 178); border-color: oklch(0.79 0.145 178); color: oklch(0.19 0.03 260); font-weight: 600; }
 .ui-switchbar .pgroup button.on { background: oklch(0.9 0.008 265); color: oklch(0.16 0.008 265); }
 
+/* ---------- 窄屏骨架 ----------
+   规则必须放在全局样式里：Layout.vue 的 scoped CSS 会编译成
+   .ui-app[data-v-xxx]，而 .ui-app 是根节点、没有该作用域属性，
+   断点就会完全失效。桌面侧栏在这里切换成移动顶部导航。 */
+.ui-mobile-nav { display: none; }
+@media (max-width: 820px) {
+  /* Theme selectors such as [data-dir='bauhaus'] .ui-app have higher
+     specificity than .ui-app alone; match it or the hidden sidebar still
+     reserves its 244-252px grid column on mobile. */
+  .ui-app, [data-dir] .ui-app { grid-template-columns: minmax(0, 1fr); }
+  .ui-app .ui-side { display: none; }
+  /* Flex/grid children default to min-width:auto, so a wide table can still
+     push the whole page even when its immediate wrapper scrolls. */
+  .ui-main, .ui-content, .ui-page, .ui-page > *, .ui-panel, .ui-panel-body,
+  .ui-cols > *, .ui-table-scroll, .table-panel {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  .ui-mobile-nav {
+    display: flex; align-items: center; gap: 4px; overflow-x: auto;
+    padding: 8px 12px; margin: 0; background: var(--surface);
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  .ui-mobile-link {
+    flex: none; padding: 5px 9px; color: var(--ink-2); text-decoration: none;
+    font-size: var(--fs-sm); border: 1px solid var(--line); border-radius: 4px;
+  }
+  .ui-mobile-link.router-link-active { color: var(--accent); border-color: var(--accent); }
+  .ui-content { padding: 14px 12px; }
+  .ui-top { height: auto; flex-wrap: wrap; padding: 8px 12px; }
+}
+
 /* ---------- 静态演示站窄屏适配 ----------
-   演示站会被手机直接打开；生产工作台是桌面工具，不受这里影响。
-   处理方式：侧栏从固定列变成顶部横向导航条，主区占满整宽。 */
+   演示站有自己的顶部导航形态，覆盖上面的工作台骨架规则。 */
 @media (max-width: 820px) {
   .ui-app.demo-mode {
     display: block;
