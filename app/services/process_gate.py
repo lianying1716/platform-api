@@ -212,6 +212,7 @@ def select_targets(
                 "content_id": c.id,
                 "like": m.like,
                 "comment": m.comment,
+                # The heat scorer treats None as unknown rather than a measured 0.
                 "play": m.play,
                 "existing_tier": _existing_tier(asset),
             }

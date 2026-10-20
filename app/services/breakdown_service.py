@@ -115,23 +115,25 @@ def _data_context(db: Session, content: ContentItem, asset: MediaAsset) -> dict:
     latest = _latest_metrics(db, ids)
 
     me = latest.get(content.id)
-    m_play = int(getattr(me, "play", 0) or 0)
-    m_like = int(getattr(me, "like", 0) or 0)
-    m_comment = int(getattr(me, "comment", 0) or 0)
-    m_favorite = int(getattr(me, "favorite", 0) or 0)
-    m_share = int(getattr(me, "share", 0) or 0)
+    m_play = me.play if me and me.play is not None else None
+    m_like = me.like if me and me.like is not None else None
+    m_comment = me.comment if me and me.comment is not None else None
+    m_favorite = me.favorite if me and me.favorite is not None else None
+    m_share = me.share if me and me.share is not None else None
 
     # 该作者全部内容的最新播放/点赞（本条也含在内）。
     # 中位数口径：只统计「有快照」的内容——未拍到的作品不以 0 计入分母，
     # 否则会拉低中位数、虚高倍数/分位（T3 review Minor①，Task 4 定稿）。
     snapshot_ids = [i for i in ids if latest.get(i) is not None]
-    plays = [float(getattr(latest.get(i), "play", 0) or 0) for i in snapshot_ids]
-    likes = [float(getattr(latest.get(i), "like", 0) or 0) for i in snapshot_ids]
+    plays = [float(latest[i].play) for i in snapshot_ids if latest[i].play is not None]
+    likes = [float(latest[i].like) for i in snapshot_ids if latest[i].like is not None]
     median_play = _median(plays)
     median_like = _median(likes)
 
     engagement_rate = (
-        (m_like + m_comment + m_favorite + m_share) / m_play if m_play else 0.0
+        (m_like + m_comment + m_favorite + m_share) / m_play
+        if m_play and None not in (m_like, m_comment, m_favorite, m_share)
+        else (0.0 if m_play == 0 else None)
     )
 
     return {
@@ -142,10 +144,11 @@ def _data_context(db: Session, content: ContentItem, asset: MediaAsset) -> dict:
         "share": m_share,
         "median_play": median_play,
         "median_like": median_like,
-        "play_vs_median": (m_play / median_play) if median_play else 0.0,
-        "like_vs_median": (m_like / median_like) if median_like else 0.0,
+        # Zero denominator keeps the legacy numeric 0; unknown numerator stays None.
+        "play_vs_median": (m_play / median_play) if m_play is not None and median_play else (0.0 if m_play == 0 else None),
+        "like_vs_median": (m_like / median_like) if m_like is not None and median_like else (0.0 if m_like == 0 else None),
         "engagement_rate": engagement_rate,
-        "percentile": _percentile(plays, float(m_play)),
+        "percentile": _percentile(plays, float(m_play)) if m_play is not None else None,
     }
 
 

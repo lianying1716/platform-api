@@ -328,12 +328,14 @@ function num(v: any) {
   return Number(v || 0).toLocaleString('zh-CN')
 }
 function compact(v: any) {
+  if (v === null || v === undefined || v === '') return '—'
   const n = Number(v || 0)
   if (n >= 1e8) return `${(n / 1e8).toFixed(1)}亿`
   if (n >= 1e4) return `${(n / 1e4).toFixed(1)}万`
   return num(n)
 }
 function pct(v: any, d = 1) {
+  if (v === null || v === undefined) return '—'
   return `${(Number(v || 0) * 100).toFixed(d)}%`
 }
 function mult(v: any) {

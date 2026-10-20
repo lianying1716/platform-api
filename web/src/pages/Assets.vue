@@ -891,6 +891,7 @@ function mmss(sec: number) {
   return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 function compact(v: any) {
+  if (v === null || v === undefined || v === '') return '—'
   const n = Number(v || 0)
   if (n >= 1e8) return `${(n / 1e8).toFixed(1)}亿`
   if (n >= 1e4) return `${(n / 1e4).toFixed(1)}万`

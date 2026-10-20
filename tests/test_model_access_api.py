@@ -83,6 +83,43 @@ def test_import_models_and_list_not_expose_ciphertext(client, session):
     assert listed.json()[0]["model_key"] == "m1"
 
 
+def test_setup_state_tracks_generic_provider_model_progression(client, session):
+    assert client.get("/api/model-access/assignments").json()["setup_state"]["stage"] == "no_provider"
+
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",
+        api_key_encrypted="cipher", enabled=False,
+    )
+    session.add(provider)
+    session.commit()
+    assert client.get("/api/model-access/assignments").json()["setup_state"]["stage"] == "provider_disabled"
+
+    provider.enabled = True
+    session.commit()
+    assert client.get("/api/model-access/assignments").json()["setup_state"]["stage"] == "no_models"
+
+    model = AiModel(
+        provider_id=provider.id,
+        model_key="m1",
+        capabilities={
+            "text": {"value": True, "source": "probe", "config_revision": 1},
+            "json": {"value": True, "source": "probe", "config_revision": 1},
+        },
+    )
+    session.add(model)
+    session.commit()
+    state = client.get("/api/model-access/assignments").json()["setup_state"]
+    assert state["stage"] == "no_assignment"
+
+    client.put(
+        "/api/model-access/assignments/text_analysis",
+        json={"primary_model_id": model.id, "fallback_model_id": None},
+    )
+    state = client.get("/api/model-access/assignments").json()["setup_state"]
+    assert state["stage"] == "ready"
+    assert "cover_classify" in state["missing_work_types"]
+
+
 def test_assignment_validation_and_update(client, session):
     provider = AiProvider(
         name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",

@@ -589,8 +589,8 @@ def update_process_settings_api(body: dict, db: Session = Depends(get_db)):
 def diagnostics(db: Session = Depends(get_db)):
     checks: list[dict] = []
 
-    def add(name: str, ok: bool, detail: str = ""):
-        checks.append({"name": name, "ok": ok, "detail": detail})
+    def add(name: str, ok: bool, detail: str = "", *, required: bool = True, fix: str = ""):
+        checks.append({"name": name, "ok": ok, "detail": detail, "required": required, "fix": fix})
 
     add("Python", True, f"{sys.version.split()[0]} / {py_platform.system()}")
     try:
@@ -611,7 +611,17 @@ def diagnostics(db: Session = Depends(get_db)):
     )
     add("加密密钥", key_ok, f"来源：{key_source}（迁移机器必须随行备份）" if key_ok else "未配置或无法加载")
     ffmpeg = shutil.which("ffmpeg")
-    add("FFmpeg", ffmpeg is not None, ffmpeg or "未找到，P2 视频下载/转码需要")
+    add("FFmpeg", ffmpeg is not None, ffmpeg or "未找到，视频下载/转码与转录需要", fix="安装 ffmpeg 并确保位于 PATH")
+    from app.core.runtime_capabilities import runtime_capabilities
+
+    for capability in runtime_capabilities():
+        add(
+            capability.label,
+            capability.available,
+            capability.detail,
+            required=capability.required,
+            fix=capability.fix,
+        )
     try:
         import playwright  # noqa: F401
 
@@ -624,8 +634,20 @@ def diagnostics(db: Session = Depends(get_db)):
             add("浏览器运行时", False, "Playwright 已装但缺 Chromium：uv run playwright install chromium")
         else:
             add("浏览器运行时", False, "未安装。抖音/小红书扫码不可用，可用手动粘 Cookie 兜底")
-        add("Node", st["node_available"], "受管浏览器/JS 运行时检查")
+        add(
+            "Node",
+            st["node_available"],
+            "可选：仅部分外部工具需要；扫码登录不依赖 Node",
+            required=False,
+            fix="需要该工具时安装 Node.js",
+        )
     except ImportError:
         add("浏览器运行时", False, "未安装。抖音/小红书扫码不可用，可用手动粘 Cookie 兜底")
     add("定时体检", scheduler.running, f"间隔 {settings.account_check_interval} 分钟")
-    return {"checks": checks, "all_ok": all(c["ok"] for c in checks)}
+    required_ok = all(c["ok"] for c in checks if c["required"])
+    return {
+        "checks": checks,
+        "all_ok": required_ok,
+        "required_ok": required_ok,
+        "optional_failures": [c["name"] for c in checks if not c["required"] and not c["ok"]],
+    }

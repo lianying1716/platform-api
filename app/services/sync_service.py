@@ -29,6 +29,7 @@ from app.models import (
 )
 from app.modules import get_adapter
 from app.services import foundation
+from app.domain.metrics import normalize_metrics
 
 # 单次订阅同步的拉取上限（保守频率，避免触发平台风控）
 _SYNC_FETCH_LIMIT = 50
@@ -201,7 +202,7 @@ def _apply_sync_settings(items: list[dict], sub: Subscription) -> list[dict]:
         items = [
             it
             for it in items
-            if not (it.get("metrics") and it["metrics"].get("play", 0) < min_play)
+            if not (it.get("metrics") and (it["metrics"].get("play") is not None) and it["metrics"]["play"] < min_play)
         ]
     days = sub.publish_after_days or 0
     if days > 0:
@@ -355,14 +356,11 @@ def _record_metric(db: Session, content: ContentItem, item: dict) -> None:
     m = item.get("metrics")
     if not m:
         return
+    values = normalize_metrics(m)
     db.add(
         ContentMetricSnapshot(
             content_id=content.id,
-            play=m.get("play", 0),
-            like=m.get("like", 0),
-            comment=m.get("comment", 0),
-            favorite=m.get("favorite", 0),
-            share=m.get("share", 0),
+            **values,
         )
     )
 

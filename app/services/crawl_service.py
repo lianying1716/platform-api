@@ -27,6 +27,7 @@ from app.models import (
 from app.domain.capabilities import CRAWL_PLATFORMS
 from app.modules import crawler
 from app.services import foundation
+from app.domain.metrics import normalize_metrics
 
 
 def _pick_crawl_account(db: Session, platform: str, requested_id: int | None = None) -> PlatformAccount | None:
@@ -111,7 +112,11 @@ async def run_crawl_task(db: Session, task_id: int, *, job_id: int | None = None
     added = 0
     touched: list[ContentItem] = []
     for item in items:
-        if task.min_play and item.get("metrics", {}).get("play", 0) < task.min_play:
+        if (
+            task.min_play
+            and item.get("metrics", {}).get("play") is not None
+            and item["metrics"]["play"] < task.min_play
+        ):
             continue
         content, is_new = _upsert(db, task, item, account.id if account else None)
         _persist_foundation(db, task.platform, "crawl", content, item)
@@ -227,14 +232,11 @@ def _record_metric(db: Session, content: ContentItem, item: dict) -> None:
     m = item.get("metrics")
     if not m:
         return
+    values = normalize_metrics(m)
     db.add(
         ContentMetricSnapshot(
             content_id=content.id,
-            play=m.get("play", 0),
-            like=m.get("like", 0),
-            comment=m.get("comment", 0),
-            favorite=m.get("favorite", 0),
-            share=m.get("share", 0),
+            **values,
         )
     )
 

@@ -375,11 +375,16 @@
           </el-table-column>
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
-              <el-tag :type="row.ok ? 'success' : 'danger'" size="small">{{ row.ok ? 'OK' : '异常' }}</el-tag>
+              <el-tag :type="row.ok ? 'success' : (row.required === false ? 'warning' : 'danger')" size="small">
+                {{ row.ok ? 'OK' : (row.required === false ? '可选' : '异常') }}
+              </el-tag>
             </template>
           </el-table-column>
           <el-table-column label="说明" min-width="280">
-            <template #default="{ row }">{{ row.detail }}</template>
+            <template #default="{ row }">
+              <div>{{ row.detail }}</div>
+              <div v-if="!row.ok && row.fix" class="hint">{{ row.fix }}</div>
+            </template>
           </el-table-column>
         </el-table>
       </el-tab-pane>

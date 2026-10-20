@@ -29,7 +29,7 @@ from app.models import (
 from app.modules import model_protocols
 from app.services import model_probe
 from app.services.legacy_llm_migration import legacy_migration_status
-from app.services.model_access_service import WORK_TYPES, capabilities_of
+from app.services.model_access_service import WORK_TYPES, capabilities_of, model_access_setup_state
 
 router = APIRouter(prefix="/api/model-access", tags=["model-access"])
 
@@ -904,7 +904,7 @@ def list_assignments(
             continue
         out_models.append(_model_payload(db, row))
     _api_log(db, actor, "model_access.list_assignments", "ok", started)
-    return {"assignments": out, "models": out_models}
+    return {"assignments": out, "models": out_models, "setup_state": model_access_setup_state(db)}
 
 
 @router.put("/assignments/{work_type}")

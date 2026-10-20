@@ -303,11 +303,12 @@ class ContentMetricSnapshot(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     content_id: Mapped[int] = mapped_column(ForeignKey("content_item.id", ondelete="CASCADE"), index=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
-    play: Mapped[int] = mapped_column(BigInteger, default=0)
-    like: Mapped[int] = mapped_column(BigInteger, default=0)
-    comment: Mapped[int] = mapped_column(BigInteger, default=0)
-    favorite: Mapped[int] = mapped_column(BigInteger, default=0)
-    share: Mapped[int] = mapped_column(BigInteger, default=0)
+    # NULL means the platform did not provide the field; zero is a measured value.
+    play: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    like: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    comment: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    favorite: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    share: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class MediaAsset(Base):

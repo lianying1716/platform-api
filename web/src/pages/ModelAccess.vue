@@ -36,6 +36,17 @@
       <button class="ui-tab" :class="{ on: tab === 'calls' }" @click="switchCalls">调用审计</button>
     </div>
 
+    <section v-if="setupState && !setupState.ready && tab !== 'calls'" class="setup-strip" role="status">
+      <el-icon><WarningFilled /></el-icon>
+      <div class="setup-copy">
+        <strong>{{ setupState.title }}</strong>
+        <span>{{ setupHint(setupState) }}</span>
+      </div>
+      <button class="ui-btn sm primary" @click="runSetupAction(setupState.action)">
+        {{ setupActionLabel(setupState.action) }}
+      </button>
+    </section>
+
     <template v-if="tab === 'models'">
       <section
         v-if="legacyStatus && (legacyStatus.needs_api_key || legacyStatus.pending_validation.length)"
@@ -451,6 +462,7 @@ const tab = ref<'models' | 'assignments' | 'calls'>('models')
 const loading = ref(false)
 const models = ref<any[]>([])
 const assignments = ref<any[]>([])
+const setupState = ref<any | null>(null)
 const legacyStatus = ref<any | null>(null)
 const expanded = reactive(new Set<number>())
 
@@ -516,6 +528,31 @@ const workNames: Record<string, string> = {
 
 function workTitle(type: string) {
   return workNames[type] || type
+}
+
+function setupHint(state: any) {
+  if (state.stage === 'no_provider') return '还没有可用的模型供应商。添加后会读取模型清单。'
+  if (state.stage === 'provider_disabled') return '已有供应商但全部停用，启用后才能检测和调用模型。'
+  if (state.stage === 'no_models') return `已有 ${state.enabled_provider_count} 个启用供应商，但还没有导入模型。`
+  if (state.stage === 'no_assignment') return '模型已导入，但工作还没有分配主模型。'
+  return '供应商、模型和工作分配都已就绪。'
+}
+
+function setupActionLabel(action: string) {
+  const labels: Record<string, string> = {
+    add_provider: '添加模型',
+    enable_provider: '管理供应商',
+    import_models: '添加模型',
+    assign_work: '去分配',
+    verify: '检测模型',
+  }
+  return labels[action] || '下一步'
+}
+
+function runSetupAction(action: string) {
+  if (action === 'enable_provider') return openProviders()
+  if (action === 'assign_work') { tab.value = 'assignments'; return }
+  return openAdd()
 }
 
 function workHint(type: string) {
@@ -609,6 +646,7 @@ async function loadAll(options: { syncDrafts?: boolean } = {}) {
     ])
     models.value = m.data
     assignments.value = a.data.assignments
+    setupState.value = a.data.setup_state || null
     legacyStatus.value = legacy.data?.detected || legacy.data?.claimed ? legacy.data : null
     if (options.syncDrafts !== false) {
       for (const item of assignments.value) {
@@ -1096,6 +1134,18 @@ onBeforeUnmount(() => window.clearTimeout(probePollTimer))
 .vision-copy strong { color: var(--ink); font-size: var(--fs-base); }
 .vision-copy span { color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.5; }
 .vision-note { color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; }
+.setup-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--warn, #b7791f);
+  background: color-mix(in oklab, var(--warn, #b7791f) 10%, var(--surface));
+}
+.setup-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.setup-copy strong { font-size: var(--fs-base); color: var(--ink); }
+.setup-copy span { font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.5; }
 .vision-hint {
   margin: 0;
   padding: 8px 10px;
@@ -1211,6 +1261,10 @@ onBeforeUnmount(() => window.clearTimeout(probePollTimer))
   .xingsuan-note { white-space: normal; }
 }
 @media (max-width: 1100px) { .assignment-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) {
+  .setup-strip { grid-template-columns: auto minmax(0, 1fr); }
+  .setup-strip .ui-btn { grid-column: 1 / -1; justify-self: start; }
+}
 @media (max-width: 860px) {
   .vision-strip { grid-template-columns: auto minmax(0, 1fr); }
   .vision-note { grid-column: 2; white-space: normal; }

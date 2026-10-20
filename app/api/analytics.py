@@ -283,12 +283,16 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
     hot_rows = db.execute(
         select(ContentItem.title, ContentItem.platform, ContentItem.author_name, func.max(ContentMetricSnapshot.play))
         .join(ContentMetricSnapshot, ContentMetricSnapshot.content_id == ContentItem.id)
-        .where(ContentMetricSnapshot.captured_at >= since, *content_filter)
+        .where(
+            ContentMetricSnapshot.captured_at >= since,
+            ContentMetricSnapshot.play.is_not(None),
+            *content_filter,
+        )
         .group_by(ContentItem.id, ContentItem.title, ContentItem.platform, ContentItem.author_name)
         .order_by(desc(func.max(ContentMetricSnapshot.play)))
         .limit(10)
     ).all()
-    hot = [{"title": t, "platform": p, "author": a, "play": play or 0} for t, p, a, play in hot_rows]
+    hot = [{"title": t, "platform": p, "author": a, "play": play} for t, p, a, play in hot_rows]
 
     return {
         "accounts": {"total": accounts_total, "abnormal": accounts_bad},
@@ -509,7 +513,7 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
 
     # 中位数口径：只统计「有快照」的内容，未拍到的作品不以 0 计入分母（否则拉低中位数、虚高倍数）。
     snapshot_ids = [cid for cid in content_ids if cid in latest]
-    plays = [float(latest[cid].play or 0) for cid in snapshot_ids]
+    plays = [float(latest[cid].play) for cid in snapshot_ids if latest[cid].play is not None]
     median_play = _median(plays)
 
     asset_rows = db.execute(
@@ -527,11 +531,11 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
 
     def row_of(c: ContentItem) -> dict:
         m = latest.get(c.id)
-        play = int(getattr(m, "play", 0) or 0)
-        like = int(getattr(m, "like", 0) or 0)
-        comment = int(getattr(m, "comment", 0) or 0)
-        favorite = int(getattr(m, "favorite", 0) or 0)
-        share = int(getattr(m, "share", 0) or 0)
+        play = m.play if m and m.play is not None else None
+        like = m.like if m and m.like is not None else None
+        comment = m.comment if m and m.comment is not None else None
+        favorite = m.favorite if m and m.favorite is not None else None
+        share = m.share if m and m.share is not None else None
         return {
             "content_id": c.id,
             "asset_id": asset_by_content.get(c.id),
@@ -546,8 +550,12 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
             "comment": comment,
             "favorite": favorite,
             "share": share,
-            "engagement_rate": (like + comment + favorite + share) / play if play else 0.0,
-            "viral": bool(median_play and play >= median_play * viral_multiple),
+            "engagement_rate": (
+                (like + comment + favorite + share) / play
+                if play and None not in (like, comment, favorite, share)
+                else None
+            ),
+                "viral": bool(median_play and play is not None and play >= median_play * viral_multiple),
         }
 
     rows = [row_of(c) for c in items]
@@ -565,20 +573,19 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
         "avg_play": _avg(plays),
         "median_play": median_play,
         # 均值口径与 avg_play 一致：只统计有快照的内容，避免无快照作品以 0 拉低均值。
-        "avg_like": _avg([float(latest[cid].like or 0) for cid in snapshot_ids]),
-        "avg_comment": _avg([float(latest[cid].comment or 0) for cid in snapshot_ids]),
+        "avg_like": _avg([float(latest[cid].like) for cid in snapshot_ids if latest[cid].like is not None]),
+        "avg_comment": _avg([float(latest[cid].comment) for cid in snapshot_ids if latest[cid].comment is not None]),
         "avg_engagement_rate": _avg(
             [
                 (
-                    float(latest[cid].like or 0)
-                    + float(latest[cid].comment or 0)
-                    + float(latest[cid].favorite or 0)
-                    + float(latest[cid].share or 0)
-                )
-                / float(latest[cid].play)
-                if latest[cid].play
-                else 0.0
+                    float(latest[cid].like)
+                    + float(latest[cid].comment)
+                    + float(latest[cid].favorite)
+                    + float(latest[cid].share)
+                ) / float(latest[cid].play)
                 for cid in snapshot_ids
+                if latest[cid].play
+                and None not in (latest[cid].like, latest[cid].comment, latest[cid].favorite, latest[cid].share)
             ]
         ),
         "timespan": timespan,
@@ -596,7 +603,7 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
         "best_hours": sorted([h for h in range(24) if hour[h]], key=lambda h: -hour[h])[:3],
     }
 
-    top = sorted(rows, key=lambda r: r["play"], reverse=True)[:10]
+    top = sorted(rows, key=lambda r: (r["play"] is not None, r["play"] or 0), reverse=True)[:10]
 
     # 爆款规律：爆款的类型分布 / 时长 / 发布时段共性。
     virals = [r for r in rows if r["viral"]]
@@ -610,7 +617,7 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
         "count": len(virals),
         "type_distribution": dict(Counter(r["category"] for r in virals)),
         "avg_duration_sec": _avg([float(r["duration_sec"] or 0) for r in virals]),
-        "avg_play": _avg([float(r["play"]) for r in virals]),
+        "avg_play": _avg([float(r["play"]) for r in virals if r["play"] is not None]),
         "top_hours": [h for h, _ in viral_hours.most_common(3)],
         "items": virals,
     }
@@ -633,7 +640,7 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
     platform_ids = [c.id for c in platform_items]
     plat_latest = _latest_snapshots(db, platform_ids)
     plat_snapshot_ids = [cid for cid in platform_ids if cid in plat_latest]
-    plat_plays = [float(plat_latest[cid].play or 0) for cid in plat_snapshot_ids]
+    plat_plays = [float(plat_latest[cid].play) for cid in plat_snapshot_ids if plat_latest[cid].play is not None]
     platform_median = _median(plat_plays)
     benchmark = {
         "platform": platform,
@@ -653,7 +660,8 @@ def creator_report(author_id: str, platform: str | None = None, db: Session = De
         if c is None:
             continue
         cat = plat_cat_map.get(cid) or c.auto_category or "未分类"
-        plat_cat_plays.setdefault(cat, []).append(float(plat_latest[cid].play or 0))
+        if plat_latest[cid].play is not None:
+            plat_cat_plays.setdefault(cat, []).append(float(plat_latest[cid].play))
     plat_cat_median = {k: _median(v) for k, v in plat_cat_plays.items()}
     base = platform_median or _median([v for v in plat_cat_median.values()])
     author_cats = set(pillar.keys())

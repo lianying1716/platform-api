@@ -204,6 +204,44 @@ def assignment_configured(db: Session, work_type: str) -> bool:
     return bool(row and (row.primary_model_id is not None or row.fallback_model_id is not None))
 
 
+def model_access_setup_state(db: Session) -> dict:
+    """A provider-agnostic next-step state shared by API, tests and the UI."""
+    providers = list(db.scalars(select(AiProvider).order_by(AiProvider.id)).all())
+    enabled_providers = [row for row in providers if row.enabled]
+    models = list(db.scalars(select(AiModel).order_by(AiModel.id)).all())
+    providers_by_id = {row.id: row for row in providers}
+    enabled_models = [
+        row
+        for row in models
+        if row.enabled and (providers_by_id.get(row.provider_id) is not None) and providers_by_id[row.provider_id].enabled
+    ]
+    configured_work = [work for work in WORK_TYPES if assignment_configured(db, work)]
+
+    if not providers:
+        stage, action, title = "no_provider", "add_provider", "添加模型供应商"
+    elif not enabled_providers:
+        stage, action, title = "provider_disabled", "enable_provider", "启用模型供应商"
+    elif not enabled_models:
+        stage, action, title = "no_models", "import_models", "导入并检测模型"
+    elif not configured_work:
+        stage, action, title = "no_assignment", "assign_work", "分配工作模型"
+    else:
+        stage, action, title = "ready", "verify", "模型接入已配置"
+
+    return {
+        "stage": stage,
+        "action": action,
+        "title": title,
+        "ready": stage == "ready",
+        "provider_count": len(providers),
+        "enabled_provider_count": len(enabled_providers),
+        "model_count": len(models),
+        "enabled_model_count": len(enabled_models),
+        "configured_work_types": configured_work,
+        "missing_work_types": [work for work in WORK_TYPES if work not in configured_work],
+    }
+
+
 def resolved_transport(db: Session, work_type: str) -> str:
     """返回当前分配的默认视频传输方式，供调用方明确记录来源。
 

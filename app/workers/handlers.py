@@ -609,13 +609,12 @@ async def handle_refresh_metrics(db: Session, payload: dict) -> None:
     )
     if not metrics:
         raise ValueError(f"{content.platform} 暂不支持指标刷新或返回为空")
+    from app.domain.metrics import normalize_metrics
+
+    values = normalize_metrics(metrics)
     db.add(ContentMetricSnapshot(
         content_id=content.id,
-        play=metrics.get("play", 0),
-        like=metrics.get("like", 0),
-        comment=metrics.get("comment", 0),
-        favorite=metrics.get("favorite", 0),
-        share=metrics.get("share", 0),
+        **values,
     ))
     db.commit()
 

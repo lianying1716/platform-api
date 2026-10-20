@@ -360,11 +360,11 @@ def list_assets(
                 "analyze_status": asset.analyze_status,
                 "understand_status": asset.understand_status,
                 "metrics": {
-                    "play": metric.play if metric else 0,
-                    "like": metric.like if metric else 0,
-                    "comment": metric.comment if metric else 0,
-                    "favorite": metric.favorite if metric else 0,
-                    "share": metric.share if metric else 0,
+                    "play": metric.play if metric else None,
+                    "like": metric.like if metric else None,
+                    "comment": metric.comment if metric else None,
+                    "favorite": metric.favorite if metric else None,
+                    "share": metric.share if metric else None,
                 }
                 if metric
                 else None,
@@ -409,11 +409,11 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
             "error": asset.error,
         },
         "metrics": {
-            "play": metric.play if metric else 0,
-            "like": metric.like if metric else 0,
-            "comment": metric.comment if metric else 0,
-            "favorite": metric.favorite if metric else 0,
-            "share": metric.share if metric else 0,
+            "play": metric.play if metric else None,
+            "like": metric.like if metric else None,
+            "comment": metric.comment if metric else None,
+            "favorite": metric.favorite if metric else None,
+            "share": metric.share if metric else None,
         }
         if metric
         else None,
