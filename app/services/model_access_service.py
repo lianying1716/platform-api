@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import time
 import uuid
 from dataclasses import dataclass
@@ -28,6 +30,24 @@ _CAPABILITY_REQUIREMENTS = {
     "cover_classify": ("text", "json"),
     "video_understanding": ("json", "video"),
 }
+
+
+def required_capabilities(db: Session, work_type: str) -> tuple[str, ...]:
+    """Capabilities a work type needs under the current processing settings.
+
+    Cover classification uses image input only when the global "classify with
+    cover" setting is enabled. Reading that setting here keeps setup state,
+    assignment validation and the UI candidate filter aligned with runtime.
+    """
+    needed = list(_CAPABILITY_REQUIREMENTS.get(work_type, ()))
+    if work_type == "cover_classify":
+        from app.core.process_settings import get_process_settings
+
+        settings = get_process_settings(db)
+        if settings.get("classify_enabled", True) and settings.get("use_cover", False):
+            if "image" not in needed:
+                needed.append("image")
+    return tuple(needed)
 
 class RoutingStage(TypedDict):
     used_model_id: int | None
@@ -127,6 +147,10 @@ class ModelCallError(Exception):
         )
 
 
+class ModelConfigError(ModelCallError):
+    """The selected assignment cannot run until the user changes configuration."""
+
+
 def _summary(message: str, limit: int = 512) -> str:
     raw = redact_text(message or "")
     if len(raw) <= limit:
@@ -141,6 +165,16 @@ def _provider_api_key(provider: AiProvider | None) -> str:
         return str(decrypt_credential(provider.api_key_encrypted).get("api_key") or "")
     except Exception:  # noqa: BLE001 旧密文不可读时仍按通用规则脱敏
         return ""
+
+
+def provider_credential_available(provider: AiProvider | None) -> bool:
+    """Whether the provider has a decryptable, non-empty API key.
+
+    A saved ciphertext is not enough: rotations and copied databases can leave
+    an undecryptable value. Setup state must not show ready when every actual
+    model call would fail before reaching the network.
+    """
+    return bool(provider and _provider_api_key(provider).strip())
 
 
 def _redact_secrets(text: str, *, secret: str = "") -> str:
@@ -182,14 +216,49 @@ def capabilities_of(model: AiModel, provider: AiProvider | None = None) -> dict:
     return out
 
 
-def _model_usable(model: AiModel | None, provider: AiProvider | None, work_type: str, *, image_required: bool = False) -> bool:
-    if model is None or provider is None or not model.enabled or not provider.enabled:
+def _model_usable(
+    model: AiModel | None,
+    provider: AiProvider | None,
+    work_type: str,
+    *,
+    image_required: bool = False,
+    required: tuple[str, ...] | None = None,
+) -> bool:
+    if (
+        model is None
+        or provider is None
+        or not model.enabled
+        or not provider.enabled
+        or not provider_credential_available(provider)
+    ):
         return False
     caps = capabilities_of(model, provider)
-    needed = list(_CAPABILITY_REQUIREMENTS.get(work_type, ()))
+    needed = list(required if required is not None else _CAPABILITY_REQUIREMENTS.get(work_type, ()))
     if image_required and "image" not in needed:
         needed.append("image")
     return all(bool((caps.get(name) or {}).get("value")) for name in needed)
+
+
+def model_can_serve(
+    db: Session,
+    model: AiModel | None,
+    provider: AiProvider | None,
+    work_type: str,
+    *,
+    required: tuple[str, ...] | None = None,
+) -> bool:
+    """Single runtime/UI predicate for "this model can do this work now".
+
+    Automatic recommendation used to keep its own capability tuple, which made
+    cover classification select a text-only model as soon as the operator
+    enabled image-based classification.  Keeping the decision here makes the
+    assignment form, setup state, recommendation and worker routing obey the
+    same requirements.
+    """
+    if work_type not in WORK_TYPES:
+        return False
+    needed = required if required is not None else required_capabilities(db, work_type)
+    return _model_usable(model, provider, work_type, required=needed)
 
 
 def resolve_assignment(db: Session, work_type: str) -> ModelAssignment | None:
@@ -199,13 +268,37 @@ def resolve_assignment(db: Session, work_type: str) -> ModelAssignment | None:
 
 
 def assignment_configured(db: Session, work_type: str) -> bool:
-    """该工作是否已有主模型或备用模型分配。"""
+    """该工作是否已有主模型或备用模型分配（不判断模型当前是否可用）。"""
     row = resolve_assignment(db, work_type)
     return bool(row and (row.primary_model_id is not None or row.fallback_model_id is not None))
 
 
+
+def _assignment_usable(db: Session, work_type: str) -> bool:
+    """Whether at least one assigned model can serve this work right now."""
+    row = resolve_assignment(db, work_type)
+    if row is None:
+        return False
+    required = required_capabilities(db, work_type)
+    for model_id in (row.primary_model_id, row.fallback_model_id):
+        if model_id is None:
+            continue
+        model = db.get(AiModel, model_id)
+        provider = db.get(AiProvider, model.provider_id) if model is not None else None
+        if _model_usable(model, provider, work_type, required=required):
+            return True
+    return False
+
+
 def model_access_setup_state(db: Session) -> dict:
-    """A provider-agnostic next-step state shared by API, tests and the UI."""
+    """A provider-agnostic next-step state shared by API, tests and the UI.
+
+    Configuration is not a single global boolean.  A user can assign text
+    analysis while video understanding still has no usable model; treating that
+    as ``ready`` hides the only actionable next step and lets queued video jobs
+    fail behind a green banner.  ``ready`` therefore means every work type has
+    an assignment whose model is currently usable.
+    """
     providers = list(db.scalars(select(AiProvider).order_by(AiProvider.id)).all())
     enabled_providers = [row for row in providers if row.enabled]
     models = list(db.scalars(select(AiModel).order_by(AiModel.id)).all())
@@ -213,9 +306,29 @@ def model_access_setup_state(db: Session) -> dict:
     enabled_models = [
         row
         for row in models
-        if row.enabled and (providers_by_id.get(row.provider_id) is not None) and providers_by_id[row.provider_id].enabled
+        if row.enabled
+        and providers_by_id.get(row.provider_id) is not None
+        and providers_by_id[row.provider_id].enabled
+        and provider_credential_available(providers_by_id[row.provider_id])
     ]
-    configured_work = [work for work in WORK_TYPES if assignment_configured(db, work)]
+    assigned_work = [work for work in WORK_TYPES if assignment_configured(db, work)]
+    configured_work = [work for work in WORK_TYPES if _assignment_usable(db, work)]
+    missing_work = [work for work in WORK_TYPES if work not in configured_work]
+    unverified_work: list[str] = []
+    for work in WORK_TYPES:
+        row = resolve_assignment(db, work)
+        if row is None or not row.legacy_pending_validation:
+            continue
+        model_id = row.primary_model_id or row.fallback_model_id
+        model = db.get(AiModel, model_id) if model_id else None
+        if model is None:
+            continue
+        caps = capabilities_of(model, db.get(AiProvider, model.provider_id))
+        if any(
+            isinstance(item, dict) and item.get("source") == "legacy" and item.get("value") is True
+            for item in caps.values()
+        ):
+            unverified_work.append(work)
 
     if not providers:
         stage, action, title = "no_provider", "add_provider", "添加模型供应商"
@@ -223,10 +336,18 @@ def model_access_setup_state(db: Session) -> dict:
         stage, action, title = "provider_disabled", "enable_provider", "启用模型供应商"
     elif not enabled_models:
         stage, action, title = "no_models", "import_models", "导入并检测模型"
-    elif not configured_work:
+    elif not assigned_work:
         stage, action, title = "no_assignment", "assign_work", "分配工作模型"
+    elif not all(assignment_configured(db, work) for work in WORK_TYPES):
+        stage, action, title = "assignment_incomplete", "assign_work", "补齐工作模型分配"
+    elif missing_work:
+        stage, action, title = "assignment_invalid", "assign_work", "修复不可用的工作分配"
     else:
         stage, action, title = "ready", "verify", "模型接入已配置"
+    if stage == "ready" and unverified_work:
+        # Legacy credentials remain usable for continuity, but a green state must
+        # not hide that no real probe has proven these capabilities yet.
+        stage, action, title = "verify_recommended", "verify", "模型可用，建议完成检测"
 
     return {
         "stage": stage,
@@ -237,8 +358,10 @@ def model_access_setup_state(db: Session) -> dict:
         "enabled_provider_count": len(enabled_providers),
         "model_count": len(models),
         "enabled_model_count": len(enabled_models),
+        "assigned_work_types": assigned_work,
         "configured_work_types": configured_work,
-        "missing_work_types": [work for work in WORK_TYPES if work not in configured_work],
+        "missing_work_types": missing_work,
+        "unverified_work_types": unverified_work,
     }
 
 
@@ -286,8 +409,13 @@ class ModelAccessService:
 
         primary_provider = db.get(AiProvider, primary.provider_id) if primary else None
         fallback_provider = db.get(AiProvider, fallback.provider_id) if fallback else None
-        primary_ok = _model_usable(primary, primary_provider, work_type, image_required=image_required)
-        fallback_ok = _model_usable(fallback, fallback_provider, work_type, image_required=image_required)
+        required = required_capabilities(db, work_type)
+        primary_ok = _model_usable(
+            primary, primary_provider, work_type, image_required=image_required, required=required
+        )
+        fallback_ok = _model_usable(
+            fallback, fallback_provider, work_type, image_required=image_required, required=required
+        )
 
         primary_class = ""
         primary_message = ""
@@ -308,7 +436,7 @@ class ModelAccessService:
 
         if not primary_ok and not fallback_ok:
             if primary is None and fallback is None:
-                raise ModelCallError(
+                raise ModelConfigError(
                     f"{_WORK_TYPE_LABELS.get(work_type, work_type)}没有配置可用模型",
                     attempt_group_id=group_id,
                     primary_model_id=None,
@@ -320,7 +448,7 @@ class ModelAccessService:
                     fallback_error_class="",
                     fallback_error_message="",
                 )
-            raise ModelCallError(
+            raise ModelConfigError(
                 f"{_WORK_TYPE_LABELS.get(work_type, work_type)}没有可用模型",
                 attempt_group_id=group_id,
                 primary_model_id=primary.id if primary else None,
@@ -356,14 +484,15 @@ class ModelAccessService:
             job_id=job_id,
         )
         try:
-            parsed, usage = await self._invoke(
-                first_provider,
-                first_model,
-                request,
-                parse_result,
-                validate_result,
-                video_request=video_request,
-            )
+            async with self._attempt(first_attempt_id, first_provider):
+                parsed, usage = await self._invoke(
+                    first_provider,
+                    first_model,
+                    request,
+                    parse_result,
+                    validate_result,
+                    video_request=video_request,
+                )
             self._finish_attempt(first_attempt_id, status="ok", usage=usage)
             return ModelCallResult(
                 data=parsed,
@@ -424,14 +553,15 @@ class ModelAccessService:
             job_id=job_id,
         )
         try:
-            parsed, usage = await self._invoke(
-                second_provider,
-                second_model,
-                request,
-                parse_result,
-                validate_result,
-                video_request=video_request,
-            )
+            async with self._attempt(second_attempt_id, second_provider):
+                parsed, usage = await self._invoke(
+                    second_provider,
+                    second_model,
+                    request,
+                    parse_result,
+                    validate_result,
+                    video_request=video_request,
+                )
             self._finish_attempt(second_attempt_id, status="ok", usage=usage)
             return ModelCallResult(
                 data=parsed,
@@ -474,6 +604,30 @@ class ModelAccessService:
                 fallback_error_class=fallback_class,
                 fallback_error_message=fallback_message,
             ) from second_error
+
+    @contextlib.asynccontextmanager
+    async def _attempt(self, attempt_id: int, provider: AiProvider):
+        """Close an audit row even when the coroutine is cancelled or a bare
+        ``BaseException`` escapes.  ``except Exception`` in the caller covers
+        normal failures; this guard closes the crash/cancel gap before the
+        periodic reconciler has to infer it from age.
+        """
+        try:
+            yield
+        except BaseException as exc:
+            if isinstance(exc, Exception):
+                # Ordinary failures are finished by the caller with the same
+                # classification after fallback bookkeeping; doing it here too
+                # would be harmless but hides which path ran.
+                raise
+            message = _redact_secrets(str(exc), secret=_provider_api_key(provider))[:8000]
+            self._finish_attempt(
+                attempt_id,
+                status="error",
+                error_class="cancelled" if isinstance(exc, asyncio.CancelledError) else "interrupted",
+                error_message=message or f"调用被中断：{type(exc).__name__}",
+            )
+            raise
 
     async def _invoke(
         self,

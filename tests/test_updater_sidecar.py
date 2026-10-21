@@ -21,12 +21,25 @@ class _FakeEngine:
     def is_busy(self):
         return self._busy
 
-    def start(self, version, from_version="", reversible=True):
-        from app.updater.engine import UpgradeJob
+    def start(self, version, from_version="", reversible=True, expected_commit=""):
+        return self.execute(self.claim(
+            version, from_version=from_version, reversible=reversible,
+            expected_commit=expected_commit,
+        ))
 
-        self.started.append((version, from_version, reversible))
+    def claim(self, version, from_version="", reversible=True, expected_commit=""):
+        from app.updater.engine import UpgradeJob
+        from app.updater.engine import UpgradeBusy
+
+        if self.is_busy():
+            raise UpgradeBusy("busy")
+
         self.job = UpgradeJob(version=version, from_version=from_version, status="success")
         return self.job
+
+    def execute(self, job):
+        self.started.append((job.version, job.from_version, job.reversible, job.expected_commit))
+        return job
 
     def latest(self):
         return self.job
@@ -107,7 +120,7 @@ def test_upgrade_uses_main_api_version_not_sidecar_version(monkeypatch):
         if eng.started:
             break
         time.sleep(0.01)
-    assert eng.started == [("v1.0.10", "v1.0.9", True)]
+    assert eng.started == [("v1.0.10", "v1.0.9", True, "")]
     assert seen
 
 
@@ -128,7 +141,7 @@ def test_upgrade_reports_unknown_from_version_when_main_api_is_unreachable(monke
         if eng.started:
             break
         time.sleep(0.01)
-    assert eng.started == [("v1.0.10", "", True)]
+    assert eng.started == [("v1.0.10", "", True, "")]
 
 
 def test_busy_returns_409(monkeypatch):

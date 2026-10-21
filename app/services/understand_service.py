@@ -134,7 +134,14 @@ async def _classify_category(
         conf = _coerce_conf(result.get("confidence"))
         reason = result.get("reason") or ""
         return cat, conf, reason
-    except Exception as exc:  # noqa: BLE001 - 判类任何失败都不应阻断理解
+    except Exception as exc:
+        # A missing/disabled/incapable model is not a transient classification
+        # miss: retrying the rest of the pipeline with the generic template
+        # would hide the configuration defect and report a successful run.
+        from app.services.model_access_service import ModelConfigError
+
+        if isinstance(exc, ModelConfigError):
+            raise
         logger.warning("判类失败，回退 other: %s", exc)
         return "other", 0.0, f"判类失败，回退通用：{exc}"
 

@@ -253,3 +253,33 @@ def test_legacy_capability_is_usable_only_at_same_revision(session):
     stale = capabilities_of(model, provider)["text"]
     assert stale["value"] is False
     assert stale["source"] == "stale"
+
+
+def test_cancelled_call_finishes_attempt_as_error(monkeypatch):
+    """A cancelled request must not leave a permanent ``running`` audit row."""
+    engine = _engine()
+    Session, db, _p, _primary, _f = _seed(engine)
+
+    async def cancelled(request, *, timeout):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr("app.services.model_access_service.model_protocols.send_request", cancelled)
+    monkeypatch.setattr("app.services.model_access_service.decrypt_credential", lambda _c: {"api_key": "secret"})
+    svc = ModelAccessService(attempt_session_factory=Session)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            svc.call_with_fallback(
+                db,
+                work_type="text_analysis",
+                operation="analyze",
+                request={"messages": [{"role": "user", "content": "hi"}]},
+                parse_result=lambda raw: {"data": raw},
+            )
+        )
+
+    db.expire_all()
+    rows = db.scalars(select(ModelCallAttempt)).all()
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    assert rows[0].error_class == "cancelled"
+    assert rows[0].finished_at is not None

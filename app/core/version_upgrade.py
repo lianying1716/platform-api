@@ -60,7 +60,39 @@ async def fetch_latest(*, repo: str, timeout: float = 10.0) -> dict:
         "latest": data.get("tag_name", ""),
         "name": data.get("name", ""),
         "url": data.get("html_url", ""),
+        # ``target_commitish`` is often a branch name, not a SHA.  Resolve the
+        # actual tag object separately so a same-named image can be tied to a
+        # concrete commit rather than a label.
+        "commit": await fetch_tag_commit(repo=repo, tag=str(data.get("tag_name") or ""), timeout=timeout),
     }
+
+
+async def fetch_tag_commit(*, repo: str, tag: str, timeout: float = 10.0) -> str:
+    """Resolve a release tag to its commit SHA via GitHub's git refs API."""
+    if not tag:
+        return ""
+    from app.config import settings
+
+    url = f"https://api.github.com/repos/{repo}/git/ref/tags/{tag}"
+    headers = {"Accept": "application/vnd.github+json"}
+    if settings.update_github_token:
+        headers["Authorization"] = f"Bearer {settings.update_github_token}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        obj = data.get("object") or {}
+        if obj.get("type") == "tag":
+            # Annotated tag: object.sha points at the tag object, not commit.
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                tag_resp = await client.get(str(obj.get("url") or ""), headers=headers)
+                tag_resp.raise_for_status()
+                obj = (tag_resp.json().get("object") or obj)
+        sha = str(obj.get("sha") or "").strip()
+        return sha if re.fullmatch(r"[0-9a-fA-F]{40}", sha) else ""
+    except (httpx.HTTPError, ValueError, TypeError):
+        return ""
 
 
 async def fetch_latest_redirect(*, repo: str, timeout: float = 10.0) -> dict:
@@ -86,6 +118,10 @@ async def fetch_latest_redirect(*, repo: str, timeout: float = 10.0) -> dict:
         "latest": tag,
         "name": tag,
         "url": location if location.startswith("https://") else f"https://github.com/{repo}/releases/tag/{tag}",
+        # The fallback still knows the tag name, so it can use the same commit
+        # resolver as the REST path.  Leaving this blank would silently weaken
+        # verification whenever the anonymous API quota is exhausted.
+        "commit": await fetch_tag_commit(repo=repo, tag=tag, timeout=timeout),
     }
 
 
@@ -116,6 +152,7 @@ async def check_latest(*, current: str, repo: str = DEFAULT_REPO) -> dict:
                 "url": info["url"],
                 "name": info["name"],
                 "source": "public_redirect",
+                "expected_commit": info.get("commit", ""),
             }
         elif status == 404:
             message = "未找到正式 Release，请确认仓库已创建 GitHub Release"
@@ -137,6 +174,7 @@ async def check_latest(*, current: str, repo: str = DEFAULT_REPO) -> dict:
         "available": bool(latest) and is_newer(latest, current),
         "url": info["url"],
         "name": info["name"],
+        "expected_commit": info.get("commit", ""),
     }
 
 

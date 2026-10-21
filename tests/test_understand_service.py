@@ -145,6 +145,35 @@ def test_run_understand_classify_failure_falls_back_to_other(monkeypatch, sessio
     assert u.status == "done"
 
 
+def test_run_understand_does_not_swallow_model_config_error(monkeypatch, session):
+    """A missing cover-classify model must fail visibly, not become a green 'other'."""
+    from app.services.model_access_service import ModelConfigError
+
+    _c, a = _seed(session)
+
+    async def missing(*a, **k):
+        raise ModelConfigError(
+            "封面判类没有可用模型",
+            attempt_group_id="mg_test",
+            primary_model_id=None,
+            primary_model_key="",
+            fallback_model_id=None,
+            fallback_model_key="",
+            primary_error_class="not_configured",
+            primary_error_message="该工作尚未配置模型",
+            fallback_error_class="",
+            fallback_error_message="",
+        )
+
+    monkeypatch.setattr(svc, "classify", missing)
+    try:
+        asyncio.run(svc.run_understand(session, a.id))
+    except ModelConfigError as exc:
+        assert "没有可用模型" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("模型配置错误不能降级成 other 后仍报告成功")
+
+
 def test_run_understand_classify_disabled(monkeypatch, session):
     from app.models import SystemSetting
 

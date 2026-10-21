@@ -220,6 +220,24 @@ def test_get_breakdown_error_exposes_message(client, _engine):
     assert "score" not in body  # 失败不返回半成品报告
 
 
+def test_get_breakdown_doing_returns_progress_without_partial_report(client, _engine):
+    """The worker persists ``doing`` while polling; it must not become a 500."""
+    from app.models import ViralBreakdown
+
+    db = _session(_engine)
+    _, asset = _seed_asset(db)
+    asset_id = asset.id
+    db.add(ViralBreakdown(asset_id=asset_id, status="doing"))
+    db.commit()
+    db.close()
+
+    response = client.get(f"/api/assets/{asset_id}/breakdown")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "doing"
+    assert "score" not in body
+
+
 def test_get_breakdown_returns_report(client, _engine):
     from app.models import ViralBreakdown
 

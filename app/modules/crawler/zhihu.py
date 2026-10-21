@@ -28,11 +28,13 @@ def _clean(text) -> str:
     return html.unescape(_TAG_RE.sub("", str(text)))
 
 
-def _to_int(value) -> int:
+def _to_int(value) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
     try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _normalize_item(item: dict) -> dict | None:
@@ -59,7 +61,7 @@ def _normalize_item(item: dict) -> dict | None:
     metrics = {
         "like": _to_int(obj.get("voteup_count")),
         "comment": _to_int(obj.get("comment_count")),
-        "play": 0,
+        "play": None,
     }
 
     if content_type == "answer":
@@ -81,7 +83,9 @@ def _normalize_item(item: dict) -> dict | None:
         url = obj.get("video_url") or f"https://www.zhihu.com/zvideo/{content_id}"
         title = obj.get("title") or highlight.get("title") or ""
         cover_url = video.get("thumbnail") or obj.get("thumbnail") or obj.get("cover_url") or ""
-        metrics["play"] = _to_int(video.get("play_count") or obj.get("play_count"))
+        play = video.get("play_count") or obj.get("play_count")
+        if play is not None:
+            metrics["play"] = _to_int(play)
 
     return {
         "external_id": str(content_id),

@@ -8,6 +8,7 @@ from alembic import context  # noqa: E402
 from sqlalchemy import engine_from_config, pool  # noqa: E402
 
 from app.config import settings  # noqa: E402
+from app.core.alembic_config import configured_url  # noqa: E402
 import app.models  # noqa: F401,E402  注册全部模型
 from app.db import Base  # noqa: E402
 
@@ -16,9 +17,10 @@ config = context.config
 # 注意：alembic.ini 里默认是占位符 `driver://user:pass@localhost/dbname`，
 # 它非空但不可用。若直接采用，`alembic upgrade head` 会报 `Can't load plugin:
 # sqlalchemy.dialects:driver`——即命令行迁移永远跑不起来。这里把占位符视为“未设置”。
-_ini_url = (config.get_main_option("sqlalchemy.url") or "").strip()
-if not _ini_url or _ini_url.startswith("driver://"):
-    config.set_main_option("sqlalchemy.url", settings.resolved_database_url)
+_url = configured_url(config)
+if not _url:
+    _url = settings.resolved_database_url
+config.attributes["sqlalchemy_url"] = _url
 target_metadata = Base.metadata
 
 if config.config_file_name is not None:
@@ -27,7 +29,7 @@ if config.config_file_name is not None:
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=configured_url(config),
         target_metadata=target_metadata,
         literal_binds=True,
         compare_type=True,
@@ -39,11 +41,9 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     from app.core.migration_lock import migration_lock
 
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    from sqlalchemy import create_engine
+
+    connectable = create_engine(configured_url(config), poolclass=pool.NullPool)
     with connectable.connect() as connection:
         # 契约 I2：用 DB 级 advisory lock 串行化迁移，避免多进程并发迁移互相打架。
         # 非 PG（SQLite）自动跳过，行为不变。

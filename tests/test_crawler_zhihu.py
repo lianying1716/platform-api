@@ -94,7 +94,7 @@ async def test_search_zhihu_uses_browser_self_signed_response(monkeypatch):
     assert a["author_name"] == "张三"
     assert a["author_id"] == "u1"
     assert a["url"] == "https://www.zhihu.com/question/q1/answer/a1"
-    assert a["metrics"] == {"like": 42, "comment": 7, "play": 0}
+    assert a["metrics"] == {"like": 42, "comment": 7, "play": None}
 
     art = items[1]
     assert art["external_id"] == "art1"

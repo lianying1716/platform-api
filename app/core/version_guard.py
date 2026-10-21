@@ -63,12 +63,11 @@ def _run_migration(db_url: str) -> None:
     from pathlib import Path
 
     from alembic import command
-    from alembic.config import Config
+
+    from app.core.alembic_config import make_config
 
     root = Path(__file__).resolve().parent.parent.parent
-    cfg = Config(str(root / "alembic.ini"))
-    cfg.set_main_option("script_location", str(root / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", db_url)
+    cfg = make_config(root, db_url)
     command.upgrade(cfg, "head")
 
 

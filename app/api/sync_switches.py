@@ -23,6 +23,7 @@ from app.core.crypto import decrypt_credential
 from app.db import get_db
 from app.models import PlatformAccount, Subscription
 from app.modules import get_adapter
+from app import schemas
 
 router = APIRouter(prefix="/api", tags=["sync-switches"], dependencies=[Depends(security.require_admin)])
 
@@ -51,7 +52,7 @@ def _platform_switch_keys(platform: str) -> list[str]:
     return [key for key in ("favorite", "watch_later") if key in supported] + ["creator"]
 
 
-@router.get("/sync-switches/capabilities")
+@router.get("/sync-switches/capabilities", response_model=dict[str, list[str]])
 def switch_capabilities():
     """Return the account-level switch keys that exist for each platform."""
     from app.modules import REGISTRY

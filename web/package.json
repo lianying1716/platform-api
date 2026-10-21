@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "api:check": "python3 ../scripts/generate_api_types.py --check",
+    "check": "npm run api:check && npm run typecheck",
     "build:demo": "VITE_DEMO_MODE=1 vite build --outDir dist-demo --emptyOutDir",
     "preview": "vite preview",
     "build:release": "vite build --outDir ../app/static --emptyOutDir"

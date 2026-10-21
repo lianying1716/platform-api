@@ -68,10 +68,9 @@ def init_db() -> None:
     head = db_head()
     if head:
         from alembic import command
-        from alembic.config import Config
+
+        from app.core.alembic_config import make_config
 
         root = Path(__file__).resolve().parent.parent
-        cfg = Config(str(root / "alembic.ini"))
-        cfg.set_main_option("script_location", str(root / "alembic"))
-        cfg.set_main_option("sqlalchemy.url", settings.resolved_database_url)
+        cfg = make_config(root, settings.resolved_database_url)
         command.stamp(cfg, head)

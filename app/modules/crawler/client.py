@@ -15,6 +15,7 @@ import httpx
 from app.modules.crawler import bili_sign, xhs_sign
 from app.modules.crawler.kuaishou import search_kuaishou
 from app.modules.crawler.zhihu import search_zhihu
+from app.domain.metrics import optional_int as _int_or_none
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
@@ -76,7 +77,7 @@ async def search_bilibili(keyword: str, cookie: str, limit: int, sort: str) -> l
                     "author_id": str(r.get("mid", "")),
                     "url": f"https://www.bilibili.com/video/{r.get('bvid', '')}",
                     "cover_url": ("https:" + r["pic"]) if r.get("pic", "").startswith("//") else r.get("pic", ""),
-                    "metrics": {"play": r.get("play", 0), "like": r.get("like", 0), "comment": r.get("review", 0)},
+                    "metrics": {"play": r.get("play"), "like": r.get("like"), "comment": r.get("review")},
                 })
             page += 1
     return items[:limit]
@@ -119,9 +120,9 @@ async def search_douyin(keyword: str, cookie: str, limit: int, sort: str) -> lis
                 "url": f"https://www.douyin.com/video/{aw.get('aweme_id', '')}",
                 "cover_url": (((aw.get("video") or {}).get("cover") or {}).get("url_list") or [""])[0],
                 "metrics": {
-                    "play": stats.get("play_count", 0), "like": stats.get("digg_count", 0),
-                    "comment": stats.get("comment_count", 0), "favorite": stats.get("collect_count", 0),
-                    "share": stats.get("share_count", 0),
+                    "play": stats.get("play_count"), "like": stats.get("digg_count"),
+                    "comment": stats.get("comment_count"), "favorite": stats.get("collect_count"),
+                    "share": stats.get("share_count"),
                 },
             })
         if not data.get("has_more"):
@@ -167,7 +168,7 @@ async def search_xhs(keyword: str, cookie: str, limit: int, sort: str) -> list[d
                     "author_id": user.get("user_id", ""),
                     "url": f"https://www.xiaohongshu.com/explore/{n.get('id', '')}",
                     "cover_url": ((card.get("cover") or {}).get("url_default") or ""),
-                    "metrics": {"like": int(inter.get("liked_count", 0) or 0)},
+                    "metrics": {"like": _int_or_none(inter.get("liked_count"))},
                     # 后续详情/评论接口必须带 xsec_token + xsec_source，搜索时就要留存。
                     "extra": {
                         "xsec_token": n.get("xsec_token", ""),

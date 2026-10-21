@@ -1,0 +1,232 @@
+{
+  "passed": true,
+  "steps": [
+    {
+      "label": "desktop",
+      "step": "settings-存储目录",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-存储目录.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-模型接入",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-模型接入.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-评论抓取",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-评论抓取.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-AI 时段",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-AI 时段.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-视频理解",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-视频理解.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-爆款拆解",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-爆款拆解.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-同步频率",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-同步频率.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-依赖诊断",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-依赖诊断.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-版本与升级",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-版本与升级.png"
+    },
+    {
+      "label": "desktop",
+      "step": "settings-管理员",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-settings-管理员.png"
+    },
+    {
+      "label": "desktop",
+      "step": "models-loaded",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-models-loaded.png"
+    },
+    {
+      "label": "desktop",
+      "step": "models-assignments",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-models-assignments.png"
+    },
+    {
+      "label": "desktop",
+      "step": "assets-loaded",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-assets-loaded.png"
+    },
+    {
+      "label": "desktop",
+      "step": "pipeline-filter",
+      "ok": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-deep-pipeline-filter.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-存储目录",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-存储目录.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-模型接入",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-模型接入.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-评论抓取",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-评论抓取.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-AI 时段",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-AI 时段.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-视频理解",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-视频理解.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-爆款拆解",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-爆款拆解.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-同步频率",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-同步频率.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-依赖诊断",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-依赖诊断.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-版本与升级",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-版本与升级.png"
+    },
+    {
+      "label": "narrow",
+      "step": "settings-管理员",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-settings-管理员.png"
+    },
+    {
+      "label": "narrow",
+      "step": "models-loaded",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-models-loaded.png"
+    },
+    {
+      "label": "narrow",
+      "step": "models-assignments",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-models-assignments.png"
+    },
+    {
+      "label": "narrow",
+      "step": "assets-loaded",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-assets-loaded.png"
+    },
+    {
+      "label": "narrow",
+      "step": "pipeline-filter",
+      "ok": true,
+      "scrollWidth": 390,
+      "innerWidth": 390,
+      "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-deep-pipeline-filter.png"
+    }
+  ],
+  "console_errors": [],
+  "page_errors": [],
+  "api_errors": []
+}

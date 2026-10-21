@@ -145,8 +145,9 @@ services:
         target: /compose/.env
         bind:
           create_host_path: false
-      # 与 api/worker 共享 data 卷（只读），备份时直接 tar；含 secret.key。
-      - platform-data:/data:ro
+      # 与 api/worker 共享 data 卷。备份只需要读，但自动回滚必须在旧镜像
+      # 启动前恢复 data（封面/媒体/secret.key），因此边车需要对卷有写权限。
+      - platform-data:/data
       # 备份产物持久化，回滚/排查用。
       - platform-backups:/backups
     depends_on:

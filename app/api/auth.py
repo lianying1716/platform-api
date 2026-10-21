@@ -65,7 +65,7 @@ def login(
     return schemas.TokenResponse(token=token)
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=schemas.OkOut)
 def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     auth = request.headers.get("Authorization", "")
     token = auth.removeprefix("Bearer ").strip() or request.cookies.get(security.SESSION_COOKIE, "")
@@ -74,7 +74,7 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.post("/change-password")
+@router.post("/change-password", response_model=schemas.OkOut)
 def change_password(
     body: schemas.ChangePasswordRequest,
     response: Response,

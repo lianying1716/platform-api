@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import schemas
 from app.core import fetch_cache, security
 from app.core.crypto import decrypt_credential
 from app.db import get_db
@@ -98,7 +99,7 @@ def _creator_subs(db: Session) -> list[Subscription]:
     )
 
 
-@router.get("")
+@router.get("", response_model=list[schemas.FollowedCreatorOut])
 def list_followed_creators(
     platform: str | None = None, account_id: int | None = None, db: Session = Depends(get_db)
 ):
@@ -158,7 +159,7 @@ async def _enrich_stats(db: Session, adapter, account, credential, items: list[d
     db.commit()
 
 
-@router.post("/refresh")
+@router.post("/refresh", response_model=schemas.FollowedRefreshOut)
 async def refresh(body: RefreshIn, db: Session = Depends(get_db)):
     """刷新关注列表：默认走 6h 缓存（不频繁拉取）；风控冷却期内只读缓存。
 
@@ -301,7 +302,7 @@ def _get_creator_sub(fc_id: int, db: Session) -> Subscription:
     return sub
 
 
-@router.put("/{fc_id}")
+@router.put("/{fc_id}", response_model=schemas.FollowedCreatorOut)
 def update_followed_creator(fc_id: int, body: ToggleIn, db: Session = Depends(get_db)):
     """改同步开关。直接写 subscription —— 前端两个入口读写的是同一行，不可能漂移。"""
     sub = _get_creator_sub(fc_id, db)
@@ -320,7 +321,7 @@ def update_followed_creator(fc_id: int, body: ToggleIn, db: Session = Depends(ge
     return _out(sub, profiles.get((sub.platform, sub.remote_id)))
 
 
-@router.post("/{fc_id}/sync", status_code=202)
+@router.post("/{fc_id}/sync", status_code=202, response_model=schemas.JobRefOut)
 async def sync_now(fc_id: int, db: Session = Depends(get_db)):
     """立即同步该博主：先确保同步开启，再提交一个同步任务。"""
     sub = _get_creator_sub(fc_id, db)
@@ -336,7 +337,7 @@ async def sync_now(fc_id: int, db: Session = Depends(get_db)):
     return {"job_id": job.id, "status": "queued"}
 
 
-@router.delete("/{fc_id}")
+@router.delete("/{fc_id}", response_model=schemas.UnfollowOut)
 def unfollow(fc_id: int, db: Session = Depends(get_db)):
     """取消关注：软删该 creator 订阅，并停用其来源关系（已入库素材一律保留）。
 

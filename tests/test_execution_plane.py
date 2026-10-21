@@ -15,6 +15,7 @@ from app.models import (
     CrawlTask,
     JobQueue,
     MediaAsset,
+    ModelCallAttempt,
     PlatformAccount,
     Subscription,
     SyncRun,
@@ -363,3 +364,71 @@ def test_real_crawl_service_error_marks_job_error_not_done(_engine, monkeypatch)
     assert job.status == "error" and "账号" in job.error
     assert run is not None and run.status == "error" and run.job_id == job.id
     db.close()
+
+
+def test_stale_model_attempt_is_reconciled(session):
+    from app.services.run_reconciler import reconcile_runs
+
+    row = ModelCallAttempt(
+        attempt_group_id="mg_stale",
+        work_type="text_analysis",
+        operation="analyze",
+        role="primary",
+        status="running",
+        created_at=datetime.utcnow() - timedelta(hours=2),
+    )
+    session.add(row)
+    session.commit()
+
+    assert reconcile_runs(session, older_than_minutes=30)["model_attempt"] == 1
+    session.refresh(row)
+    assert row.status == "error"
+    assert row.error_class == "stale_running"
+    assert row.finished_at is not None
+
+
+def test_fresh_model_attempt_is_not_reconciled(session):
+    from app.services.run_reconciler import reconcile_runs
+
+    row = ModelCallAttempt(
+        attempt_group_id="mg_fresh",
+        work_type="text_analysis",
+        operation="analyze",
+        role="primary",
+        status="running",
+        created_at=datetime.utcnow(),
+    )
+    session.add(row)
+    session.commit()
+
+    assert reconcile_runs(session, older_than_minutes=30) == {}
+    session.refresh(row)
+    assert row.status == "running"
+
+
+def test_model_attempt_owned_by_live_job_is_left_running(session):
+    from app.services.run_reconciler import reconcile_runs
+
+    job = JobQueue(
+        job_type="analyze",
+        payload={"asset_id": 1},
+        status="running",
+        heartbeat_at=datetime.utcnow(),
+    )
+    session.add(job)
+    session.flush()
+    row = ModelCallAttempt(
+        attempt_group_id="mg_live",
+        work_type="text_analysis",
+        operation="analyze",
+        job_id=job.id,
+        role="primary",
+        status="running",
+        created_at=datetime.utcnow() - timedelta(hours=2),
+    )
+    session.add(row)
+    session.commit()
+
+    assert reconcile_runs(session, older_than_minutes=30) == {}
+    session.refresh(row)
+    assert row.status == "running"

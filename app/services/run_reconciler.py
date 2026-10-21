@@ -13,9 +13,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AiModel, CrawlRun, JobQueue, SyncRun
+from app.models import AiModel, CrawlRun, JobQueue, ModelCallAttempt, SyncRun
 
 _STALE_MESSAGE = "运行超时（worker 异常或重启），可重新触发"
+_STALE_MODEL_MESSAGE = "调用记录超时（进程中断或崩溃），结果未知；可重新触发"
 
 
 def _live_job_ids(db: Session, job_type: str, cutoff: datetime) -> set[int]:
@@ -114,6 +115,32 @@ def reconcile_runs(db: Session, *, older_than_minutes: int = 30) -> dict[str, in
         fixed += 1
     if fixed:
         out["probe"] = fixed
+
+    # ModelCallAttempt has no queue job for synchronous API calls, so age is the
+    # lease.  The 30-minute janitor default is longer than the longest model
+    # timeout (300s video) and the queue's stale-run lease.  Rows owned by a
+    # live job are left alone so a slow but healthy call is never rewritten.
+    live_model_jobs = _live_job_ids(db, "analyze", cutoff) | _live_job_ids(
+        db, "understand_video", cutoff
+    ) | _live_job_ids(db, "breakdown", cutoff)
+    attempt_rows = db.scalars(
+        select(ModelCallAttempt).where(
+            ModelCallAttempt.status == "running",
+            ModelCallAttempt.created_at < cutoff,
+        )
+    ).all()
+    fixed = 0
+    for attempt in attempt_rows:
+        if attempt.job_id is not None and attempt.job_id in live_model_jobs:
+            continue
+        attempt.status = "error"
+        attempt.error_class = "stale_running"
+        if not (attempt.error_message or "").strip():
+            attempt.error_message = _STALE_MODEL_MESSAGE
+        attempt.finished_at = datetime.utcnow()
+        fixed += 1
+    if fixed:
+        out["model_attempt"] = fixed
 
     if out:
         db.commit()

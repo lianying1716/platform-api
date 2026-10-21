@@ -81,6 +81,19 @@
     <div class="ov-sub">
       <span><b>{{ num(todayCrawled) }}</b> 今日入库</span>
       <span><b>{{ num(processing.understood) }}</b> 已视频理解</span>
+      <span class="ov-coverage" :class="{ partial: playCoverage.partial }">
+        播放指标
+        <b>{{ num(playCoverage.known) }}/{{ num(playCoverage.total) }}</b>
+        <button
+          v-if="playCoverage.partial"
+          class="ui-link-btn"
+          :disabled="metricBackfillBusy"
+          title="为最新快照仍缺播放的素材批量提交重抓；已排队任务会自动去重"
+          @click="backfillMetrics"
+        >
+          {{ metricBackfillBusy ? '提交中…' : '补抓缺失' }}
+        </button>
+      </span>
       <span><b>{{ num(storageRoots.length) }}</b> 存储根</span>
       <span class="ov-sub-root" :title="storageRootText">{{ storageRootText }}</span>
     </div>
@@ -284,27 +297,43 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import PlatformMark from '../components/PlatformMark.vue'
-import { api } from '../api'
+import { apiCall } from '../api'
 import { safeExternalUrl } from '../utils/safeUrl'
 import EChart from '../components/charts/EChart.vue'
+import type {
+  DashboardCategory,
+  DashboardHotItem,
+  DashboardPlatform,
+  DashboardStorageRoot,
+  DashboardSummary,
+  CreatorStatOut,
+  CreatorReportOut,
+} from '../api.generated'
 
 const router = useRouter()
 const loading = ref(false)
 const accountId = ref<number | null>(null)
 const accounts = ref<Array<{ id: number; platform: string; platform_label?: string; display_name: string }>>([])
-const content = ref({ total: 0, video: 0, article: 0, duration_sec: 0 })
-const platforms = ref<any[]>([])
-const categories = ref<any[]>([])
-const processing = ref({ transcribed: 0, understood: 0, pending: 0, failed: 0 })
-const accountsStat = ref({ total: 0, abnormal: 0 })
-const storageByPlatform = ref<Record<string, number>>({})
-const trend = ref<{ date: string; added: number }[]>([])
-const hot = ref<any[]>([])
-const creators = ref<any[]>([])
+const content = ref<DashboardSummary['content']>({ total: 0, video: 0, article: 0, duration_sec: 0 })
+const platforms = ref<DashboardPlatform[]>([])
+const categories = ref<DashboardCategory[]>([])
+const processing = ref<DashboardSummary['processing']>({
+  transcribed: 0,
+  understood: 0,
+  pending: 0,
+  failed: 0,
+})
+const accountsStat = ref<DashboardSummary['accounts']>({ total: 0, abnormal: 0 })
+const storageByPlatform = ref<DashboardSummary['storage']['by_platform']>({})
+const trend = ref<DashboardSummary['trend']>([])
+const hot = ref<DashboardHotItem[]>([])
+const creators = ref<CreatorStatOut[]>([])
 const todayCrawled = ref(0)
 const weekCrawled = ref(0)
 const storageUsed = ref(0)
-const storageRoots = ref<any[]>([])
+const storageRoots = ref<DashboardStorageRoot[]>([])
+const metricCoverage = ref<DashboardSummary['metric_coverage']>({})
+const metricBackfillBusy = ref(false)
 const trendRange = ref<'14' | '7'>('14')
 
 const trendRanges = [
@@ -359,6 +388,26 @@ function dur(sec: number) {
   const m = Math.floor((s % 3600) / 60)
   if (h > 0) return `${h} 小时 ${m} 分`
   return `${m} 分 ${s % 60} 秒`
+}
+
+const playCoverage = computed(() => {
+  const play = metricCoverage.value.play || { known: 0, total: 0 }
+  const known = Number(play.known || 0)
+  const total = Number(play.total || 0)
+  return { known, total, partial: total > 0 && known < total }
+})
+async function backfillMetrics() {
+  metricBackfillBusy.value = true
+  try {
+    const data = await apiCall('enqueue_bulk_refresh_metrics_api_assets_refresh_metrics_bulk_post', {}, { body: {
+      account_id: accountId.value || undefined,
+      limit: 500,
+    } })
+    ElMessage.success(`已提交 ${data.matched} 条指标补抓`)
+    await load()
+  } finally {
+    metricBackfillBusy.value = false
+  }
 }
 
 const categorizedCount = computed(() => {
@@ -503,16 +552,16 @@ function go(to: string) {
 
 const reportOpen = ref(false)
 const reportLoading = ref(false)
-const report = ref<any>(null)
+const report = ref<CreatorReportOut | null>(null)
 async function openReport(row: any) {
   reportOpen.value = true
   reportLoading.value = true
   report.value = null
   try {
-    const { data } = await api.get(
-      `/api/analytics/creator/${encodeURIComponent(row.author_id)}/report`,
-      { params: { platform: row.platform } },
-    )
+    const data = await apiCall('creator_report_api_analytics_creator__author_id__report_get', {
+      author_id: row.author_id,
+      platform: row.platform,
+    })
     report.value = data
   } catch {
     reportOpen.value = false
@@ -524,11 +573,12 @@ async function openReport(row: any) {
 async function load() {
   loading.value = true
   try {
-    const [{ data }, creatorsResp] = await Promise.all([
-      api.get('/api/dashboard/summary', { params: accountId.value ? { account_id: accountId.value } : {} }),
-      api.get('/api/analytics/creators', {
-        params: { limit: 8, ...(accountId.value ? { account_id: accountId.value } : {}) },
-      }).catch(() => ({ data: [] })),
+    const [data, creatorsResp] = await Promise.all([
+      apiCall('dashboard_summary_api_dashboard_summary_get', accountId.value ? { account_id: accountId.value } : {}),
+      apiCall('analytics_creators_api_analytics_creators_get', {
+        limit: 8,
+        ...(accountId.value ? { account_id: accountId.value } : {}),
+      }).catch(() => [] as CreatorStatOut[]),
     ])
     content.value = data.content || content.value
     platforms.value = data.platforms || []
@@ -541,11 +591,12 @@ async function load() {
     storageUsed.value = data.storage?.used_bytes || 0
     storageByPlatform.value = data.storage?.by_platform || {}
     storageRoots.value = data.storage?.roots || []
+    metricCoverage.value = data.metric_coverage || {}
     accountsStat.value = {
       total: data.accounts?.total || 0,
       abnormal: data.accounts?.abnormal || 0,
     }
-    creators.value = creatorsResp.data || []
+    creators.value = creatorsResp || []
   } catch {
     ElMessage.error('加载总览失败')
   } finally {
@@ -554,7 +605,7 @@ async function load() {
 }
 
 async function loadAccounts() {
-  const { data } = await api.get('/api/accounts')
+  const data = await apiCall('list_accounts_api_accounts_get')
   accounts.value = data
 }
 
@@ -633,6 +684,11 @@ onMounted(async () => {
   font-size: var(--fs-sm); color: var(--muted);
 }
 .ov-sub b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.ov-coverage { display: inline-flex; align-items: center; gap: 5px; }
+.ov-coverage.partial { color: var(--warn-strong, var(--warn)); }
+.ov-coverage.partial b { color: inherit; }
+.ui-link-btn { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
+.ui-link-btn:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ov-sub-root { margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .ui-cols { display: grid; grid-template-columns: 1.15fr 1fr; gap: var(--sp-4); }

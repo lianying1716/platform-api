@@ -50,6 +50,21 @@ export function demoReadOnlyMessage() {
   return '演示站为只读展示，数据不可修改'
 }
 
+/** Apply list pagination in demo mode and keep the logical total accurate. */
+export function paginateSnapshot(value: unknown, params?: Record<string, unknown>): {
+  data: unknown
+  total: number | null
+} {
+  if (!Array.isArray(value)) return { data: value, total: null }
+  const limit = Number(params?.limit || 0)
+  const offset = Number(params?.offset || 0)
+  if (!(limit > 0)) return { data: value, total: value.length }
+  return {
+    data: value.slice(Math.max(0, offset), Math.max(0, offset) + limit),
+    total: value.length,
+  }
+}
+
 export function mediaSrc(assetId: number | string) {
   return DEMO_MODE ? `${BASE}demo-data/media/${assetId}.mp4` : `/api/assets/${assetId}/media`
 }

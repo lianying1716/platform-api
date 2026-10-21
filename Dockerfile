@@ -19,12 +19,24 @@ ENV PLATFORM_BUILD_VERSION=${PLATFORM_BUILD_VERSION} \
     PLATFORM_BUILD_TIME=${PLATFORM_BUILD_TIME}
 
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Pin the build tool itself.  ``latest`` made the same commit rebuild with a
+# different installer implementation on a different day; the application lock
+# was pinned but the thing producing the environment was not.
+COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock ./
 COPY app/ app/
 # 运维/迁移脚本（如 import_douyin_archive.py：把抖小云历史素材就地导入平台库）
 COPY scripts/ scripts/
-RUN uv pip install --system ".[postgres,transcribe]" && uv pip install --system playwright && playwright install --with-deps chromium
+# Install from the committed lockfile.  A plain `uv pip install .[extra]` resolved
+# fresh versions inside the image (observed: av 19 with faster-whisper 1.2.1,
+# which crashes on ``av.open(metadata_errors=...)``).  The lock keeps the tested
+# wheel set, including av 17.1.0, instead of changing production by build date.
+RUN uv export --frozen --no-dev --no-emit-project \
+      --extra postgres --extra transcribe --extra browser \
+      --format requirements-txt --output-file /tmp/requirements.lock \
+    && uv pip install --system --no-deps -r /tmp/requirements.lock \
+    && uv pip install --system --no-deps . \
+    && playwright install --with-deps chromium
 COPY alembic.ini ./
 COPY alembic/ alembic/
 COPY docker-entrypoint.sh ./

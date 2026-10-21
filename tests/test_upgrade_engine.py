@@ -99,6 +99,18 @@ def test_only_one_upgrade_at_a_time():
         e.start("v1.2.0")
 
 
+def test_claim_reserves_slot_before_background_thread_starts():
+    """A competing request must lose before the winner's thread begins."""
+    rec = _Recorder()
+    e = _engine(rec)
+    first = e.claim("v1.2.0")
+    assert e.is_busy()
+    with pytest.raises(eng.UpgradeBusy):
+        e.claim("v1.2.1")
+    e.execute(first)
+    assert first.status == "success"
+
+
 def test_status_progression_is_recorded():
     """进度可查：每个步骤都应写入 job.steps。"""
     rec = _Recorder()

@@ -19,6 +19,9 @@
           {{ v.label }}
         </button>
       </div>
+      <el-select v-model="filters.content_type" placeholder="内容类型" clearable size="small" style="width: 120px" @change="reloadFromFirstPage">
+        <el-option v-for="t in contentTypes" :key="t.value" :label="t.label" :value="t.value" />
+      </el-select>
       <el-select v-model="filters.platform" placeholder="平台" clearable size="small" style="width: 130px" @change="reloadFromFirstPage">
         <el-option label="B站" value="bilibili" />
         <el-option label="抖音" value="douyin" />
@@ -113,12 +116,21 @@
             <div class="meta-grid">
               <div class="mrow"><span class="mk">发布</span><span class="mv">{{ fmtDate(a.published_at) }}</span></div>
               <div class="mrow"><span class="mk">同步</span><span class="mv">{{ fmtMinute(a.synced_at || a.created_at) }}</span></div>
+              <div class="mrow" v-if="playUnknown(a)">
+                <span class="mk">播放</span>
+                <span class="mv metric-unknown">
+                  未抓到
+                  <button class="ui-link-btn" title="从平台重新拉取播放与互动指标" @click="refreshMetrics(a.asset_id)">
+                    补抓
+                  </button>
+                </span>
+              </div>
               <div class="mrow" v-if="hasEngagement(a)">
                 <span class="mk">互动</span>
                 <span class="mv nums-inline">
-                  <span v-if="a.metrics?.like"><b>{{ compact(a.metrics.like) }}</b> 赞</span>
-                  <span v-if="a.metrics?.comment"><b>{{ compact(a.metrics.comment) }}</b> 评</span>
-                  <span v-if="a.metrics?.favorite"><b>{{ compact(a.metrics.favorite) }}</b> 藏</span>
+              <span v-if="hasMetric(a.metrics?.like)"><b>{{ compact(a.metrics.like) }}</b> 赞</span>
+              <span v-if="hasMetric(a.metrics?.comment)"><b>{{ compact(a.metrics.comment) }}</b> 评</span>
+              <span v-if="hasMetric(a.metrics?.favorite)"><b>{{ compact(a.metrics.favorite) }}</b> 藏</span>
                 </span>
               </div>
               <div class="mrow"><span class="mk">大小</span><span class="mv">{{ bytes(a.size_bytes) }}</span></div>
@@ -179,12 +191,8 @@
       </div>
     </div>
 
-    <!-- 分页：总数来自 X-Total-Count，不只是当前页长度。 -->
-    <div v-if="totalPages > 1" class="ui-pager">
-      <button class="ui-btn sm" :disabled="page <= 1 || loading" @click="goPage(page - 1)">上一页</button>
-      <span class="pager-info">第 {{ page }} / {{ totalPages }} 页 · 每页 {{ pageSize }} 条</span>
-      <button class="ui-btn sm" :disabled="page >= totalPages || loading" @click="goPage(page + 1)">下一页</button>
-    </div>
+    <!-- 总数来自 X-Total-Count，不只是当前页长度。 -->
+    <PagedBar :page="page" :page-size="pageSize" :total="total" :disabled="loading" @change="goPage" />
 
     <!-- 视频播放器（走 Range 流式接口，可拖进度条） -->
     <div v-if="player" class="ui-modal" @click.self="player = null">
@@ -517,23 +525,25 @@ import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import PlatformMark from '../components/PlatformMark.vue'
+import PagedBar from '../components/PagedBar.vue'
 import SafeHtml from '../components/SafeHtml.vue'
-import { api } from '../api'
-import { parseUtc } from '../utils/time'
+import { apiCall, apiCallWithMeta } from '../api'
+import { formatDate, formatDateTime, formatMonthDayTime } from '../utils/time'
 import { safeExternalUrl } from '../utils/safeUrl'
 import { coverSrc, localAssetUrl, mediaSrc } from '../demo/runtime'
+import type { AssetCard, AssetCommentPage, AssetDetail } from '../api.generated'
 
 const route = useRoute()
 
-const assets = ref<any[]>([])
+const assets = ref<AssetCard[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = 60
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
-const selected = ref<any[]>([])
+const selected = ref<AssetCard[]>([])
 const loading = ref(false)
 const drawer = ref(false)
-const detail = ref<any>(null)
+const detail = ref<AssetDetail | null>(null)
 // 详情抽屉的横向 tab（详情页内容较多，拆成并列 tab 而不是纵向长滚动）
 const detailTab = ref<'files' | 'transcript' | 'analysis' | 'understand' | 'comments' | 'breakdown'>('files')
 const detailTabs = computed(() => [
@@ -558,7 +568,7 @@ const filteredAccounts = computed(() =>
 )
 
 async function loadAccounts() {
-  const { data } = await api.get('/api/accounts')
+  const data = await apiCall('list_accounts_api_accounts_get')
   accounts.value = data
 }
 
@@ -566,12 +576,18 @@ async function loadAccounts() {
 const failedCovers = reactive(new Set<string>())
 function coverFailed(id: string) { return failedCovers.has(id) }
 function markCoverFailed(id: string) { failedCovers.add(id) }
-const authorAvatarUrl = (a: any) => localAssetUrl(a.author_avatar_url)
+const authorAvatarUrl = (a: AssetCard) => localAssetUrl(a.author_avatar_url)
 
 const typeTabs = [
   { k: '', label: '全部' },
   { k: 'video', label: '视频' },
   { k: 'article', label: '文章' },
+]
+const contentTypes = [
+  { value: 'video', label: '视频' },
+  { value: 'article', label: '文章' },
+  { value: 'answer', label: '回答' },
+  { value: 'image', label: '图文' },
 ]
 function setType(k: string) {
   filters.content_type = k
@@ -580,65 +596,72 @@ function setType(k: string) {
 
 // 卡片选集：默认只在已选或已有勾选时显示勾选框
 const pickMode = ref(false)
-function isPicked(a: any) {
+function isPicked(a: AssetCard) {
   return selected.value.some((x) => x.asset_id === a.asset_id)
 }
-function togglePick(a: any) {
+function togglePick(a: AssetCard) {
   const i = selected.value.findIndex((x) => x.asset_id === a.asset_id)
   if (i >= 0) selected.value.splice(i, 1)
   else selected.value.push(a)
 }
 
 // 视频播放 / 文章阅读
-const player = ref<any>(null)
+const player = ref<AssetCard | null>(null)
 const article = ref<any>(null)
-function openPlayer(a: any) {
+function openPlayer(a: AssetCard) {
   player.value = a
 }
 async function openArticle(assetId: number) {
-  const { data } = await api.get(`/api/assets/${assetId}/article`)
+  const data = await apiCall('get_article_api_assets__asset_id__article_get', { asset_id: assetId })
   article.value = data
 }
 
 // 封面即入口：视频点开播放（需已下载），文章点开阅读（有正文即可）。
-function canOpen(a: any) {
+function canOpen(a: AssetCard) {
   return a.content_type === 'video' ? !!a.playable : true
 }
-function coverHint(a: any) {
+function coverHint(a: AssetCard) {
   if (a.content_type === 'video') return a.playable ? '点击封面播放' : '未下载，无法播放'
   return '点击封面阅读'
 }
-function onCoverClick(a: any) {
+function onCoverClick(a: AssetCard) {
   if (!canOpen(a)) return
   if (a.content_type === 'video') openPlayer(a)
   else openArticle(a.asset_id)
 }
 // 已转录 / 已分析：决定按钮显示「转录」还是「重新转录」。
-function isTranscribed(a: any) {
+function isTranscribed(a: AssetCard) {
   return a.transcribe_status === 'done'
 }
-function isAnalyzed(a: any) {
+function isAnalyzed(a: AssetCard) {
   return a.analyze_status === 'done'
 }
 // 同步时间在卡片里只到分钟，避免 04:09:55 被截断成 04:0…
 function fmtMinute(v: string | null | undefined) {
-  if (!v) return '—'
-  const d = parseUtc(v)
-  if (!d) return '—'
-  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+  return formatMonthDayTime(v)
 }
 
-// 互动指标（赞/评/藏）：平台常拿不到，全为 0 时不占用版面。
-function hasEngagement(a: any) {
+// 互动指标（赞/评/藏）：平台没返回时为 null，真实 0 仍应可见。
+function hasEngagement(a: AssetCard) {
   const m = a.metrics || {}
-  return Boolean(m.like || m.comment || m.favorite)
+  return [m.like, m.comment, m.favorite].some(hasMetric)
+}
+
+function hasMetric(v: any) {
+  return v !== null && v !== undefined
+}
+
+// 视频的 play 为 null 表示平台没有给出播放数（不是实测 0）。文章/回答本来
+// 没有播放指标，不能显示成抓取失败。
+function playUnknown(a: AssetCard) {
+  return a.content_type === 'video' && (a.metrics?.play === null || a.metrics?.play === undefined)
 }
 
 const importDialog = ref(false)
 const importUrl = ref('')
 const importing = ref(false)
 
-const comments = ref<any[]>([])
+const comments = ref<AssetCommentPage['comments']>([])
 const commentTotal = ref(0)
 const commentOffset = ref(0)
 
@@ -747,7 +770,7 @@ function buildDimensionNames(common: any[], prompts: Record<string, any>) {
 async function loadConfig(force = false) {
   if (!force && commonDimensions.value.length) return
   try {
-    const { data } = await api.get('/api/system/process-settings')
+    const data = await apiCall('get_process_settings_api_api_system_process_settings_get')
     taxonomy.value = data.taxonomy || {}
     commonDimensions.value = data.common_dimensions || []
     buildDimensionNames(commonDimensions.value, data.type_prompts || {})
@@ -763,11 +786,11 @@ async function loadProcess(assetId: number, opts: { resetInputs?: boolean } = {}
   }
   understanding.value = null
   understandError.value = ''
-  const u = await api.get(`/api/assets/${assetId}/understanding`)
-  proc.understand_status = u.data.understand_status
-  if (detail.value?.status && u.data.process_tier) detail.value.status.tier = u.data.process_tier
-  understanding.value = u.data.status === 'pending' ? null : u.data
-  understandError.value = u.data.error || ''
+  const u = await apiCall('get_understanding_api_assets__asset_id__understanding_get', { asset_id: assetId })
+  proc.understand_status = u.understand_status
+  if (detail.value?.status && u.process_tier) detail.value.status.tier = u.process_tier
+  understanding.value = u.status === 'pending' ? null : u
+  understandError.value = u.error || ''
   syncProcTimer()
 }
 
@@ -775,11 +798,11 @@ async function runProcess(tier: string) {
   if (!detail.value || procBusy.value) return
   procBusy.value = true
   try {
-    await api.post(`/api/assets/${detail.value.asset_id}/process`, {
+    await apiCall('enqueue_process_api_assets__asset_id__process_post', { asset_id: detail.value.asset_id }, { body: {
       tier,
       force_category: proc.force_category || undefined,
       use_cover: proc.use_cover,
-    })
+    } })
     ElMessage.success('已加入队列')
     await loadProcess(detail.value.asset_id)
   } finally {
@@ -791,10 +814,10 @@ async function runReclassify() {
   if (!detail.value || !proc.force_category || procBusy.value) return
   procBusy.value = true
   try {
-    await api.post(`/api/assets/${detail.value.asset_id}/reclassify`, {
+    await apiCall('enqueue_reclassify_api_assets__asset_id__reclassify_post', { asset_id: detail.value.asset_id }, { body: {
       force_category: proc.force_category,
       use_cover: proc.use_cover,
-    })
+    } })
     ElMessage.success('已按新类型重跑')
     await loadProcess(detail.value.asset_id)
   } finally {
@@ -810,9 +833,14 @@ const hasCommentInsights = computed(() => {
 })
 
 async function loadBreakdown(assetId: number) {
-  const { data } = await api.get(`/api/assets/${assetId}/breakdown`)
+  const data = await apiCall('get_breakdown_api_assets__asset_id__breakdown_get', { asset_id: assetId })
   const breakdownStep = data.pipeline?.steps?.find((row: any) => row.step === 'breakdown')
-  bdStatus.value = breakdownStep?.status || data.status
+  // The domain row is the source of truth for terminal success/failure.  A
+  // workflow step may still say queued/waiting while the worker has already
+  // recorded a terminal error; letting the step win hides the error card.
+  bdStatus.value = ['done', 'error'].includes(data.status)
+    ? data.status
+    : (breakdownStep?.status || data.status)
   pipelineSteps.value = data.pipeline?.steps || []
   if (data.status === 'done') {
     breakdown.value = data
@@ -829,7 +857,9 @@ async function runBreakdown(force: boolean) {
   bdBusy.value = true
   bdRequested.value = true
   try {
-    await api.post(`/api/assets/${detail.value.asset_id}/breakdown`, { force })
+    await apiCall('enqueue_breakdown_api_assets__asset_id__breakdown_post', { asset_id: detail.value.asset_id }, {
+      body: { force },
+    })
     ElMessage.success('已加入拆解队列')
     await loadBreakdown(detail.value.asset_id)
   } finally {
@@ -854,7 +884,9 @@ async function doImport() {
   if (!importUrl.value.trim()) return
   importing.value = true
   try {
-    await api.post('/api/imports/wechat-article', { url: importUrl.value.trim() })
+    await apiCall('import_article_api_imports_wechat_article_post', {}, {
+      body: { url: importUrl.value.trim() },
+    })
     ElMessage.success('导入成功')
     importDialog.value = false
     importUrl.value = ''
@@ -878,7 +910,7 @@ const PLATFORM_LABELS: Record<string, string> = {
 function platformLabel(p: string) {
   return PLATFORM_LABELS[p] || p || '未知'
 }
-const TYPE_LABELS: Record<string, string> = { video: '视频', article: '文章', image: '图文' }
+const TYPE_LABELS: Record<string, string> = { video: '视频', article: '文章', answer: '回答', image: '图文' }
 function typeLabel(t: string) {
   return TYPE_LABELS[t] || t || '内容'
 }
@@ -906,34 +938,32 @@ function bytes(v: any) {
   while (x >= 1024 && i < units.length - 1) { x /= 1024; i += 1 }
   return `${x.toFixed(i >= 3 ? 2 : 0)} ${units[i]}`
 }
-function fmtDate(v: string | null) {
-  if (!v) return '—'
-  const d = parseUtc(v)
-  if (!d) return '—'
-  return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+function fmtDate(v: string | null | undefined) {
+  return formatDate(v)
 }
 // 分类中文名（来自系统设置的类型目录）
 async function loadTaxonomy() {
   try {
-    const { data } = await api.get('/api/system/process-settings')
+    const data = await apiCall('get_process_settings_api_api_system_process_settings_get')
     taxonomy.value = data.taxonomy || {}
   } catch { /* 不阻塞列表 */ }
 }
 // 评论时间：后端为 UTC naive ISO（无 Z），补 'Z' 再按本地时区显示。
 function fmtTime(v: string | null) {
-  if (!v) return ''
-  return parseUtc(v)?.toLocaleString('zh-CN', { hour12: false }) ?? ''
+  return formatDateTime(v, '')
 }
 
 async function load(silent = false) {
   // silent：keep-alive 复用时的后台刷新，不显示遮罩，先展示缓存内容再默默更新。
   if (!silent) loading.value = true
   try {
-    const { data, headers } = await api.get('/api/assets', {
-      params: { ...filters, limit: pageSize, offset: (page.value - 1) * pageSize },
+    const { data, total: count } = await apiCallWithMeta('list_assets_api_assets_get', {
+      ...filters,
+      limit: pageSize,
+      offset: (page.value - 1) * pageSize,
     })
     assets.value = data
-    total.value = Number(headers['x-total-count'] ?? data.length)
+    total.value = count
     // A deletion can shrink the result set under the current page.
     if (page.value > totalPages.value) {
       page.value = totalPages.value
@@ -957,8 +987,7 @@ function reloadFromFirstPage() {
 }
 
 async function openDetail(id: number) {
-  const { data } = await api.get(`/api/assets/${id}`)
-  detail.value = data
+  detail.value = await apiCall('get_asset_api_assets__asset_id__get', { asset_id: id })
   detailTab.value = 'files'
   drawer.value = true
   await loadComments(id)
@@ -982,7 +1011,7 @@ async function removeAsset() {
     return // 用户取消
   }
   try {
-    const { data } = await api.delete(`/api/assets/${detail.value.asset_id}`)
+    const data = await apiCall('delete_asset_api_assets__asset_id__delete', { asset_id: detail.value.asset_id })
     ElMessage.success(`已提交删除任务 #${data.job_id}`)
     drawer.value = false
     await load()
@@ -999,8 +1028,10 @@ async function loadComments(assetId: number, reset = true) {
     comments.value = []
     commentOffset.value = 0
   }
-  const { data } = await api.get(`/api/assets/${assetId}/comments`, {
-    params: { limit: 50, offset: commentOffset.value },
+  const data = await apiCall('list_comments_api_assets__asset_id__comments_get', {
+    asset_id: assetId,
+    limit: 50,
+    offset: commentOffset.value,
   })
   comments.value = reset ? data.comments : [...comments.value, ...data.comments]
   commentTotal.value = data.total
@@ -1011,22 +1042,32 @@ async function loadMoreComments() {
   if (detail.value) await loadComments(detail.value.asset_id, false)
 }
 
-async function act(id: number, kind: string) {
-  await api.post(`/api/assets/${id}/${kind}`)
+const ASSET_ACTIONS = {
+  download: 'enqueue_download_api_assets__asset_id__download_post',
+  transcribe: 'enqueue_transcribe_api_assets__asset_id__transcribe_post',
+  analyze: 'enqueue_analyze_api_assets__asset_id__analyze_post',
+} as const
+
+async function act(id: number, kind: keyof typeof ASSET_ACTIONS) {
+  await apiCall(ASSET_ACTIONS[kind], { asset_id: id })
   ElMessage.success('已加入队列')
   await load()
 }
 
 async function refreshMetrics(id: number) {
-  await api.post(`/api/assets/${id}/refresh-metrics`)
+  await apiCall('enqueue_refresh_metrics_api_assets__asset_id__refresh_metrics_post', { asset_id: id })
   ElMessage.success('已加入指标刷新队列')
   await load()
 }
 
 async function exportSel(format: string) {
   const ids = selected.value.map((a) => a.asset_id)
-  const { data } = await api.post('/api/assets/export', { asset_ids: ids, format })
-  const content = format === 'json' ? JSON.stringify(data, null, 2) : data.content
+  const data = await apiCall('export_assets_api_assets_export_post', {}, {
+    body: { asset_ids: ids, format },
+  })
+  const content = Array.isArray(data)
+    ? JSON.stringify(data, null, 2)
+    : ((data as { content?: string }).content || '')
   const blob = new Blob([content], { type: 'text/plain' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -1110,9 +1151,6 @@ onUnmounted(() => {
 
 <style scoped>
 .ui-page { display: flex; flex-direction: column; gap: var(--sp-5); }
-/* 分页控件：居中的窄条，不与筛选条抢视觉。 */
-.ui-pager { display: flex; align-items: center; justify-content: center; gap: var(--sp-3); }
-.ui-pager .pager-info { color: var(--muted); font-size: var(--fs-sm); }
 .ui-filters { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 .ui-filters .grow { margin-left: auto; }
 
@@ -1371,6 +1409,9 @@ onUnmounted(() => {
 .bd-block p { margin: 4px 0; font-size: 13px; }
 .bd-metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 16px; font-size: 13px; }
 .bd-metric { display: flex; gap: 8px; }
+.metric-unknown { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.ui-link-btn { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
+.ui-link-btn:hover { text-decoration: underline; text-underline-offset: 2px; }
 .bd-list { margin: 4px 0; padding-left: 20px; font-size: 13px; }
 .bd-list li { margin: 2px 0; }
 </style>

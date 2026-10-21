@@ -113,6 +113,34 @@ def test_structured_database_settings_encode_special_characters(monkeypatch):
     assert parsed.database == "archive"
 
 
+def test_raw_special_database_url_fails_with_actionable_configuration_error():
+    from app.config import Settings
+
+    cfg = Settings(
+        database_url="postgresql+psycopg2://alice:p@ss:word/@db:5432/archive",
+    )
+    with pytest.raises(ValueError, match="URL 编码"):
+        _ = cfg.resolved_database_url
+
+
+def test_empty_compose_json_setting_uses_documented_default(monkeypatch):
+    """Compose passes PLATFORM_PLATFORM_PROXIES='' when the user leaves it blank."""
+    from app.config import Settings
+
+    monkeypatch.setenv("PLATFORM_PLATFORM_PROXIES", "")
+    cfg = Settings()
+    assert cfg.platform_proxies == {}
+
+
+def test_alembic_config_does_not_interpolate_encoded_password(tmp_path):
+    from app.core.alembic_config import configured_url, make_config
+
+    url = "postgresql+psycopg2://alice:p%40ss%3Aword%2F@db:5432/archive"
+    cfg = make_config(ROOT, url)
+    assert configured_url(cfg) == url
+    assert cfg.get_main_option("sqlalchemy.url") == ""
+
+
 def test_backup_volume_resolution_uses_compose_not_directory_name(tmp_path):
     if shutil.which("bash") is None:
         pytest.skip("bash is not installed")
@@ -162,6 +190,13 @@ def test_mcp_wizard_has_no_fake_default_directory():
     assert "cd ${projectDir.value}" in text
 
 
+def test_upgrade_ui_sends_and_surfaces_expected_release_commit():
+    text = (ROOT / "web" / "src" / "pages" / "Settings.vue").read_text(encoding="utf-8")
+    assert "expected_commit: update.value.expected_commit" in text
+    assert "无法确认发行提交" in text
+    assert "提交 ${update.value.expected_commit.slice(0, 12)}" in text
+
+
 def test_local_upgrade_uses_local_backup_and_installs_transcription():
     upgrade = (ROOT / "scripts" / "upgrade.sh").read_text(encoding="utf-8")
     backup_local = (ROOT / "scripts" / "backup-local.sh").read_text(encoding="utf-8")
@@ -178,6 +213,54 @@ def test_local_upgrade_uses_local_backup_and_installs_transcription():
     assert "local_stop" in restore_local
     assert "local_start" in restore_local
     assert "sha256sum -c" in restore_local
+
+
+def test_local_upgrade_rebuilds_frontend_before_restarting():
+    upgrade = (ROOT / "scripts" / "upgrade.sh").read_text(encoding="utf-8")
+    assert "npx vite build --outDir \"$STATIC_STAGE\"" in upgrade
+    assert "test -f \"$STATIC_STAGE/index.html\"" in upgrade
+    assert "mv \"$STATIC_STAGE\" app/static" in upgrade
+    assert upgrade.index("build:release") < upgrade.index("alembic upgrade head") if "build:release" in upgrade else True
+    assert upgrade.index("npx vite build") < upgrade.index("systemctl --user restart")
+    assert upgrade.index("npx vite build") < upgrade.index("launchctl kickstart")
+
+
+def test_installer_builds_frontend_to_staging_before_swapping():
+    install = (ROOT / "scripts" / "install-local.sh").read_text(encoding="utf-8")
+    assert "npx vite build --outDir \"$STATIC_STAGE\"" in install
+    assert "mv \"$STATIC_STAGE\" app/static" in install
+    assert install.index("npx vite build") < install.index("mv \"$STATIC_STAGE\" app/static")
+
+
+def test_static_swap_traps_do_not_delete_the_new_bundle(tmp_path):
+    """The EXIT trap must only remove staging, never the swapped-in app/static."""
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not installed")
+    script = tmp_path / "swap.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        "ROOT=\"$1\"\n"
+        "cd \"$ROOT\"\n"
+        "STATIC_STAGE=\"$(mktemp -d \"$ROOT/.app-static-XXXXXX\")\"\n"
+        "STATIC_BACKUP=\"$ROOT/.app-static-backup-$$\"\n"
+        "cleanup_static() { rm -rf \"$STATIC_STAGE\"; }\n"
+        "trap cleanup_static EXIT\n"
+        "printf new > \"$STATIC_STAGE/index.html\"\n"
+        "if [ -e app/static ]; then mv app/static \"$STATIC_BACKUP\"; fi\n"
+        "mv \"$STATIC_STAGE\" app/static\n"
+        "rm -rf \"$STATIC_BACKUP\"\n"
+        "STATIC_BACKUP=\"\"\n"
+        "trap - EXIT\n"
+        "unset STATIC_STAGE\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "repo"
+    (root / "app" / "static").mkdir(parents=True)
+    (root / "app" / "static" / "index.html").write_text("old", encoding="utf-8")
+    result = subprocess.run(["bash", str(script), str(root)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert (root / "app" / "static" / "index.html").read_text(encoding="utf-8") == "new"
 
 
 def test_local_install_help_documents_env_file_and_quotes_paths():
@@ -204,3 +287,37 @@ def test_local_runtime_rejects_occupied_port_and_detaches_processes():
     assert "拒绝启动" in text
     assert "setsid uv run uvicorn" in text
     assert "setsid uv run python -m app.workers.runner" in text
+
+
+def test_release_workflow_runs_transcription_smoke_before_release_publish():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    # Use the step name, not the explanatory comment at the job header.
+    smoke = workflow.index("- name: 镜像内真实转录 smoke")
+    release = workflow.index("- name: 创建 GitHub Release")
+    assert smoke < release
+    assert workflow.index("- name: 构建 amd64 候选镜像（暂不推送）") < smoke
+    assert "push: false" in workflow[:smoke]
+    assert "model.transcribe" in workflow[smoke:release]
+
+
+def test_release_updater_uses_the_digest_of_the_built_main_image():
+    """The sidecar base must be byte-identical to the image built in this run.
+
+    `${github.ref_name}` is a Git ref, not necessarily the semver tag emitted by
+    metadata-action.  Reference the manifest digest instead of assuming they
+    are the same string.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "id: digest" in workflow
+    assert "steps.build.outputs.digest" in workflow
+    assert "BASE_IMAGE=${{ steps.digest.outputs.image }}" in workflow
+    assert "BASE_IMAGE=${{ env.IMAGE }}:${{ github.ref_name }}" not in workflow
+    assert "id: build_updater" in workflow
+    assert "steps.build_updater.outputs.digest" in workflow
+
+
+def test_dockerfile_pins_the_uv_installer_version():
+    """Rebuilding a commit must not pick up a new environment builder."""
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "ghcr.io/astral-sh/uv:latest" not in dockerfile
+    assert "ghcr.io/astral-sh/uv:0.13.4" in dockerfile

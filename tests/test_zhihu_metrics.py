@@ -27,7 +27,7 @@ def test_metrics_from_initial_data_answer():
 
     html = _html({"answers": {"1": {"voteup_count": 42, "comment_count": 7, "favlists_count": 3}}})
     m = zhihu_metrics.metrics_from_html(html, "answer", "1")
-    assert m == {"play": 0, "like": 42, "comment": 7, "favorite": 3, "share": 0}
+    assert m == {"play": None, "like": 42, "comment": 7, "favorite": 3, "share": None}
 
 
 def test_metrics_from_initial_data_zvideo():
@@ -35,7 +35,7 @@ def test_metrics_from_initial_data_zvideo():
 
     html = _html({"zvideos": {"9": {"voteup_count": 5, "comment_count": 1, "play_count": 999}}})
     m = zhihu_metrics.metrics_from_html(html, "video", "9")
-    assert m == {"play": 999, "like": 5, "comment": 1, "favorite": 0, "share": 0}
+    assert m == {"play": 999, "like": 5, "comment": 1, "favorite": None, "share": None}
 
 
 @pytest.mark.asyncio

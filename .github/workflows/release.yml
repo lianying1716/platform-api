@@ -86,7 +86,40 @@ jobs:
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern=v{{major}}
+      - name: 构建 amd64 候选镜像（暂不推送）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: platform-api:release-smoke
+          build-args: |
+            PLATFORM_BUILD_VERSION=${{ github.ref_name }}
+            PLATFORM_BUILD_COMMIT=${{ github.sha }}
+            PLATFORM_BUILD_TIME=${{ github.event.head_commit.timestamp }}
+
+      # Loading Python modules is not enough: the production failure was in the
+      # audio decode/transcribe path.  Exercise ffmpeg + av + faster-whisper on
+      # a generated clip before any release tag reaches the registry.
+      - name: 镜像内真实转录 smoke
+        run: |
+          docker run --rm --entrypoint bash platform-api:release-smoke -c '
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i sine=frequency=440:duration=1 -ar 16000 /tmp/smoke.wav
+          python - <<"PY"
+          import av, faster_whisper
+          from faster_whisper import WhisperModel
+          model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+          segments, info = model.transcribe("/tmp/smoke.wav", vad_filter=True)
+          list(segments)
+          assert info.language
+          print("transcription smoke ok", av.__version__, faster_whisper.__version__, info.language)
+          PY
+          '
+
       - name: 构建并推送（amd64 + arm64）
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -98,6 +131,19 @@ jobs:
             PLATFORM_BUILD_VERSION=${{ github.ref_name }}
             PLATFORM_BUILD_COMMIT=${{ github.sha }}
             PLATFORM_BUILD_TIME=${{ github.event.head_commit.timestamp }}
+
+      # Reference the exact multi-arch manifest just pushed.  The updater's
+      # base used to be `${IMAGE}:${github.ref_name}`, which assumes the
+      # metadata-action semver tag is literally the Git ref.  A digest removes
+      # that assumption and binds the sidecar to bytes produced by this run.
+      - name: 读取主镜像 digest
+        id: digest
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "$DIGEST"
+          echo "image=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
 
       # updater 边车镜像：基于刚推送的主镜像 + docker CLI（一键升级用）。
       # 单独构建，主镜像保持最小攻击面。
@@ -111,6 +157,7 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern=v{{major}}
       - name: 构建并推送 updater 边车镜像
+        id: build_updater
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -120,8 +167,7 @@ jobs:
           tags: ${{ steps.meta_updater.outputs.tags }}
           labels: ${{ steps.meta_updater.outputs.labels }}
           build-args: |
-            # 注意：多架构构建时 base 需按平台解析，官方 action 支持 $BASE_IMAGE 占位为 linux/amd64 主镜像 tag。
-            BASE_IMAGE=${{ env.IMAGE }}:${{ github.ref_name }}
+            BASE_IMAGE=${{ steps.digest.outputs.image }}
 
       # 创建 GitHub Release —— 这是 App「检查更新」读取的事实来源（releases/latest）。
       # 只推 tag/镜像不建 Release 的话，用户点「检查更新」会拿到 404、永远提示"已是最新"。
@@ -132,4 +178,5 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
-            --verify-tag
+            --verify-tag \
+            --notes "platform-api digest: ${{ steps.build.outputs.digest }}${{ '\n' }}updater digest: ${{ steps.build_updater.outputs.digest }}"

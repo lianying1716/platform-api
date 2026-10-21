@@ -437,6 +437,7 @@ async def handle_transcribe(db: Session, payload: dict) -> None:
 
 async def handle_analyze(db: Session, payload: dict, job=None) -> None:
     from app.modules import analysis
+    from app.services.model_access_service import ModelConfigError
 
     asset_id = payload["asset_id"]
     asset = db.get(MediaAsset, asset_id)
@@ -464,11 +465,16 @@ async def handle_analyze(db: Session, payload: dict, job=None) -> None:
             job_id=kwargs.get("job_id") or (job.id if job is not None else None),
         )
 
-    result = await analysis.analyze(
-        title=content.title if content else "",
-        full_text=transcript.full_text,
-        call_model=call_model,
-    )
+    try:
+        result = await analysis.analyze(
+            title=content.title if content else "",
+            full_text=transcript.full_text,
+            call_model=call_model,
+        )
+    except ModelConfigError as exc:
+        # Missing/disabled assignments and capability mismatches need a user
+        # change, not three automatic retries and three operational alerts.
+        raise queue.NonRetryableJobError(str(exc)) from exc
 
     existing = db.query(AnalysisResult).filter(AnalysisResult.asset_id == asset_id).first()
     if existing is None:
@@ -622,6 +628,7 @@ async def handle_refresh_metrics(db: Session, payload: dict) -> None:
 async def handle_understand_video(db: Session, payload: dict, job=None) -> None:
     """高级档视频理解：判类 → 类型专属提示词 → 调 vision → 写 VideoUnderstanding。"""
     from app.services.understand_service import UnderstandInputError, run_understand
+    from app.services.model_access_service import ModelConfigError
 
     asset_id = payload["asset_id"]
     asset = db.get(MediaAsset, asset_id)
@@ -638,11 +645,15 @@ async def handle_understand_video(db: Session, payload: dict, job=None) -> None:
     except UnderstandInputError as exc:
         # 数据问题（素材/内容缺失）不可重试，直接置 error，避免无谓重试。
         raise queue.NonRetryableJobError(str(exc)) from exc
+    except ModelConfigError as exc:
+        # 配置可修复但不是瞬时故障；自动重试只会制造三倍失败与告警。
+        raise queue.NonRetryableJobError(str(exc)) from exc
 
 
 async def handle_breakdown(db: Session, payload: dict, job=None) -> None:
     """爆款拆解：拼装转录/L3/评论/确定性数字 → 调 LLM → 写 ViralBreakdown。"""
     from app.services.breakdown_service import BreakdownInputError, run_breakdown
+    from app.services.model_access_service import ModelConfigError
 
     asset_id = payload["asset_id"]
     asset = db.get(MediaAsset, asset_id)
@@ -655,6 +666,8 @@ async def handle_breakdown(db: Session, payload: dict, job=None) -> None:
         await run_breakdown(db, asset_id, **kwargs)
     except BreakdownInputError as exc:
         # 数据问题（素材/内容缺失）不可重试，直接置 error，避免无谓重试。
+        raise queue.NonRetryableJobError(str(exc)) from exc
+    except ModelConfigError as exc:
         raise queue.NonRetryableJobError(str(exc)) from exc
 
 

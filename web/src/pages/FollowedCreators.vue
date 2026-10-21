@@ -368,9 +368,9 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, reactive, ref } from 'vue'
 import Avatar from '../components/Avatar.vue'
 import PlatformMark from '../components/PlatformMark.vue'
-import { api, type Account, type PlatformInfo } from '../api'
+import { apiCall, type Account, type PlatformInfo } from '../api'
 import { safeExternalUrl } from '../utils/safeUrl'
-import { parseUtc } from '../utils/time'
+import { formatMonthDayTime } from '../utils/time'
 
 /** 统一后的"我跟踪的来源"：博主 = creator 来源，收藏夹/合集 = 其他来源。 */
 interface TrackRow {
@@ -594,13 +594,13 @@ async function load() {
   try {
     // 一次拿全量：关注博主（由后端从订阅+资料合成）与订阅源本来就是同一批数据
     const [subs, creators] = await Promise.all([
-      api.get('/api/subscriptions'),
-      api.get('/api/followed-creators'),
+      apiCall('list_subscriptions_api_subscriptions_get'),
+      apiCall('list_followed_creators_api_followed_creators_get'),
     ])
     const byId = new Map<number, TrackRow>()
-    for (const s of subs.data as TrackRow[]) byId.set(s.id, { ...s })
+    for (const s of subs as unknown as TrackRow[]) byId.set(s.id, { ...s })
     // 用 creator 视图补上博主资料字段（头像/主页/签名/粉丝）
-    for (const c of creators.data as TrackRow[]) {
+    for (const c of creators as unknown as TrackRow[]) {
       const row = byId.get(c.id)
       if (row) Object.assign(row, c, { source_type: 'creator' })
     }
@@ -612,13 +612,13 @@ async function load() {
 
 async function loadAccounts() {
   const [accountRows, roots, platforms] = await Promise.all([
-    api.get('/api/accounts'),
-    api.get('/api/system/storage-roots'),
-    api.get('/api/platforms'),
+    apiCall('list_accounts_api_accounts_get'),
+    apiCall('list_storage_roots_api_system_storage_roots_get'),
+    apiCall('list_platforms_api_platforms_get'),
   ])
-  accounts.value = accountRows.data
-  storageRoots.value = roots.data
-  platformInfo.value = platforms.data
+  accounts.value = accountRows
+  storageRoots.value = roots
+  platformInfo.value = platforms
   syncAccountSelection()
 }
 
@@ -641,9 +641,9 @@ async function refresh(force: boolean) {
   if (!currentAccount.value) return
   refreshing.value = true
   try {
-    const { data } = await api.post('/api/followed-creators/refresh', {
+    const data = await apiCall('refresh_api_followed_creators_refresh_post', {}, { body: {
       account_id: currentAccount.value.id, force,
-    })
+    } })
     cooling.value = !!data.cooling
     if (data.cooling) ElMessage({ message: '平台风控冷却中，当前展示缓存数据', type: 'warning' })
     else if (data.cached) ElMessage.info(`使用了缓存（${data.count} 位）`)
@@ -664,9 +664,13 @@ async function toggleEnabled(row: TrackRow) {
   try {
     if (row.source_type === 'creator') {
       // 只改「关注关系」这一个开关，不能顺手改动 sync_videos。
-      await api.put(`/api/followed-creators/${row.id}`, { sync_enabled: next })
+      await apiCall('update_followed_creator_api_followed_creators__fc_id__put', { fc_id: row.id }, {
+        body: { sync_enabled: next },
+      })
     } else {
-      await api.patch(`/api/subscriptions/${row.id}`, { enabled: next })
+      await apiCall('patch_subscription_api_subscriptions__sub_id__patch', { sub_id: row.id }, {
+        body: { enabled: next },
+      })
     }
     ElMessage.success(next ? '同步已开启' : '同步已关闭')
   } catch (e: any) {
@@ -681,7 +685,9 @@ async function toggleVideos(row: TrackRow) {
   row.sync_videos = next
   if (next) row.enabled = true   // 开后端会一并打开关注关系，前端保持同步
   try {
-    await api.put(`/api/followed-creators/${row.id}`, { sync_videos: next })
+    await apiCall('update_followed_creator_api_followed_creators__fc_id__put', { fc_id: row.id }, {
+      body: { sync_videos: next },
+    })
   } catch (e: any) {
     row.sync_videos = !next
     ElMessage.error(e?.response?.data?.detail || '操作失败')
@@ -700,9 +706,13 @@ async function toggleFull(row: TrackRow) {
     // 按来源类型走各自的写入口：creator 用关注博主接口，收藏夹/合集用订阅接口。
     // 之前这里硬编码 followed-creators，收藏夹/合集会 404「关注博主不存在」。
     if (row.source_type === 'creator') {
-      await api.put(`/api/followed-creators/${row.id}`, { full_sync: nextFull })
+      await apiCall('update_followed_creator_api_followed_creators__fc_id__put', { fc_id: row.id }, {
+        body: { full_sync: nextFull },
+      })
     } else {
-      await api.patch(`/api/subscriptions/${row.id}`, { only_new: !nextFull })
+      await apiCall('patch_subscription_api_subscriptions__sub_id__patch', { sub_id: row.id }, {
+        body: { only_new: !nextFull },
+      })
     }
     ElMessage.success(nextFull ? '已切换为全量同步' : '已切换为仅同步新内容')
   } catch (e: any) {
@@ -714,10 +724,9 @@ async function toggleFull(row: TrackRow) {
 async function syncRow(row: TrackRow) {
   syncing.value = row.id
   try {
-    const url = row.source_type === 'creator'
-      ? `/api/followed-creators/${row.id}/sync`
-      : `/api/subscriptions/${row.id}/sync`
-    const { data } = await api.post(url)
+    const data = row.source_type === 'creator'
+      ? await apiCall('sync_now_api_followed_creators__fc_id__sync_post', { fc_id: row.id })
+      : await apiCall('trigger_sync_api_subscriptions__sub_id__sync_post', { sub_id: row.id })
     ElMessage.success(`已提交同步任务 #${data.job_id}`)
     const run = await waitForSyncJob(row, data.job_id)
     if (run?.status === 'success') {
@@ -736,12 +745,15 @@ async function waitForSyncJob(row: TrackRow, jobId: number): Promise<SyncRunRow 
   const deadline = Date.now() + 10 * 60 * 1000
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2000))
-    const { data: job } = await api.get(`/api/pipeline/jobs/${jobId}`)
+    const job = await apiCall('get_job_api_pipeline_jobs__job_id__get', { job_id: jobId })
     if (job.status === 'error') {
       return { id: 0, job_id: jobId, started_at: null, status: 'error', fetched: 0, added: 0, updated: 0, error: job.error }
     }
     if (job.run_id) {
-      const { data: run } = await api.get(`/api/subscriptions/${row.id}/runs/${job.run_id}`)
+      const run = await apiCall('sync_run_detail_api_subscriptions__sub_id__runs__run_id__get', {
+        sub_id: row.id,
+        run_id: job.run_id,
+      })
       if (run.status !== 'running') return run
     }
     if (job.status === 'done') {
@@ -762,7 +774,7 @@ async function openRuns(row: TrackRow) {
   runsTitle.value = row.title || row.author_name || row.remote_id
   runsLoading.value = true
   try {
-    runs.value = (await api.get(`/api/subscriptions/${row.id}/runs`)).data
+    runs.value = await apiCall('sync_runs_api_subscriptions__sub_id__runs_get', { sub_id: row.id })
   } finally {
     runsLoading.value = false
   }
@@ -808,10 +820,11 @@ async function doRemove() {
   const row = removeTarget.value
   if (!row) return
   try {
-    const url = row.source_type === 'creator'
-      ? `/api/followed-creators/${row.id}`
-      : `/api/subscriptions/${row.id}`
-    await api.delete(url)
+    if (row.source_type === 'creator') {
+      await apiCall('unfollow_api_followed_creators__fc_id__delete', { fc_id: row.id })
+    } else {
+      await apiCall('delete_subscription_api_subscriptions__sub_id__delete', { sub_id: row.id })
+    }
     ElMessage.success('已移除')
     removeTarget.value = null
     await load()
@@ -866,8 +879,9 @@ async function loadSources() {
   sourcesLoading.value = true
   sourcesError.value = ''
   try {
-    const { data } = await api.get(`/api/accounts/${accountId}/remote-sources`, {
-      params: { source_type: form.source_type },
+    const data = await apiCall('remote_sources_api_accounts__account_id__remote_sources_get', {
+      account_id: accountId,
+      source_type: form.source_type,
     })
     if (seq !== sourcesSeq) return
     sources.value = data
@@ -901,12 +915,14 @@ async function submit() {
       auto_transcribe: form.auto_transcribe, auto_analyze: form.auto_analyze,
     }
     if (editing.value) {
-      await api.patch(`/api/subscriptions/${editing.value.id}`, common)
+      await apiCall('patch_subscription_api_subscriptions__sub_id__patch', { sub_id: editing.value.id }, {
+        body: common,
+      })
     } else {
-      await api.post('/api/subscriptions', {
+      await apiCall('create_subscription_api_subscriptions_post', {}, { body: {
         account_id: form.account_id, source_type: form.source_type, remote_id: form.remote_id,
         ...common,
-      })
+      } })
     }
     ElMessage.success('已保存')
     dialog.value = false
@@ -925,10 +941,7 @@ function compact(v: number) {
   return n.toLocaleString('zh-CN')
 }
 function fmt(v: string | null) {
-  if (!v) return '—'
-  const d = parseUtc(v)
-  if (!d) return '—'
-  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return formatMonthDayTime(v)
 }
 
 onMounted(async () => {

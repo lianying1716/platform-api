@@ -119,8 +119,27 @@ if [ -f app/static/index.html ] && [ "${SKIP_WEB_BUILD:-0}" = "1" ]; then
   say "[3/5] 跳过前端构建（app/static 已在，SKIP_WEB_BUILD=1）"
 elif [ "$HAS_NODE" = "1" ]; then
   say "[3/5] 构建前端正式包（npm ci + vite build → app/static/）"
-  ( cd web && npm ci --no-audit --no-fund >/dev/null 2>&1 || npm install --no-audit --no-fund >/dev/null 2>&1
-    npm run build:release )
+  # Build into a staging directory and swap only after success. Vite's
+  # --emptyOutDir would otherwise delete the working UI before a compile error,
+  # leaving users with a server that serves no frontend at all.
+  STATIC_STAGE="$(mktemp -d "$ROOT/.app-static-XXXXXX")"
+  STATIC_BACKUP="$ROOT/.app-static-backup-$$"
+  trap 'rm -rf "$STATIC_STAGE"' EXIT
+  (
+    cd web
+    npm ci --no-audit --no-fund >/dev/null 2>&1 || npm install --no-audit --no-fund >/dev/null 2>&1
+    npx vite build --outDir "$STATIC_STAGE" --emptyOutDir
+  )
+  test -f "$STATIC_STAGE/index.html"
+  if [ -e app/static ]; then mv app/static "$STATIC_BACKUP"; fi
+  if ! mv "$STATIC_STAGE" app/static; then
+    [ ! -e "$STATIC_BACKUP" ] || mv "$STATIC_BACKUP" app/static
+    exit 1
+  fi
+  rm -rf "$STATIC_BACKUP"
+  STATIC_BACKUP=""
+  trap - EXIT
+  unset STATIC_STAGE
 else
   warn "[3/5] 未装 Node，无法构建前端。"
   warn "     后端/接口仍可用（PLATFORM_SERVE_FRONTEND=false），但网页打不开。"

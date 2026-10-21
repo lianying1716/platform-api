@@ -157,8 +157,9 @@
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, reactive, ref } from 'vue'
 import PlatformMark from '../components/PlatformMark.vue'
-import { api, type PlatformInfo } from '../api'
-import { parseUtc } from '../utils/time'
+import { apiCall, type PlatformInfo } from '../api'
+import { formatDateTime } from '../utils/time'
+import type { CrawlTaskOut } from '../api.generated'
 
 const platformInfo = ref<PlatformInfo[]>([])
 const platforms = computed(() => platformInfo.value
@@ -166,23 +167,7 @@ const platforms = computed(() => platformInfo.value
   .map((p) => ({ value: p.platform, label: p.label })))
 const currentCapability = computed(() => platformInfo.value.find((p) => p.platform === form.platform))
 
-interface CrawlTask {
-  id: number
-  platform: string
-  account_id: number | null
-  keyword: string
-  sort: string
-  limit_per_run: number
-  comment_mode: string
-  to_candidate: boolean
-  min_play: number
-  interval_minutes: number
-  enabled: boolean
-  last_run_at: string | null
-  last_attempt_at: string | null
-}
-
-const tasks = ref<CrawlTask[]>([])
+const tasks = ref<CrawlTaskOut[]>([])
 const accounts = ref<Array<{ id: number; platform: string; display_name: string }>>([])
 const formAccounts = computed(() =>
   accounts.value.filter((a) => a.platform === form.platform),
@@ -191,7 +176,7 @@ const loading = ref(false)
 const running = ref<number | null>(null)
 const dialog = ref(false)
 const submitting = ref(false)
-const editing = ref<CrawlTask | null>(null)
+const editing = ref<CrawlTaskOut | null>(null)
 const runsDrawer = ref(false)
 const runs = ref<any[]>([])
 const runsLoading = ref(false)
@@ -230,8 +215,7 @@ function commentModeText(mode: string) {
   return ({ off: '不抓评论', gate: '评论门控', force: '强制抓评论' } as Record<string, string>)[mode] || mode
 }
 function fmt(v: string | null) {
-  if (!v) return '—'
-  return parseUtc(v)?.toLocaleString('zh-CN', { hour12: false }) ?? '—'
+  return formatDateTime(v)
 }
 function compact(n: number) {
   if (n >= 1e8) return `${(n / 1e8).toFixed(1)}亿`
@@ -242,7 +226,7 @@ function compact(n: number) {
 async function load() {
   loading.value = true
   try {
-    const { data } = await api.get('/api/crawl-tasks')
+    const data = await apiCall('list_tasks_api_crawl_tasks_get')
     tasks.value = data
   } finally {
     loading.value = false
@@ -267,9 +251,9 @@ async function submit() {
   submitting.value = true
   try {
     if (editing.value) {
-      await api.put(`/api/crawl-tasks/${editing.value.id}`, form)
+      await apiCall('update_task_api_crawl_tasks__task_id__put', { task_id: editing.value.id }, { body: form })
     } else {
-      await api.post('/api/crawl-tasks', form)
+      await apiCall('create_task_api_crawl_tasks_post', {}, { body: form })
     }
     ElMessage.success('已保存')
     dialog.value = false
@@ -281,11 +265,11 @@ async function submit() {
   }
 }
 
-async function toggle(row: CrawlTask) {
+async function toggle(row: CrawlTaskOut) {
   // 先落库再改 UI，避免请求失败后界面与后端不一致
   const next = !row.enabled
   try {
-    await api.put(`/api/crawl-tasks/${row.id}`, {
+    await apiCall('update_task_api_crawl_tasks__task_id__put', { task_id: row.id }, { body: {
       platform: row.platform,
       account_id: row.account_id,
       keyword: row.keyword,
@@ -296,22 +280,23 @@ async function toggle(row: CrawlTask) {
       min_play: row.min_play,
       interval_minutes: row.interval_minutes,
       enabled: next,
-    })
+    } })
     row.enabled = next
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '操作失败')
   }
 }
 
-async function run(row: CrawlTask) {
+async function run(row: CrawlTaskOut) {
   running.value = row.id
   try {
-    const { data } = await api.post(`/api/crawl-tasks/${row.id}/run`)
+    const data = await apiCall('run_task_api_crawl_tasks__task_id__run_post', { task_id: row.id })
     ElMessage.success(`已加入采集队列 #${data.job_id}`)
     const deadline = Date.now() + 10 * 60 * 1000
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 2000))
-      const { data: job } = await api.get(`/api/pipeline/jobs/${data.job_id}`)
+      if (!data.job_id) break
+      const job = await apiCall('get_job_api_pipeline_jobs__job_id__get', { job_id: data.job_id })
       if (job.status === 'error') {
         ElMessage.error(job.error || '采集失败')
         break
@@ -327,21 +312,21 @@ async function run(row: CrawlTask) {
   }
 }
 
-const removeTarget = ref<CrawlTask | null>(null)
+const removeTarget = ref<CrawlTaskOut | null>(null)
 
-function confirmRemove(row: CrawlTask) {
+function confirmRemove(row: CrawlTaskOut) {
   removeTarget.value = row
 }
 
 async function doRemove() {
   if (!removeTarget.value) return
-  await api.delete(`/api/crawl-tasks/${removeTarget.value.id}`)
+  await apiCall('delete_task_api_crawl_tasks__task_id__delete', { task_id: removeTarget.value.id })
   removeTarget.value = null
   ElMessage.success('已删除')
   await load()
 }
 
-function openEdit(row: CrawlTask) {
+function openEdit(row: CrawlTaskOut) {
   editing.value = row
   Object.assign(form, {
     platform: row.platform,
@@ -358,11 +343,11 @@ function openEdit(row: CrawlTask) {
   dialog.value = true
 }
 
-async function openRuns(row: CrawlTask) {
+async function openRuns(row: CrawlTaskOut) {
   runsDrawer.value = true
   runsLoading.value = true
   try {
-    const { data } = await api.get(`/api/crawl-tasks/${row.id}/runs`)
+    const data = await apiCall('list_runs_api_crawl_tasks__task_id__runs_get', { task_id: row.id })
     runs.value = data
   } finally {
     runsLoading.value = false
@@ -370,12 +355,12 @@ async function openRuns(row: CrawlTask) {
 }
 
 async function loadAccounts() {
-  const { data } = await api.get('/api/accounts')
+  const data = await apiCall('list_accounts_api_accounts_get')
   accounts.value = data
 }
 
 onMounted(async () => {
-  platformInfo.value = (await api.get('/api/platforms')).data
+  platformInfo.value = await apiCall('list_platforms_api_platforms_get')
   await loadAccounts()
   await load()
 })

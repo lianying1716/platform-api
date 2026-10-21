@@ -35,11 +35,13 @@ def extract_initial_data(page_html: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _to_int(value) -> int:
+def _to_int(value) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
     try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def metrics_from_html(page_html: str, content_type: str, content_id: str) -> dict | None:
@@ -60,7 +62,7 @@ def metrics_from_html(page_html: str, content_type: str, content_id: str) -> dic
         "like": _to_int(entity.get("voteup_count")),
         "comment": _to_int(entity.get("comment_count")),
         "favorite": _to_int(entity.get("favlists_count")),
-        "share": 0,
+        "share": None,
     }
 
 

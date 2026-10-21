@@ -246,8 +246,8 @@ import { InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import PlatformMark from '../components/PlatformMark.vue'
-import { api, type Account, type PlatformInfo } from '../api'
-import { parseUtc } from '../utils/time'
+import { apiCall, type Account, type PlatformInfo } from '../api'
+import { formatDateTime } from '../utils/time'
 
 const accounts = ref<Account[]>([])
 const platforms = ref<PlatformInfo[]>([])
@@ -338,14 +338,13 @@ function statusText(s: string) {
   return ({ active: '在线', expired: '已掉线', error: '异常', unchecked: '未体检' } as Record<string, string>)[s] ?? s
 }
 function fmt(v: string | null) {
-  if (!v) return '—'
-  return parseUtc(v)?.toLocaleString('zh-CN', { hour12: false }) ?? '—'
+  return formatDateTime(v)
 }
 
 async function load() {
   loading.value = true
   try {
-    const { data } = await api.get('/api/accounts')
+    const data = await apiCall('list_accounts_api_accounts_get')
     accounts.value = data
     await loadAccountSwitches(data)
   } finally {
@@ -358,7 +357,9 @@ async function loadAccountSwitches(rows: Account[]) {
   await Promise.all(rows.map(async (row) => {
     if (!(switchCapabilities.value[row.platform] || []).length) return
     try {
-      const { data } = await api.get(`/api/accounts/${row.id}/sync-switches`)
+      const data = await apiCall('list_switches_api_accounts__account_id__sync_switches_get', {
+        account_id: row.id,
+      })
       next[row.id] = data.switches || []
     } catch {
       // The account itself remains usable; a transient switch read failure must
@@ -376,9 +377,15 @@ async function toggleKind(row: Account, sw: AccountSwitch) {
   sw.enabled = next
   togglingKind.value = key
   try {
-    await api.put(`/api/accounts/${row.id}/sync-switches/${sw.key}`, { enabled: next })
+    await apiCall('update_switch_api_accounts__account_id__sync_switches__key__put', {
+      account_id: row.id,
+      key: sw.key,
+    }, { body: { enabled: next } })
     ElMessage.success(next ? `${sw.label}已开启` : `${sw.label}已关闭`)
-    accountSwitches.value[row.id] = (await api.get(`/api/accounts/${row.id}/sync-switches`)).data.switches || []
+    const refreshed = await apiCall('list_switches_api_accounts__account_id__sync_switches_get', {
+      account_id: row.id,
+    })
+    accountSwitches.value[row.id] = refreshed.switches || []
   } catch (e: any) {
     sw.enabled = before
     ElMessage.error(e?.response?.data?.detail || `${sw.label}操作失败`)
@@ -437,14 +444,16 @@ async function submit() {
   submitting.value = true
   try {
     if (editing.value) {
-      await api.put(`/api/accounts/${editing.value.id}/credential`, { credential: form.credential })
+      await apiCall('update_credential_api_accounts__account_id__credential_put', {
+        account_id: editing.value.id,
+      }, { body: { credential: form.credential } })
       ElMessage.success('凭证已更新')
     } else {
-      await api.post('/api/accounts', {
+      await apiCall('create_account_api_accounts_post', {}, { body: {
         platform: form.platform,
         display_name: form.display_name,
         credential: form.credential,
-      })
+      } })
       ElMessage.success('账号已创建')
     }
     dialog.value = false
@@ -460,14 +469,14 @@ async function startQr() {
   stopPolling()
   submitting.value = true
   try {
-    const { data } = await api.post('/api/accounts/qr-login', {
+    const data = await apiCall('qr_login_create_api_accounts_qr_login_post', {}, { body: {
       platform: form.platform,
       display_name: form.display_name,
       // A rescan targets the existing account explicitly.  Accounts that failed
       // verification often have no external_id, so identity matching alone
       // cannot safely replace them.
       ...(editing.value ? { account_id: editing.value.id } : {}),
-    })
+    } })
     dialog.value = false
     qrImage.value = data.qr_image_base64
     qrMessage.value = '请用手机 App 扫码'
@@ -498,7 +507,9 @@ async function poll(sessionId: string) {
   if (sessionId !== activeSessionId) return
   // 连续失败才停：偶发一次网络抖动不该中断整个扫码流程
   try {
-    const { data } = await api.get(`/api/accounts/qr-login/${sessionId}`)
+    const data = await apiCall('qr_login_poll_api_accounts_qr_login__session_id__get', {
+      session_id: sessionId,
+    })
     if (sessionId !== activeSessionId) return
     pollErrors = 0
     qrMessage.value = data.message
@@ -557,7 +568,9 @@ async function toggleSync(row: Account) {
   const next = !row.sync_enabled
   togglingSync.value = row.id
   try {
-    await api.put(`/api/accounts/${row.id}/sync-enabled`, { enabled: next })
+    await apiCall('update_account_sync_enabled_api_accounts__account_id__sync_enabled_put', {
+      account_id: row.id,
+    }, { body: { enabled: next } })
     row.sync_enabled = next
     ElMessage.success(next ? '已开启该账号同步' : '已进入沉默期，该账号所有同步/调用已禁止')
   } catch (e: any) {
@@ -570,7 +583,9 @@ async function toggleSync(row: Account) {
 async function check(row: Account) {
   checking.value = row.id
   try {
-    const { data } = await api.post(`/api/accounts/${row.id}/check`)
+    const data = await apiCall('check_account_api_accounts__account_id__check_post', {
+      account_id: row.id,
+    })
     ElMessage({ message: data.message || data.status, type: data.ok ? 'success' : 'warning' })
     await load()
   } finally {
@@ -599,9 +614,11 @@ async function saveStorage() {
   if (!storageForm.account) return
   storageSaving.value = true
   try {
-    await api.put(`/api/accounts/${storageForm.account.id}/storage`, {
+    await apiCall('update_account_storage_api_accounts__account_id__storage_put', {
+      account_id: storageForm.account.id,
+    }, { body: {
       storage_root_id: storageForm.storage_root_id,
-    })
+    } })
     ElMessage.success('存储目录已更新')
     storageDialog.value = false
     await load()
@@ -616,17 +633,19 @@ function confirmRemove(row: Account) {
 
 async function doRemove() {
   if (!removeTarget.value) return
-  await api.delete(`/api/accounts/${removeTarget.value.id}`)
+  await apiCall('delete_account_api_accounts__account_id__delete', {
+    account_id: removeTarget.value.id,
+  })
   removeTarget.value = null
   ElMessage.success('已删除')
   await load()
 }
 
 onMounted(async () => {
-  const { data } = await api.get('/api/platforms')
+  const data = await apiCall('list_platforms_api_platforms_get')
   platforms.value = data
-  switchCapabilities.value = (await api.get('/api/sync-switches/capabilities')).data
-  storageRoots.value = (await api.get('/api/system/storage-roots')).data
+  switchCapabilities.value = await apiCall('switch_capabilities_api_sync_switches_capabilities_get')
+  storageRoots.value = await apiCall('list_storage_roots_api_system_storage_roots_get')
   await load()
 })
 onUnmounted(stopPolling)

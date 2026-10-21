@@ -39,6 +39,10 @@ class PlatformCapability:
     keyword_crawl: bool = False
     comments: bool = False
     follow_import: bool = False
+    # Metrics the adapter can actually refresh for this platform.  Coverage and
+    # backfill must share this manifest; otherwise articles or platforms with no
+    # play counter become permanently "missing" and can never be completed.
+    metrics: tuple[str, ...] = ()
 
     def source_options(self) -> list[dict[str, str]]:
         return [
@@ -65,6 +69,7 @@ CAPABILITIES: dict[str, PlatformCapability] = {
         keyword_crawl=True,
         comments=True,
         follow_import=True,
+        metrics=("play", "like", "comment", "favorite", "share"),
     ),
     "douyin": PlatformCapability(
         platform="douyin",
@@ -74,6 +79,7 @@ CAPABILITIES: dict[str, PlatformCapability] = {
         keyword_crawl=True,
         comments=True,
         follow_import=True,
+        metrics=("play", "like", "comment", "favorite", "share"),
     ),
     "xhs": PlatformCapability(
         platform="xhs",
@@ -82,6 +88,7 @@ CAPABILITIES: dict[str, PlatformCapability] = {
         download_qualities=("best", "1080", "720", "audio"),
         keyword_crawl=True,
         comments=True,
+        metrics=("play", "like", "comment", "favorite", "share"),
     ),
     "zhihu": PlatformCapability(
         platform="zhihu",
@@ -90,6 +97,7 @@ CAPABILITIES: dict[str, PlatformCapability] = {
         download_qualities=("best", "1080", "720", "audio"),
         keyword_crawl=True,
         comments=True,
+        metrics=("play", "like", "comment", "favorite", "share"),
     ),
     "kuaishou": PlatformCapability(
         platform="kuaishou",
@@ -97,6 +105,7 @@ CAPABILITIES: dict[str, PlatformCapability] = {
         download_qualities=("best", "1080", "720", "audio"),
         keyword_crawl=True,
         comments=True,
+        metrics=("play", "like", "comment", "favorite", "share"),
     ),
     "wechat_mp": PlatformCapability(
         platform="wechat_mp",
@@ -120,6 +129,25 @@ def supported_source_types(platform: str) -> tuple[str, ...]:
 def supported_qualities(platform: str) -> tuple[str, ...]:
     cap = capability_for(platform)
     return cap.download_qualities if cap else ()
+
+
+def supports_metric(platform: str, metric: str) -> bool:
+    cap = capability_for(platform)
+    return bool(cap and metric in cap.metrics)
+
+
+def metric_applies_to(platform: str, content_type: str, metric: str) -> bool:
+    """Whether a content row can meaningfully carry this metric.
+
+    Play counts only exist for videos.  Other engagement fields may exist on
+    articles (for example Zhihu answers), so they follow the platform manifest
+    without an extra type restriction.
+    """
+    if not supports_metric(platform, metric):
+        return False
+    if metric == "play" and content_type != "video":
+        return False
+    return True
 
 
 def require_source_type(platform: str, source_type: str) -> None:
@@ -148,6 +176,7 @@ def as_public_manifest() -> list[dict]:
             "keyword_crawl": cap.keyword_crawl,
             "comments": cap.comments,
             "follow_import": cap.follow_import,
+            "metrics": list(cap.metrics),
         }
         for cap in CAPABILITIES.values()
     ]

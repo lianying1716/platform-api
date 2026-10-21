@@ -14,11 +14,14 @@ from urllib.parse import quote
 _PAGE_SIZE = 20
 
 
-def _to_int(value) -> int:
+def _to_int(value) -> int | None:
+    """Absent/unparseable counters are unknown, not a measured zero."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
     try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _ts_to_iso(value) -> str | None:
@@ -63,7 +66,7 @@ def _normalize_zhihu(obj: dict, content_kind: str, fallback_author_id: str) -> d
         "comment": _to_int(obj.get("comment_count")),
         "play": _to_int(obj.get("play_count")),
         "favorite": _to_int(obj.get("favlists_count")),
-        "share": 0,
+        "share": None,
     }
 
     if content_kind == "answer":
@@ -88,7 +91,9 @@ def _normalize_zhihu(obj: dict, content_kind: str, fallback_author_id: str) -> d
         title = obj.get("title") or obj.get("excerpt") or ""
         content_type = "video"
         cover_url = _clean_url(video.get("thumbnail") or obj.get("thumbnail") or "")
-        metrics["play"] = _to_int(video.get("play_count") or metrics["play"])
+        play = video.get("play_count")
+        if play is not None:
+            metrics["play"] = _to_int(play)
 
     return {
         "external_id": content_id,

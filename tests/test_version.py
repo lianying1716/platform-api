@@ -43,12 +43,24 @@ def test_version_endpoint_fields(client):
         "app_version",
         "git_commit",
         "build_time",
+        "version_source",
         "db_revision",
         "db_head",
         "db_in_sync",
     ):
         assert key in data, key
     assert isinstance(data["db_in_sync"], bool)
+
+
+def test_version_source_distinguishes_release_from_source_checkout(monkeypatch):
+    monkeypatch.setenv("PLATFORM_BUILD_VERSION", "v1.2.3")
+    monkeypatch.setenv("PLATFORM_BUILD_COMMIT", "abc1234")
+    monkeypatch.setenv("PLATFORM_BUILD_TIME", "2026-10-11T09:45:16Z")
+    from app.core import version
+
+    assert version.build_provenance()["source"] == "release_image"
+    monkeypatch.delenv("PLATFORM_BUILD_VERSION")
+    assert version.build_provenance()["source"] == "source_checkout"
 
 
 def test_version_endpoint_public(anon_client):

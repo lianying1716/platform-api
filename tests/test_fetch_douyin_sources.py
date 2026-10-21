@@ -182,7 +182,7 @@ async def test_aweme_to_item_handles_missing_fields():
 
     item = _aweme_to_item({"aweme_id": "1"}, fallback_author_id="FB")
     assert item["author_id"] == "FB"
-    assert item["metrics"] == {"play": 0, "like": 0, "comment": 0, "favorite": 0, "share": 0}
+    assert item["metrics"] == {"play": None, "like": None, "comment": None, "favorite": None, "share": None}
     assert item["cover_url"] == ""
     assert item["extra"]["download_url"] == ""
     assert item["published_at"] is None

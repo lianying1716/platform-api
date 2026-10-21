@@ -28,6 +28,36 @@ if str(ROOT) not in sys.path:
 DEFAULT_DB = "/tmp/platform-demo-snapshot.db"
 
 
+def _fetch_all_pages(client, path: str, *, page_size: int = 200) -> list[object]:
+    """Read a list endpoint to its real end using the server's total header.
+
+    A single ``limit=200`` request is not a complete snapshot.  The demo
+    transport derives its total from this array, so truncation would make the
+    last page disappear and under-report "共 N 条" for larger collections.
+    """
+    rows: list[object] = []
+    offset = 0
+    while True:
+        separator = '&' if '?' in path else '?'
+        resp = client.get(f'{path}{separator}limit={page_size}&offset={offset}')
+        if resp.status_code != 200:
+            raise RuntimeError(f'演示快照读取失败：{path} -> HTTP {resp.status_code}')
+        page = resp.json()
+        if not isinstance(page, list):
+            raise RuntimeError(f'演示快照返回的不是列表：{path}')
+        if not page:
+            return rows
+        rows.extend(page)
+        total_header = resp.headers.get('X-Total-Count')
+        try:
+            total = int(total_header) if total_header is not None else len(rows)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f'演示快照总数无效：{path} -> {total_header!r}') from exc
+        if len(rows) >= total:
+            return rows
+        offset += len(page)
+
+
 def _collect_paths(client) -> dict[str, object]:
     """按前端实际调用的路径抓取快照。"""
     snapshot: dict[str, object] = {}
@@ -51,8 +81,8 @@ def _collect_paths(client) -> dict[str, object]:
     put('/api/crawl-tasks')
     put('/api/subscriptions')
     put('/api/followed-creators')
-    # 素材库
-    put('/api/assets')
+    # 素材库：按服务端总数分页抓完整列表，演示层再按请求参数分页。
+    snapshot['/assets'] = _fetch_all_pages(client, '/api/assets')
     put('/api/system/process-settings')
     # 处理队列
     put('/api/pipeline/jobs')

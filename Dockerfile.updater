@@ -3,7 +3,9 @@
 # 为什么单独一个镜像：主镜像只跑 API/worker，不含 docker 客户端；而一键升级
 # 需要 `docker compose pull/up`。把 docker CLI 只在边车里提供，主服务保持最小攻击面。
 #
-# 基础镜像由参数传入（CI 传已推送的主镜像 tag；本地传本地 tag）。
+# 基础镜像由参数传入。发布流水线传刚推送主镜像的 digest，而不是 semver
+# tag：metadata-action 生成的 tag 与 GitHub ref 并非在所有预发布格式下
+# 字面相等，按 digest 引用还能保证边车与主镜像字节一致。
 #
 # 安全：本镜像持 docker socket 时等价 root，必须配合：
 #   - 不映射任何宿主端口（仅 compose 内网）

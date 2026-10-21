@@ -1,15 +1,17 @@
 import json
 import platform as py_platform
+import re
 import shutil
 import sys
 from datetime import datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from app import schemas
 from app.config import settings
 from app.core import fs_browse, security, storage
 from app.core.process_settings import (
@@ -27,7 +29,7 @@ router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(
 public_router = APIRouter(prefix="/api/system", tags=["system"])
 
 
-@public_router.get("/version")
+@public_router.get("/version", response_model=schemas.VersionOut)
 def get_version(db: Session = Depends(get_db)):
     """返回应用版本与数据库 revision（升级排障用）。"""
     from app.core import version as version_mod
@@ -43,13 +45,14 @@ def get_version(db: Session = Depends(get_db)):
         "app_version": info.version,
         "git_commit": info.commit,
         "build_time": info.build_time,
+        "version_source": version_mod.build_provenance()["source"],
         "db_revision": db_revision,
         "db_head": head,
         "db_in_sync": bool(head) and db_revision == head,
     }
 
 
-@router.get("/update/check")
+@router.get("/update/check", response_model=schemas.UpdateCheckOut)
 async def check_update():
     """检查是否有新版本（只读查询 GitHub Releases）。"""
     from app.core import version_upgrade
@@ -58,7 +61,7 @@ async def check_update():
     return await version_upgrade.check_latest(current=current, repo=settings.update_repo)
 
 
-@router.get("/update/status")
+@router.get("/update/status", response_model=schemas.UpdateStatusOut)
 def update_status():
     """一键升级是否可用（是否配置了 updater 边车）。"""
     from app.core.version import load_build_info
@@ -71,9 +74,18 @@ def update_status():
 
 class UpgradeIn(BaseModel):
     version: str
+    expected_commit: str = ""
+
+    @field_validator("expected_commit")
+    @classmethod
+    def _commit_shape(cls, value: str) -> str:
+        value = (value or "").strip().lower()
+        if value and not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise ValueError("expected_commit 必须是完整的 40 位 Git commit SHA")
+        return value
 
 
-@router.get("/upgrade/status")
+@router.get("/upgrade/status", response_model=schemas.UpgradeStatusOut)
 async def upgrade_status():
     """代理 updater 的升级进度（前端轮询用）。
 
@@ -95,7 +107,7 @@ async def upgrade_status():
         return {"enabled": True, "busy": True, "job": None, "restarting": True}
 
 
-@router.post("/upgrade")
+@router.post("/upgrade", response_model=schemas.OkOut)
 async def trigger_upgrade(body: UpgradeIn):
     """触发一键升级（调 updater 边车）。
 
@@ -115,7 +127,7 @@ async def trigger_upgrade(body: UpgradeIn):
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{settings.updater_url.rstrip('/')}/upgrade",
-                json={"version": body.version},
+                json={"version": body.version, "expected_commit": body.expected_commit},
                 headers={"X-Updater-Token": settings.updater_token},
             )
     except httpx.HTTPError as exc:
@@ -132,7 +144,7 @@ class StorageRootIn(BaseModel):
     is_default: bool = False
 
 
-@router.get("/storage-roots")
+@router.get("/storage-roots", response_model=list[schemas.StorageRootOut])
 def list_storage_roots(db: Session = Depends(get_db)):
     roots = db.scalars(select(StorageRoot).order_by(StorageRoot.id)).all()
     out = []
@@ -144,7 +156,7 @@ def list_storage_roots(db: Session = Depends(get_db)):
     return out
 
 
-@router.post("/storage-roots")
+@router.post("/storage-roots", response_model=schemas.StorageRootCreatedOut)
 def create_storage_root(body: StorageRootIn, db: Session = Depends(get_db)):
     try:
         path = storage.validate_root_path(body.path)
@@ -166,7 +178,7 @@ def create_storage_root(body: StorageRootIn, db: Session = Depends(get_db)):
     return {"id": root.id, "available": ok, "detail": detail}
 
 
-@router.delete("/storage-roots/{root_id}", status_code=200)
+@router.delete("/storage-roots/{root_id}", status_code=200, response_model=schemas.OkOut)
 def delete_storage_root(root_id: int, db: Session = Depends(get_db)):
     from app.services.storage_lifecycle import StorageRootInUse, delete_root
 
@@ -179,7 +191,7 @@ def delete_storage_root(root_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.get("/storage-roots/orphans")
+@router.get("/storage-roots/orphans", response_model=schemas.OrphanReportOut)
 def storage_orphans(root_id: int | None = None, db: Session = Depends(get_db)):
     """只读孤儿文件报告；管理员据此决定是否人工清理。"""
     from app.services.storage_lifecycle import scan_orphan_files
@@ -188,7 +200,7 @@ def storage_orphans(root_id: int | None = None, db: Session = Depends(get_db)):
 
 
 # ---------- 目录浏览（存储根可视化选择；只读） ----------
-@router.get("/fs/roots")
+@router.get("/fs/roots", response_model=schemas.FsRootsOut)
 def list_fs_roots():
     """允许浏览的根清单（白名单）。前端「选择目录」用它做根快捷入口。
 
@@ -197,7 +209,7 @@ def list_fs_roots():
     return {"roots": fs_browse.allowed_roots()}
 
 
-@router.get("/fs/list")
+@router.get("/fs/list", response_model=schemas.FsListOut)
 def list_fs_dir(path: str = ""):
     """列出某目录下的子目录（仅目录，不含文件）。越界/不存在返回 400。
 
@@ -254,7 +266,7 @@ def update_settings(body: dict, db: Session = Depends(get_db)):
 
 
 # ---------- AI 任务运行时段 ----------
-@router.get("/ai-schedule")
+@router.get("/ai-schedule", response_model=schemas.AiScheduleOut)
 def get_ai_schedule_api(db: Session = Depends(get_db)):
     """AI 任务可运行的时段、当前是否开放以及下一次开放时间。"""
     from app.core.ai_schedule import ai_schedule_status, get_ai_schedule
@@ -262,7 +274,7 @@ def get_ai_schedule_api(db: Session = Depends(get_db)):
     return ai_schedule_status(get_ai_schedule(db))
 
 
-@router.put("/ai-schedule")
+@router.put("/ai-schedule", response_model=schemas.AiScheduleUpdateOut)
 def update_ai_schedule_api(body: dict, db: Session = Depends(get_db)):
     """保存 AI 时段。先完整校验再写入，非法配置返回 422。"""
     from app.core.ai_schedule import (
@@ -328,14 +340,14 @@ _COMMENT_SPECS = {
 }
 
 
-@router.get("/comment-settings")
+@router.get("/comment-settings", response_model=schemas.CommentSettingsOut)
 def get_comment_settings_api(db: Session = Depends(get_db)):
     from app.core.comment_settings import get_comment_settings
 
     return get_comment_settings(db)
 
 
-@router.put("/comment-settings")
+@router.put("/comment-settings", response_model=schemas.OkOut)
 def update_comment_settings_api(body: dict, db: Session = Depends(get_db)):
     """写入评论抓取配置。先全量校验再落库：任一越界值返回 422，不做部分写入。"""
     from app.core.comment_settings import COMMENT_KEYS
@@ -361,14 +373,14 @@ def update_comment_settings_api(body: dict, db: Session = Depends(get_db)):
 
 
 # ---------- 爆款拆解配置（提示词 + 爆款判定阈值） ----------
-@router.get("/breakdown-settings")
+@router.get("/breakdown-settings", response_model=schemas.BreakdownSettingsOut)
 def get_breakdown_settings_api(db: Session = Depends(get_db)):
     from app.core.breakdown_settings import get_breakdown_settings
 
     return get_breakdown_settings(db)
 
 
-@router.put("/breakdown-settings")
+@router.put("/breakdown-settings", response_model=schemas.BreakdownSettingsUpdateOut)
 def update_breakdown_settings_api(body: dict, db: Session = Depends(get_db)):
     """写入爆款拆解配置（含自动拆解阀门）。先全量校验再落库：非法值返回 422，不做部分写入。"""
     import math
@@ -433,14 +445,14 @@ def update_breakdown_settings_api(body: dict, db: Session = Depends(get_db)):
 
 
 # ---------- 同步频率 / 批量配置（照抄抖小云：随机时间 + 每次数量范围） ----------
-@router.get("/sync-settings")
+@router.get("/sync-settings", response_model=schemas.SyncSettingsOut)
 def get_sync_settings_api(db: Session = Depends(get_db)):
     from app.core.sync_settings import get_sync_settings
 
     return get_sync_settings(db)
 
 
-@router.put("/sync-settings")
+@router.put("/sync-settings", response_model=schemas.SyncSettingsUpdateOut)
 def update_sync_settings_api(body: dict, db: Session = Depends(get_db)):
     """写入同步频率配置。先全量收敛到合法区间再落库（min>max 自动交换、越界钳制）。"""
     from app.core.sync_settings import (
@@ -539,7 +551,7 @@ _PROCESS_STRUCT_STORE = {
 }
 
 
-@router.get("/process-settings")
+@router.get("/process-settings", response_model=schemas.ProcessSettingsOut)
 def get_process_settings_api(db: Session = Depends(get_db)):
     """返回门控参数 + 类型目录 + 类型提示词 + 通用维度（设置页展示用）。"""
     from app.core.process_settings import (
@@ -556,7 +568,7 @@ def get_process_settings_api(db: Session = Depends(get_db)):
     return out
 
 
-@router.put("/process-settings")
+@router.put("/process-settings", response_model=schemas.OkOut)
 def update_process_settings_api(body: dict, db: Session = Depends(get_db)):
     """写入分档加工配置。先全量校验再落库：任一非法值返回 422，不做部分写入。"""
     from app.core.process_settings import PROCESS_KEYS
@@ -586,7 +598,7 @@ def update_process_settings_api(body: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.get("/diagnostics")
+@router.get("/diagnostics", response_model=schemas.DiagnosticsOut)
 def diagnostics(db: Session = Depends(get_db)):
     checks: list[dict] = []
 

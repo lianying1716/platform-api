@@ -15,8 +15,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core import security
@@ -25,6 +25,7 @@ from app.core.queue import enqueue
 from app.core import storage
 from app.core.egress import is_public_image_url
 from app.db import get_db
+from app import schemas
 from app.models import (
     AnalysisResult,
     Comment,
@@ -89,6 +90,14 @@ class BreakdownRequest(BaseModel):
 
 class AssetDeleteRequest(BaseModel):
     reason: str = ""
+
+
+class BulkRefreshMetricsRequest(BaseModel):
+    """Backfill content whose latest play value is unknown or absent."""
+
+    account_id: int | None = None
+    platform: str | None = None
+    limit: int = Field(500, ge=1, le=2000)
 
 
 _VIDEO_TYPES = {
@@ -207,7 +216,11 @@ def _live_asset_or_404(db: Session, asset_id: int) -> MediaAsset:
     return asset
 
 
-@router.get("/assets")
+@router.get(
+    "/assets",
+    response_model=list[schemas.AssetCard],
+    responses={200: {"headers": {"X-Total-Count": {"schema": {"type": "integer"}}}}},
+)
 def list_assets(
     response: Response,
     db: Session = Depends(get_db),
@@ -373,7 +386,7 @@ def list_assets(
     return out
 
 
-@router.get("/assets/{asset_id}")
+@router.get("/assets/{asset_id}", response_model=schemas.AssetDetail)
 def get_asset(asset_id: int, db: Session = Depends(get_db)):
     asset = _live_asset_or_404(db, asset_id)
     content = db.get(ContentItem, asset.content_id)
@@ -435,7 +448,7 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/assets/{asset_id}/model-calls")
+@router.get("/assets/{asset_id}/model-calls", response_model=list[schemas.AssetModelCallOut])
 def get_asset_model_calls(asset_id: int, db: Session = Depends(get_db)):
     """素材详情里的模型调用审计：按 attempt_group 展示主备尝试。"""
     from app.models import ModelCallAttempt
@@ -469,7 +482,7 @@ def get_asset_model_calls(asset_id: int, db: Session = Depends(get_db)):
     ]
 
 
-@router.delete("/assets/{asset_id}", status_code=202)
+@router.delete("/assets/{asset_id}", status_code=202, response_model=schemas.AssetDeleteOut)
 def delete_asset(asset_id: int, body: AssetDeleteRequest | None = None, db: Session = Depends(get_db)):
     """管理员删除素材：先软删除，worker 清理文件后再物理删除。"""
     from app.services.storage_lifecycle import request_asset_deletion
@@ -623,7 +636,7 @@ async def proxy_cover(asset_id: int, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/assets/{asset_id}/article")
+@router.get("/assets/{asset_id}/article", response_model=schemas.AssetArticle)
 def get_article(asset_id: int, db: Session = Depends(get_db)):
     """文章正文：公众号等文本内容的阅读视图数据源。"""
     from bs4 import BeautifulSoup
@@ -704,7 +717,7 @@ async def get_article_image(asset_id: int, index: int, sig: str = "", db: Sessio
     )
 
 
-@router.get("/assets/{asset_id}/comments")
+@router.get("/assets/{asset_id}/comments", response_model=schemas.AssetCommentPage)
 def list_comments(
     asset_id: int,
     db: Session = Depends(get_db),
@@ -734,7 +747,7 @@ def list_comments(
     }
 
 
-@router.post("/assets/{asset_id}/transcribe")
+@router.post("/assets/{asset_id}/transcribe", response_model=schemas.JobRefOut)
 def enqueue_transcribe(asset_id: int, db: Session = Depends(get_db)):
     asset = _live_asset_or_404(db, asset_id)
     from app.services.workflow_engine import WorkflowInputError, register_workflow
@@ -750,7 +763,7 @@ def enqueue_transcribe(asset_id: int, db: Session = Depends(get_db)):
     return {"job_id": result.queued_jobs[0] if result.queued_jobs else None, "run_id": result.run.id}
 
 
-@router.post("/assets/{asset_id}/analyze")
+@router.post("/assets/{asset_id}/analyze", response_model=schemas.JobRefOut)
 def enqueue_analyze(asset_id: int, db: Session = Depends(get_db)):
     asset = _live_asset_or_404(db, asset_id)
     asset.analyze_status = "pending"
@@ -770,7 +783,7 @@ def enqueue_analyze(asset_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/assets/{asset_id}/download")
+@router.post("/assets/{asset_id}/download", response_model=schemas.JobRefOut)
 def enqueue_download(asset_id: int, db: Session = Depends(get_db)):
     asset = _live_asset_or_404(db, asset_id)
     content = db.get(ContentItem, asset.content_id)
@@ -795,7 +808,7 @@ def enqueue_download(asset_id: int, db: Session = Depends(get_db)):
     return {"job_id": job.id}
 
 
-@router.post("/assets/{asset_id}/refresh-metrics")
+@router.post("/assets/{asset_id}/refresh-metrics", response_model=schemas.JobRefOut)
 def enqueue_refresh_metrics(asset_id: int, db: Session = Depends(get_db)):
     """按需刷新该素材的互动指标（worker 拉平台详情后写入新快照）。"""
     asset = _live_asset_or_404(db, asset_id)
@@ -806,7 +819,65 @@ def enqueue_refresh_metrics(asset_id: int, db: Session = Depends(get_db)):
     return {"job_id": job.id}
 
 
-@router.get("/assets/{asset_id}/understanding")
+@router.post("/assets/refresh-metrics/bulk", response_model=schemas.BulkRefreshOut)
+def enqueue_bulk_refresh_metrics(body: BulkRefreshMetricsRequest, db: Session = Depends(get_db)):
+    """Queue one refresh per content whose latest play value is unknown or absent.
+
+    The limit is deliberate: this is a backfill of a systematic data-quality
+    gap, not an unbounded crawl.  Existing queued/running jobs are absorbed by
+    queue deduplication, so repeated clicks are safe and report only new work.
+    Only content types and platforms that can actually produce a play counter
+    are eligible; otherwise articles would remain permanently "missing".
+    """
+    from app.domain.capabilities import supports_metric
+
+    if body.platform and not supports_metric(body.platform, "play"):
+        return {"matched": 0, "job_ids": []}
+    play_platforms = [
+        platform
+        for platform in db.scalars(select(ContentItem.platform).distinct()).all()
+        if supports_metric(platform, "play")
+    ]
+    if not play_platforms:
+        return {"matched": 0, "job_ids": []}
+    latest = (
+        select(
+            ContentMetricSnapshot.id.label("snapshot_id"),
+            ContentMetricSnapshot.content_id,
+            ContentMetricSnapshot.play,
+            func.row_number()
+            .over(
+                partition_by=ContentMetricSnapshot.content_id,
+                order_by=(ContentMetricSnapshot.captured_at.desc(), ContentMetricSnapshot.id.desc()),
+            )
+            .label("rn"),
+        )
+        .subquery()
+    )
+    stmt = (
+        select(ContentItem.id)
+        .outerjoin(latest, latest.c.content_id == ContentItem.id)
+        .where(
+            ContentItem.content_type == "video",
+            ContentItem.platform.in_(play_platforms),
+            or_(latest.c.snapshot_id.is_(None), latest.c.play.is_(None)),
+        )
+    )
+    if body.account_id is not None:
+        stmt = stmt.where(ContentItem.account_id == body.account_id)
+    if body.platform:
+        stmt = stmt.where(ContentItem.platform == body.platform)
+    content_ids = list(db.scalars(stmt.order_by(ContentItem.id).limit(body.limit)).all())
+    job_ids: list[int] = []
+    for content_id in content_ids:
+        job = enqueue(db, "refresh_metrics", {"content_id": content_id}, commit=False)
+        if job.id not in job_ids:
+            job_ids.append(job.id)
+    db.commit()
+    return {"matched": len(content_ids), "job_ids": job_ids}
+
+
+@router.get("/assets/{asset_id}/understanding", response_model=schemas.UnderstandingOut)
 def get_understanding(asset_id: int, db: Session = Depends(get_db)):
     """高级档视频理解结果；尚未生成时返回 status=pending（含素材当前状态）。"""
     asset = _live_asset_or_404(db, asset_id)
@@ -857,7 +928,7 @@ def _breakdown_payload(row: ViralBreakdown) -> dict:
     }
 
 
-@router.post("/assets/{asset_id}/breakdown")
+@router.post("/assets/{asset_id}/breakdown", response_model=schemas.JobRefOut)
 def enqueue_breakdown(
     asset_id: int, body: BreakdownRequest | None = None, db: Session = Depends(get_db)
 ):
@@ -903,7 +974,10 @@ def enqueue_breakdown(
     }
 
 
-@router.get("/assets/{asset_id}/breakdown")
+@router.get(
+    "/assets/{asset_id}/breakdown",
+    response_model=schemas.BreakdownPending | schemas.BreakdownReport,
+)
 def get_breakdown(asset_id: int, db: Session = Depends(get_db)):
     """读取爆款拆解报告；素材不存在 404，尚未生成返回 ``{"status":"pending"}``。"""
     _live_asset_or_404(db, asset_id)
@@ -930,7 +1004,7 @@ def _known_categories(db: Session) -> set[str]:
     return set(get_taxonomy(db).keys())
 
 
-@router.post("/assets/{asset_id}/process")
+@router.post("/assets/{asset_id}/process", response_model=schemas.JobRefOut)
 def enqueue_process(asset_id: int, body: ProcessRequest, db: Session = Depends(get_db)):
     """手动分档加工：basic → 转录；advanced → 视频理解（可 force_category / use_cover 覆盖）。"""
     asset = _live_asset_or_404(db, asset_id)
@@ -985,7 +1059,7 @@ def enqueue_process(asset_id: int, body: ProcessRequest, db: Session = Depends(g
     }
 
 
-@router.post("/assets/{asset_id}/reclassify")
+@router.post("/assets/{asset_id}/reclassify", response_model=schemas.JobRefOut)
 def enqueue_reclassify(
     asset_id: int, body: ReclassifyRequest | None = None, db: Session = Depends(get_db)
 ):
@@ -1021,7 +1095,7 @@ def enqueue_reclassify(
     }
 
 
-@router.post("/assets/export")
+@router.post("/assets/export", response_model=schemas.ExportOut | list[schemas.ExportDoc], response_model_exclude_none=True)
 def export_assets(body: ExportRequest, db: Session = Depends(get_db)):
     docs = []
     for asset_id in body.asset_ids:

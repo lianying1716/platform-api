@@ -78,7 +78,11 @@ const components = [
   ElStep, ElSteps, ElSwitch, ElTable, ElTableColumn, ElTabPane, ElTabs, ElTag,
   ElTimeSelect, ElTooltip,
 ]
-for (const component of components) app.component(component.name, component)
+for (const component of components) {
+  // Element Plus exposes a runtime name on every component; the generated
+  // type for the mixed array does not preserve that optional property.
+  app.component((component as { name?: string }).name || '', component)
+}
 app.use(ElLoading)
 // Component-level locale + global defaults, without importing all of Element.
 provideGlobalConfig({ locale: zhCn }, app, true)

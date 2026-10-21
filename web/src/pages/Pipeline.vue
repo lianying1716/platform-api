@@ -124,10 +124,11 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api } from '../api'
-import { parseUtc } from '../utils/time'
+import { apiCall } from '../api'
+import { formatClock, formatMonthDayTime, parseUtc } from '../utils/time'
+import type { QueueAlert, QueueAlertList, QueueJob } from '../api.generated'
 
-const jobs = ref<any[]>([])
+const jobs = ref<QueueJob[]>([])
 const loading = ref(false)
 const filter = ref('')
 const counts = ref({ queued: 0, running: 0, error: 0, done: 0, total: 0 })
@@ -136,11 +137,17 @@ const aiSchedule = ref<any>({ enabled: false, is_open: true, next_open_at: null 
 let timer: number | undefined
 let refreshOnEvent: (() => void) | undefined
 const openLogs = ref<number | null>(null)
-const logs = ref<any[]>([])
+const logs = ref<Array<{
+  id: number
+  level: string
+  message: string
+  actor: string
+  created_at: string
+}>>([])
 const logsLoading = ref(false)
-const alerts = ref<any[]>([])
+const alerts = ref<QueueAlert[]>([])
 
-function alertToOut(row: any) {
+function alertToOut(row: QueueAlert): QueueAlert {
   return {
     id: row.id,
     title: row.title,
@@ -154,26 +161,25 @@ function alertToOut(row: any) {
 }
 
 async function loadAlerts() {
-  const { data } = await api.get('/api/pipeline/alerts')
+  const data = await apiCall('list_alerts_api_pipeline_alerts_get')
   alerts.value = (data.alerts || []).map(alertToOut)
 }
 
-async function ackAlert(row: any) {
-  await api.post(`/api/pipeline/alerts/${row.id}/acknowledge`)
+async function ackAlert(row: QueueAlert) {
+  await apiCall('acknowledge_alert_api_pipeline_alerts__alert_id__acknowledge_post', { alert_id: row.id })
   await loadAlerts()
 }
 
-async function resolveAlert(row: any) {
-  await api.post(`/api/pipeline/alerts/${row.id}/resolve`)
+async function resolveAlert(row: QueueAlert) {
+  await apiCall('resolve_alert_api_pipeline_alerts__alert_id__resolve_post', { alert_id: row.id })
   await loadAlerts()
 }
 
 function fmtLogTime(value: string | null) {
-  const t = parseTs(value)
-  return t ? new Date(t).toLocaleTimeString('zh-CN', { hour12: false }) : '—'
+  return formatClock(value)
 }
 
-async function toggleLogs(row: any) {
+async function toggleLogs(row: QueueJob) {
   if (openLogs.value === row.id) {
     openLogs.value = null
     logs.value = []
@@ -186,7 +192,7 @@ async function toggleLogs(row: any) {
 async function loadLogs(jobId: number) {
   logsLoading.value = true
   try {
-    const { data } = await api.get(`/api/pipeline/jobs/${jobId}/logs`)
+    const data = await apiCall('get_job_logs_api_pipeline_jobs__job_id__logs_get', { job_id: jobId })
     logs.value = data.logs || []
   } finally {
     logsLoading.value = false
@@ -227,7 +233,7 @@ const PLATFORM_CN: Record<string, string> = {
 function cnPlatform(v: string) { return PLATFORM_CN[v] || v || '' }
 
 /** payload 里没有可读标题时的兜底文案：尽量说明「在加工什么」，而不是丢一个裸 id。 */
-function targetFallback(row: any) {
+function targetFallback(row: QueueJob) {
   const p = row.payload || {}
   if (p.asset_id !== undefined) return `素材 #${p.asset_id}`
   if (p.content_id !== undefined) return `内容 #${p.content_id}`
@@ -243,7 +249,7 @@ function targetFallback(row: any) {
 }
 
 /** 进度：用状态 + payload 里的阶段信息解释，而不是只给一个词。 */
-function stageText(row: any) {
+function stageText(row: QueueJob) {
   const p = row.payload || {}
   if (row.status === 'queued') {
     return row.ai_schedule_held ? '等待 AI 运行时段' : '等待 worker 领取'
@@ -269,7 +275,7 @@ function human(ms: number | null) {
 }
 
 /** 排队时长：创建 -> 开始（执行中/已完成）或 创建 -> 现在（仍在排队）。 */
-function waited(row: any) {
+function waited(row: QueueJob) {
   const created = parseTs(row.created_at)
   if (!created) return '—'
   const start = parseTs(row.locked_at)
@@ -277,7 +283,7 @@ function waited(row: any) {
   return human(start - created)
 }
 /** 处理用时：优先 locked_at -> 现在/结束；没有 lock 记录时退化为 created -> updated。 */
-function elapsed(row: any) {
+function elapsed(row: QueueJob) {
   if (row.status === 'queued') return '—'
   const start = parseTs(row.locked_at) ?? parseTs(row.created_at)
   if (!start) return '—'
@@ -285,17 +291,14 @@ function elapsed(row: any) {
   if (!end) return '—'
   return human(end - start)
 }
-function nextRun(row: any) {
+function nextRun(row: QueueJob) {
   const t = parseTs(row.run_after)
   if (!t || t <= Date.now() + 1000) return ''
-  return new Date(t).toLocaleTimeString('zh-CN', { hour12: false })
+  return formatClock(row.run_after, '')
 }
 
 function fmtAiTime(value: string | null) {
-  if (!value) return ''
-  return parseUtc(value)?.toLocaleString('zh-CN', {
-    hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  }) ?? ''
+  return value ? formatMonthDayTime(value, '') : ''
 }
 
 async function load() {
@@ -304,17 +307,17 @@ async function load() {
     const q = filter.value ? `?status=${filter.value}` : ''
     // 列表按当前筛选取；计数始终基于全量，避免筛选后徽标互相矛盾
     const [listResp, countResp, scheduleResp, alertResp] = await Promise.all([
-      api.get(`/api/pipeline/jobs${q}`),
-      api.get('/api/pipeline/summary'),
-      api.get('/api/pipeline/ai-schedule'),
-      api.get('/api/pipeline/alerts'),
+      apiCall('list_jobs_api_pipeline_jobs_get', filter.value ? { status: filter.value } : {}),
+      apiCall('queue_summary_api_pipeline_summary_get'),
+      apiCall('pipeline_ai_schedule_api_pipeline_ai_schedule_get'),
+      apiCall('list_alerts_api_pipeline_alerts_get'),
     ])
-    jobs.value = listResp.data
+    jobs.value = listResp
     if (openLogs.value !== null) await loadLogs(openLogs.value)
-    aiSchedule.value = scheduleResp.data
-    alerts.value = (alertResp.data.alerts || []).map(alertToOut)
+    aiSchedule.value = scheduleResp
+    alerts.value = (alertResp.alerts || []).map(alertToOut)
     // Counts come from SQL aggregation, never from the first page of the list.
-    const summary = countResp.data as Record<string, Record<string, number>>
+    const summary = countResp as Record<string, Record<string, number>>
     const sum = (status: string) => Object.values(summary).reduce((n, row) => n + Number(row[status] || 0), 0)
     const queued = sum('queued')
     const running = sum('running')
@@ -331,14 +334,14 @@ async function load() {
   }
 }
 
-async function retry(row: any) {
-  await api.post(`/api/pipeline/jobs/${row.id}/retry`)
+async function retry(row: QueueJob) {
+  await apiCall('retry_job_api_pipeline_jobs__job_id__retry_post', { job_id: row.id })
   ElMessage.success('已重新排队')
   await load()
 }
 
 async function retryAll() {
-  await api.post('/api/pipeline/jobs/retry-failed')
+  await apiCall('retry_all_failed_api_pipeline_jobs_retry_failed_post')
   ElMessage.success('已重试全部失败任务')
   await load()
 }

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from app.domain.metrics import optional_int as _int_or_none
+
 _BILI_VIEW = "https://api.bilibili.com/x/web-interface/view"
 _DOUYIN_DETAIL = "/aweme/v1/web/aweme/detail/"
 _XHS_FEED = "/api/sns/web/v1/feed"
@@ -54,11 +56,11 @@ async def fetch_bilibili_metrics(bvid: str, credential: dict) -> dict | None:
         return None
     stat = (payload.get("data") or {}).get("stat") or {}
     return {
-        "play": int(stat.get("view") or 0),
-        "like": int(stat.get("like") or 0),
-        "comment": int(stat.get("reply") or 0),
-        "favorite": int(stat.get("favorite") or 0),
-        "share": int(stat.get("share") or 0),
+        "play": _int_or_none(stat.get("view")),
+        "like": _int_or_none(stat.get("like")),
+        "comment": _int_or_none(stat.get("reply")),
+        "favorite": _int_or_none(stat.get("favorite")),
+        "share": _int_or_none(stat.get("share")),
     }
 
 
@@ -72,14 +74,14 @@ async def fetch_douyin_metrics(aweme_id: str, cookie: str) -> dict | None:
     )
     aw = data.get("aweme_detail") or {}
     stats = aw.get("statistics") or {}
-    if not stats:
+    if not isinstance(stats, dict):
         return None
     return {
-        "play": int(stats.get("play_count") or 0),
-        "like": int(stats.get("digg_count") or 0),
-        "comment": int(stats.get("comment_count") or 0),
-        "favorite": int(stats.get("collect_count") or 0),
-        "share": int(stats.get("share_count") or 0),
+        "play": _int_or_none(stats.get("play_count")),
+        "like": _int_or_none(stats.get("digg_count")),
+        "comment": _int_or_none(stats.get("comment_count")),
+        "favorite": _int_or_none(stats.get("collect_count")),
+        "share": _int_or_none(stats.get("share_count")),
     }
 
 
@@ -124,11 +126,11 @@ async def fetch_xhs_metrics(note_id: str, cookie: str, extra: dict | None = None
         return None
     inter = (items[0].get("note_card") or {}).get("interact_info") or {}
     return {
-        "play": 0,
-        "like": int(inter.get("liked_count") or 0),
-        "comment": int(inter.get("comment_count") or 0),
-        "favorite": int(inter.get("collected_count") or 0),
-        "share": int(inter.get("share_count") or 0),
+        "play": _int_or_none(inter.get("view_count")),
+        "like": _int_or_none(inter.get("liked_count")),
+        "comment": _int_or_none(inter.get("comment_count")),
+        "favorite": _int_or_none(inter.get("collected_count")),
+        "share": _int_or_none(inter.get("share_count")),
     }
 
 
@@ -155,9 +157,9 @@ async def fetch_kuaishou_metrics(photo_id: str, cookie: str) -> dict | None:
     if not photo:
         return None
     return {
-        "play": int(photo.get("viewCount") or 0),
-        "like": int(photo.get("likeCount") or 0),
-        "comment": int(photo.get("commentCount") or 0),
-        "favorite": 0,
-        "share": 0,
+        "play": _int_or_none(photo.get("viewCount")),
+        "like": _int_or_none(photo.get("likeCount")),
+        "comment": _int_or_none(photo.get("commentCount")),
+        "favorite": None,
+        "share": None,
     }

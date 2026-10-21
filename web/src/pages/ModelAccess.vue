@@ -36,7 +36,7 @@
       <button class="ui-tab" :class="{ on: tab === 'calls' }" @click="switchCalls">调用审计</button>
     </div>
 
-    <section v-if="setupState && !setupState.ready && tab !== 'calls'" class="setup-strip" role="status">
+    <section v-if="setupState && (!setupState.ready || setupState.unverified_work_types?.length) && tab !== 'calls'" class="setup-strip" role="status">
       <el-icon><WarningFilled /></el-icon>
       <div class="setup-copy">
         <strong>{{ setupState.title }}</strong>
@@ -164,7 +164,7 @@
             </div>
             <span class="grow" />
             <span class="ui-badge" :class="item.configured ? (item.auto_configured ? 'acc' : 'ok') : 'warn'">
-              {{ item.configured ? (item.auto_configured ? '已自动配置' : '已手动配置') : '未配置' }}
+              {{ item.configured ? (item.primary_configured ? (item.auto_configured ? '已自动配置' : '已手动配置') : '仅备用模型') : '未配置' }}
             </span>
           </div>
           <div class="ui-panel-body assignment-body">
@@ -173,7 +173,7 @@
             </p>
             <label>主模型</label>
             <el-select v-model="draft[item.work_type].primary_model_id" clearable placeholder="选择主模型" style="width: 100%">
-              <el-option v-for="m in candidates(item.work_type)" :key="m.id" :label="modelLabel(m)" :value="m.id" />
+            <el-option v-for="m in candidates(item.work_type)" :key="m.id" :label="modelLabel(m)" :value="m.id" />
             </el-select>
             <label>备用模型（可选）</label>
             <el-select v-model="draft[item.work_type].fallback_model_id" clearable placeholder="不用备用模型" style="width: 100%">
@@ -204,7 +204,7 @@
     </template>
 
     <template v-else>
-      <div class="ui-bar">
+      <div class="ui-bar call-filters">
         <el-select v-model="callFilters.work_type" clearable placeholder="全部工作" style="width: 150px" @change="reloadCalls">
           <el-option v-for="(label, key) in workNames" :key="key" :label="label" :value="key" />
         </el-select>
@@ -219,7 +219,7 @@
         <el-input v-model="callFilters.asset_id" clearable placeholder="素材 ID" style="width: 120px" @keyup.enter="reloadCalls" />
         <button class="ui-btn sm" @click="reloadCalls">查询</button>
         <span class="grow" />
-        <span class="ui-badge">共 {{ callTotal }} 条调用</span>
+        <span class="ui-badge call-total">共 {{ callTotal }} 条调用</span>
       </div>
 
       <section class="ui-panel" v-loading="callsLoading">
@@ -227,7 +227,8 @@
           <div class="big">还没有模型调用记录</div>
           <p>模型完成一次真实调用后，这里会记录模型、状态、耗时和原始报错。</p>
         </div>
-        <table v-else class="ui-table">
+        <div v-else class="ui-table-scroll">
+        <table class="ui-table">
           <thead>
             <tr>
               <th>时间</th>
@@ -288,12 +289,17 @@
             </template>
           </tbody>
         </table>
+        </div>
       </section>
 
       <div class="ui-bar call-pager">
-        <button class="ui-btn sm" :disabled="callOffset <= 0 || callsLoading" @click="changeCallPage(-1)">上一页</button>
-        <span class="hint">第 {{ callOffset / callLimit + 1 }} 页，每页 {{ callLimit }} 条</span>
-        <button class="ui-btn sm" :disabled="callOffset + callLimit >= callTotal || callsLoading" @click="changeCallPage(1)">下一页</button>
+        <PagedBar
+          :page="callPage"
+          :page-size="callLimit"
+          :total="callTotal"
+          :disabled="callsLoading"
+          @change="changeCallPage"
+        />
       </div>
     </template>
 
@@ -453,17 +459,19 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { StarFilled, TopRight, View, WarningFilled } from '@element-plus/icons-vue'
-import { api } from '../api'
-import { parseUtc } from '../utils/time'
+import { apiCall, apiCallWithMeta } from '../api'
+import type { ModelOut, AssignmentOut, SetupStateOut, LegacyMigrationOut } from '../api.generated'
+import { formatDateTime } from '../utils/time'
+import PagedBar from '../components/PagedBar.vue'
 
 const XINGSUAN_HOME = 'https://xsai5.xyz'
 
 const tab = ref<'models' | 'assignments' | 'calls'>('models')
 const loading = ref(false)
-const models = ref<any[]>([])
-const assignments = ref<any[]>([])
-const setupState = ref<any | null>(null)
-const legacyStatus = ref<any | null>(null)
+const models = ref<ModelOut[]>([])
+const assignments = ref<AssignmentOut[]>([])
+const setupState = ref<SetupStateOut | null>(null)
+const legacyStatus = ref<LegacyMigrationOut | null>(null)
 const expanded = reactive(new Set<number>())
 
 const calls = ref<any[]>([])
@@ -471,6 +479,7 @@ const callsLoading = ref(false)
 const callTotal = ref(0)
 const callLimit = 50
 const callOffset = ref(0)
+const callPage = computed(() => Math.floor(callOffset.value / callLimit) + 1)
 const expandedCalls = reactive(new Set<number>())
 const callGroups = reactive<Record<string, any[]>>({})
 const callGroupLoading = reactive(new Set<string>())
@@ -530,11 +539,19 @@ function workTitle(type: string) {
   return workNames[type] || type
 }
 
+function missingWorkText(state: any) {
+  const missing = (state?.missing_work_types || []).map(workTitle)
+  return missing.length ? missing.join('、') : '所有工作'
+}
+
 function setupHint(state: any) {
   if (state.stage === 'no_provider') return '还没有可用的模型供应商。添加后会读取模型清单。'
   if (state.stage === 'provider_disabled') return '已有供应商但全部停用，启用后才能检测和调用模型。'
   if (state.stage === 'no_models') return `已有 ${state.enabled_provider_count} 个启用供应商，但还没有导入模型。`
   if (state.stage === 'no_assignment') return '模型已导入，但工作还没有分配主模型。'
+  if (state.stage === 'assignment_incomplete') return `还没有分配：${missingWorkText(state)}。补齐后才能运行这些工作。`
+  if (state.stage === 'assignment_invalid') return `以下工作的已分配模型当前不可用：${missingWorkText(state)}。请修复或改用已通过检测的模型。`
+  if (state.stage === 'verify_recommended') return `旧版配置可继续运行，但以下工作尚未实测：${(state.unverified_work_types || []).map(workTitle).join('、')}。建议检测一次能力。`
   return '供应商、模型和工作分配都已就绪。'
 }
 
@@ -607,9 +624,8 @@ function protocolSourceLabel(row: any) {
 
 async function setModelProtocol(row: any, value: string) {
   try {
-    await api.patch(`/api/model-access/models/${row.id}`, value === 'inherit'
-      ? { protocol_source: 'inherit' }
-      : { protocol: value })
+    await apiCall('patch_model_api_model_access_models__model_id__patch', { model_id: row.id },
+      { body: value === 'inherit' ? { protocol_source: 'inherit' } : { protocol: value } })
     await loadAll({ syncDrafts: false })
   } catch { /* axios 已提示 */ }
 }
@@ -633,21 +649,21 @@ function probeClass(status: string) {
 }
 
 function fmt(value: string | null) {
-  return parseUtc(value)?.toLocaleString() ?? '—'
+  return formatDateTime(value)
 }
 
 async function loadAll(options: { syncDrafts?: boolean } = {}) {
   loading.value = true
   try {
     const [m, a, legacy] = await Promise.all([
-      api.get('/api/model-access/models'),
-      api.get('/api/model-access/assignments'),
-      api.get('/api/model-access/legacy'),
+      apiCall('list_models_api_model_access_models_get'),
+      apiCall('list_assignments_api_model_access_assignments_get'),
+      apiCall('legacy_migration_overview_api_model_access_legacy_get'),
     ])
-    models.value = m.data
-    assignments.value = a.data.assignments
-    setupState.value = a.data.setup_state || null
-    legacyStatus.value = legacy.data?.detected || legacy.data?.claimed ? legacy.data : null
+    models.value = m
+    assignments.value = a.assignments
+    setupState.value = a.setup_state || null
+    legacyStatus.value = legacy.detected || legacy.claimed ? legacy : null
     if (options.syncDrafts !== false) {
       for (const item of assignments.value) {
         draft[item.work_type] = {
@@ -662,11 +678,12 @@ async function loadAll(options: { syncDrafts?: boolean } = {}) {
 }
 
 function candidates(workType: string) {
+  const required = assignments.value.find((item) => item.work_type === workType)?.required_capabilities
+    || (workType === 'video_understanding' ? ['json', 'video'] : ['text', 'json'])
   return models.value.filter((m) => {
     if (!m.enabled || m.provider_enabled === false) return false
     const caps = m.capabilities || {}
-    if (workType === 'video_understanding') return !!(caps.json?.value && caps.video?.value)
-    return !!(caps.text?.value && caps.json?.value)
+    return required.every((key: string) => !!(caps[key]?.value))
   })
 }
 
@@ -703,8 +720,8 @@ function reloadCalls() {
   return loadCalls()
 }
 
-function changeCallPage(delta: number) {
-  callOffset.value = Math.max(0, callOffset.value + delta * callLimit)
+function changeCallPage(nextPage: number) {
+  callOffset.value = Math.max(0, (nextPage - 1) * callLimit)
   return loadCalls()
 }
 
@@ -721,9 +738,9 @@ async function loadCalls() {
       return
     }
     if (assetId) params.asset_id = Number(assetId)
-    const { data, headers } = await api.get('/api/model-access/calls', { params })
+    const { data, total: count } = await apiCallWithMeta('list_calls_api_model_access_calls_get', params)
     calls.value = data
-    callTotal.value = Number(headers['x-total-count'] || data.length)
+    callTotal.value = count
     for (const key of Object.keys(callGroups)) delete callGroups[key]
   } finally {
     callsLoading.value = false
@@ -734,7 +751,9 @@ async function loadCallGroup(groupId: string) {
   if (!groupId || callGroups[groupId] || callGroupLoading.has(groupId)) return
   callGroupLoading.add(groupId)
   try {
-    const { data } = await api.get(`/api/model-access/calls/${encodeURIComponent(groupId)}`)
+    const data = await apiCall('get_call_group_api_model_access_calls__attempt_group_id__get', {
+      attempt_group_id: groupId,
+    })
     callGroups[groupId] = data
   } finally {
     callGroupLoading.delete(groupId)
@@ -780,7 +799,7 @@ async function openProviders() {
 async function loadProviders() {
   providerLoading.value = true
   try {
-    const { data } = await api.get('/api/model-access/providers')
+    const data = await apiCall('list_providers_api_model_access_providers_get')
     providers.value = data
   } finally {
     providerLoading.value = false
@@ -805,14 +824,18 @@ async function saveProvider() {
     base_url: providerForm.base_url,
   }
   if (providerForm.api_key) payload.api_key = providerForm.api_key
-  await api.patch(`/api/model-access/providers/${editingProvider.value.id}`, payload)
+  await apiCall('patch_provider_api_model_access_providers__provider_id__patch', {
+    provider_id: editingProvider.value.id,
+  }, { body: payload })
   editingProvider.value = null
   await loadProviders()
   await loadAll({ syncDrafts: false })
 }
 
 async function toggleProvider(row: any) {
-  await api.patch(`/api/model-access/providers/${row.id}`, { enabled: !row.enabled })
+  await apiCall('patch_provider_api_model_access_providers__provider_id__patch', {
+    provider_id: row.id,
+  }, { body: { enabled: !row.enabled } })
   await loadProviders()
   await loadAll({ syncDrafts: false })
 }
@@ -820,7 +843,9 @@ async function toggleProvider(row: any) {
 async function removeProvider(row: any) {
   if (!confirm(`删除供应商「${row.name}」？该供应商下还有模型时无法删除，请先删除模型。`)) return
   try {
-    await api.delete(`/api/model-access/providers/${row.id}`)
+    await apiCall('delete_provider_api_model_access_providers__provider_id__delete', {
+      provider_id: row.id,
+    })
     await loadProviders()
     await loadAll({ syncDrafts: false })
   } catch { /* axios 已提示 */ }
@@ -871,13 +896,13 @@ async function discover() {
   discovering.value = true
   discoverMessage.value = '正在读取模型清单…'
   try {
-    const { data } = await api.post('/api/model-access/providers/preview-models', {
+    const data = await apiCall('preview_models_api_model_access_providers_preview_models_post', {}, { body: {
       protocol: provider.protocol,
       base_url: provider.base_url,
       api_key: provider.api_key,
       name: provider.name,
       preset_key: providerPreset.value,
-    })
+    } })
     availableModels.value = data.models || []
     selectedModels.value = selectedModels.value.filter((name) => availableModels.value.includes(name))
     discoverMessage.value = `找到 ${availableModels.value.length} 个模型`
@@ -891,7 +916,7 @@ async function discover() {
 async function submitImport() {
   importing.value = true
   try {
-    const { data } = await api.post('/api/model-access/providers/import-models', {
+    const data = await apiCall('provider_import_models_api_model_access_providers_import_models_post', {}, { body: {
       name: provider.name,
       preset_key: providerPreset.value,
       protocol: provider.protocol,
@@ -899,7 +924,7 @@ async function submitImport() {
       api_key: provider.api_key,
       models: selectedModels.value.map((model_key) => ({ model_key, display_name: model_key })),
       probe: { text: true, image: true, video: probeVideo.value },
-    })
+    } })
     const removed = data.removed?.length || 0
     const kept = data.kept_in_use?.length || 0
     let message = `已导入 ${selectedModels.value.length} 个模型`
@@ -916,14 +941,14 @@ async function submitImport() {
 
 async function refreshBalance(row: any) {
   try {
-    await api.post(`/api/model-access/providers/${row.id}/refresh-balance`)
+    await apiCall('refresh_balance_api_model_access_providers__provider_id__refresh_balance_post', { provider_id: row.id })
     await loadProviders()
   } catch { /* axios 已提示 */ }
 }
 
 async function refreshLatency(row: any) {
   try {
-    await api.post(`/api/model-access/providers/${row.id}/refresh-latency`)
+    await apiCall('refresh_latency_api_model_access_providers__provider_id__refresh_latency_post', { provider_id: row.id })
     await loadProviders()
   } catch { /* axios 已提示 */ }
 }
@@ -931,7 +956,7 @@ async function refreshLatency(row: any) {
 async function testProvider(row: any) {
   testingProvider.value = row.id
   try {
-    const { data } = await api.post(`/api/model-access/providers/${row.id}/test`)
+    const data = await apiCall('test_provider_api_model_access_providers__provider_id__test_post', { provider_id: row.id })
     ElMessage({ message: data.message || (data.ok ? '连接成功' : '连接失败'), type: data.ok ? 'success' : 'warning' })
     await loadProviders()
   } catch { /* axios 已提示 */ } finally {
@@ -943,7 +968,7 @@ async function discoverProviderModels(row: any) {
   discoveringProvider.value = row.id
   discoveredProviderModels.value = null
   try {
-    const { data } = await api.post(`/api/model-access/providers/${row.id}/discover-models`)
+    const data = await apiCall('discover_models_api_model_access_providers__provider_id__discover_models_post', { provider_id: row.id })
     const names = data.models || []
     discoveredProviderModels.value = { providerId: row.id, models: names }
     ElMessage.success(`读取到 ${names.length} 个模型`)
@@ -979,7 +1004,8 @@ async function probe(row: any) {
   } catch (action) {
     if (action === 'close') return
   }
-  await api.post(`/api/model-access/models/${row.id}/probe`, { text: true, image: true, video: wantsVideo })
+  await apiCall('probe_api_model_access_models__model_id__probe_post', { model_id: row.id },
+    { body: { text: true, image: true, video: wantsVideo } })
   await loadAll()
   startProbePolling()
 }
@@ -996,10 +1022,10 @@ async function markVideoCapability(row: any) {
         inputValidator: (text: string) => Boolean(text?.trim()) || '请填写标记依据',
       },
     )
-    await api.post(`/api/model-access/models/${row.id}/manual-capability`, {
+    await apiCall('manual_capability_api_model_access_models__model_id__manual_capability_post', { model_id: row.id }, { body: {
       video: true,
       reason: value.trim(),
-    })
+    } })
     await loadAll()
   } catch { /* 用户取消或接口已提示 */ }
 }
@@ -1017,7 +1043,7 @@ function startProbePolling(attempt = 0) {
   }
   probePollTimer = window.setTimeout(async () => {
     try {
-      const { data } = await api.get('/api/model-access/models')
+      const data = await apiCall('list_models_api_model_access_models_get')
       models.value = data
     } catch {
       // Network errors are transient; keep the cursor so a recovered backend
@@ -1035,7 +1061,9 @@ async function finishProbeTimeout() {
   try {
     // Ask the server to reconcile stale probes instead of leaving rows stuck
     // in "testing" forever.  Healthy running jobs are not touched.
-    const { data } = await api.post('/api/model-access/probes/reconcile', { older_than_minutes: 7 })
+    const data = await apiCall('reconcile_probes_api_model_access_probes_reconcile_post', {}, {
+      body: { older_than_minutes: 7 },
+    })
     models.value = data.models || []
     ElMessage({
       type: data.recovered ? 'warning' : 'info',
@@ -1048,7 +1076,7 @@ async function finishProbeTimeout() {
     // Falling back to a read keeps the user informed even if reconciliation
     // itself fails; the buttons are enabled because no poll is running.
     try {
-      const { data } = await api.get('/api/model-access/models')
+      const data = await apiCall('list_models_api_model_access_models_get')
       models.value = data
     } catch { /* axios 已提示 */ }
     ElMessage({ type: 'warning', duration: 8000, message: '模型检测轮询已超时，未能确认最终状态；可重新检测' })
@@ -1056,25 +1084,29 @@ async function finishProbeTimeout() {
 }
 
 async function toggleEnabled(row: any) {
-  await api.patch(`/api/model-access/models/${row.id}`, { enabled: !row.enabled })
+  await apiCall('patch_model_api_model_access_models__model_id__patch', { model_id: row.id }, {
+    body: { enabled: !row.enabled },
+  })
   await loadAll({ syncDrafts: false })
 }
 
 async function removeModel(row: any) {
   if (!confirm(`删除模型「${row.display_name || row.model_key}」？`)) return
   try {
-    await api.delete(`/api/model-access/models/${row.id}`)
+    await apiCall('delete_model_api_model_access_models__model_id__delete', { model_id: row.id })
     await loadAll({ syncDrafts: false })
   } catch { /* axios 已提示 */ }
 }
 
 async function saveAssignment(workType: string) {
-  await api.put(`/api/model-access/assignments/${workType}`, draft[workType])
+  await apiCall('update_assignment_api_model_access_assignments__work_type__put', { work_type: workType }, {
+    body: draft[workType],
+  })
   await loadAll()
 }
 
 async function recommend() {
-  await api.post('/api/model-access/assignments/recommend')
+  await apiCall('recommend_assignments_api_model_access_assignments_recommend_post')
   await loadAll()
 }
 
@@ -1190,6 +1222,14 @@ onBeforeUnmount(() => window.clearTimeout(probePollTimer))
   max-height: 260px; overflow: auto;
 }
 .call-pager { justify-content: center; }
+.call-filters :deep(.el-select),
+.call-filters :deep(.el-input) { max-width: 100%; }
+@media (max-width: 620px) {
+  .call-filters :deep(.el-select),
+  .call-filters :deep(.el-input) { width: 100% !important; }
+  .call-filters .grow { display: none; }
+  .call-filters .call-total { width: 100%; }
+}
 .assignment-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-5); }
 .assignment-card .ui-panel-head { align-items: flex-start; }
 .assignment-card .hint { margin-top: 3px; }

@@ -7,6 +7,7 @@ from pydantic import model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import schemas
 from app.core import security
 from app.application.commands.crawl import CrawlCommandError, enqueue_crawl
 from app.application.commands.crawl_task import (
@@ -48,13 +49,13 @@ def _out(t: CrawlTask) -> dict:
     }
 
 
-@router.get("")
+@router.get("", response_model=list[schemas.CrawlTaskOut])
 def list_tasks(db: Session = Depends(get_db)):
     tasks = db.scalars(select(CrawlTask).order_by(CrawlTask.id.desc())).all()
     return [_out(t) for t in tasks]
 
 
-@router.post("")
+@router.post("", response_model=schemas.CrawlTaskOut)
 def create_task(body: CrawlTaskIn, db: Session = Depends(get_db)):
     try:
         task = create_crawl_task(db, body)
@@ -63,7 +64,7 @@ def create_task(body: CrawlTaskIn, db: Session = Depends(get_db)):
     return _out(task)
 
 
-@router.put("/{task_id}")
+@router.put("/{task_id}", response_model=schemas.CrawlTaskOut)
 def update_task(task_id: int, body: CrawlTaskIn, db: Session = Depends(get_db)):
     task = db.get(CrawlTask, task_id)
     if task is None:
@@ -75,7 +76,7 @@ def update_task(task_id: int, body: CrawlTaskIn, db: Session = Depends(get_db)):
     return _out(task)
 
 
-@router.delete("/{task_id}")
+@router.delete("/{task_id}", response_model=schemas.OkOut)
 def delete_task(task_id: int, db: Session = Depends(get_db)):
     task = db.get(CrawlTask, task_id)
     if task is None:
@@ -85,7 +86,7 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.post("/{task_id}/run")
+@router.post("/{task_id}/run", response_model=schemas.JobRefOut)
 def run_task(task_id: int, db: Session = Depends(get_db)):
     try:
         job = enqueue_crawl(db, task_id)
@@ -94,7 +95,7 @@ def run_task(task_id: int, db: Session = Depends(get_db)):
     return {"job_id": job.id, "status": "queued"}
 
 
-@router.get("/{task_id}/runs")
+@router.get("/{task_id}/runs", response_model=list[schemas.CrawlRunOut])
 def list_runs(task_id: int, db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=100)):
     runs = db.scalars(
         select(CrawlRun).where(CrawlRun.task_id == task_id).order_by(CrawlRun.id.desc()).limit(limit)

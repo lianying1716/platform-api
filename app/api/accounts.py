@@ -197,6 +197,7 @@ def list_platforms():
             keyword_crawl=bool(cap.get("keyword_crawl")),
             comments=bool(cap.get("comments")),
             follow_import=bool(cap.get("follow_import")),
+            metrics=list(cap.get("metrics") or []),
         ))
     return out
 
@@ -529,7 +530,7 @@ async def check_account(account_id: int, db: Session = Depends(get_db)):
     return await _run_check(db, account, manual=True)
 
 
-@router.delete("/accounts/{account_id}")
+@router.delete("/accounts/{account_id}", response_model=schemas.AccountDeleteOut)
 def delete_account(account_id: int, db: Session = Depends(get_db)):
     account = db.get(PlatformAccount, account_id)
     if account is None:

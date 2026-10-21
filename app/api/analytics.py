@@ -12,9 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
+from app import schemas
 from app.core import security
 from app.core.breakdown_settings import get_breakdown_settings
 from app.db import get_db
+from app.domain.capabilities import metric_applies_to
 from app.models import (
     ContentItem,
     ContentMetricSnapshot,
@@ -31,7 +33,29 @@ from app.services.foundation import follower_count_of
 router = APIRouter(prefix="/api", tags=["analytics"], dependencies=[Depends(security.require_admin)])
 
 
-@router.get("/dashboard/summary")
+def _latest_snapshot_subquery(*, since: datetime | None = None):
+    """Select exactly one latest snapshot per content.
+
+    ``max(captured_at)`` alone is ambiguous when two rows share a timestamp,
+    which made dashboard sums count the same content twice.  The row-number
+    ordering includes ``id`` as the stable tiebreaker and is portable across
+    PostgreSQL and SQLite.
+    """
+    stmt = select(ContentMetricSnapshot.id.label("snapshot_id"), ContentMetricSnapshot.content_id)
+    if since is not None:
+        stmt = stmt.where(ContentMetricSnapshot.captured_at >= since)
+    ranked = stmt.add_columns(
+        func.row_number()
+        .over(
+            partition_by=ContentMetricSnapshot.content_id,
+            order_by=(ContentMetricSnapshot.captured_at.desc(), ContentMetricSnapshot.id.desc()),
+        )
+        .label("rn")
+    ).subquery()
+    return select(ranked.c.snapshot_id, ranked.c.content_id).where(ranked.c.rn == 1).subquery()
+
+
+@router.get("/dashboard/summary", response_model=schemas.DashboardSummary)
 def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = None):
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     week_ago = today - timedelta(days=7)
@@ -87,7 +111,10 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
     ).all():
         by_type[str(ctype or "video")] = int(cnt)
     video_total = by_type.get("video", 0)
-    article_total = by_type.get("article", 0) + by_type.get("image", 0)
+    article_total = by_type.get("article", 0) + by_type.get("answer", 0) + by_type.get("image", 0)
+    # ``by_type`` must sum to the same total as platform_rows; a future content
+    # type would otherwise disappear from the headline library count.
+    content_total = sum(by_type.values())
 
     # 总时长：只统计视频（文章/图文没有时长概念）
     duration_total = (
@@ -116,7 +143,9 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
             plat or "unknown",
             {
                 "platform": plat or "unknown", "total": 0, "video": 0, "article": 0,
-                "play": 0, "like": 0, "transcribed": 0, "categorized": 0,
+                "play": None, "like": None, "comment": None, "favorite": None,
+                "metric_coverage": {},
+                "transcribed": 0, "categorized": 0,
             },
         )
         p["total"] += int(cnt)
@@ -125,43 +154,103 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
         else:
             p["article"] += int(cnt)
 
-    # 每个内容取最新快照的播放/点赞，按平台聚合（子查询取最新 captured_at）
-    latest = (
-        select(
-            ContentMetricSnapshot.content_id,
-            func.max(ContentMetricSnapshot.captured_at).label("ts"),
-        )
-        .group_by(ContentMetricSnapshot.content_id)
-        .subquery()
-    )
+    # Coverage denominators follow the same capability manifest as bulk
+    # backfill.  A play counter on an article (or a platform without metric
+    # refresh) is not a missing value; it is not applicable at all.
+    metric_totals: dict[str, int] = {key: 0 for key in ("play", "like", "comment", "favorite")}
+    metric_platform_totals: dict[str, dict[str, int]] = {
+        key: {plat: 0 for plat in platforms}
+        for key in metric_totals
+    }
+    for plat, ctype, cnt in platform_rows:
+        platform = plat or "unknown"
+        for key in metric_totals:
+            if metric_applies_to(platform, str(ctype or "video"), key):
+                metric_totals[key] += int(cnt)
+                metric_platform_totals[key][platform] += int(cnt)
+
+    # Every metric field has its own denominator.  A sum over only the
+    # populated rows is useful, but presenting it as the total when half the
+    # library is unknown is misleading.  Return both the sum and coverage so
+    # callers can tell "measured total" from "partial sample".
+    latest = _latest_snapshot_subquery()
     metric_rows = db.execute(
         select(
             ContentItem.platform,
-            func.coalesce(func.sum(ContentMetricSnapshot.play), 0),
-            func.coalesce(func.sum(ContentMetricSnapshot.like), 0),
-            func.coalesce(func.sum(ContentMetricSnapshot.comment), 0),
-            func.coalesce(func.sum(ContentMetricSnapshot.favorite), 0),
+            ContentItem.content_type,
+            func.sum(ContentMetricSnapshot.play),
+            func.sum(ContentMetricSnapshot.like),
+            func.sum(ContentMetricSnapshot.comment),
+            func.sum(ContentMetricSnapshot.favorite),
+            func.count(ContentMetricSnapshot.play),
+            func.count(ContentMetricSnapshot.like),
+            func.count(ContentMetricSnapshot.comment),
+            func.count(ContentMetricSnapshot.favorite),
+            func.count(ContentMetricSnapshot.id),
         )
-        .join(ContentMetricSnapshot, ContentMetricSnapshot.content_id == ContentItem.id)
-        .join(latest, (latest.c.content_id == ContentMetricSnapshot.content_id) & (latest.c.ts == ContentMetricSnapshot.captured_at))
+        .select_from(latest)
+        .join(ContentMetricSnapshot, ContentMetricSnapshot.id == latest.c.snapshot_id)
+        .join(ContentItem, ContentItem.id == latest.c.content_id)
         .where(*content_filter)
-        .group_by(ContentItem.platform)
+        .group_by(ContentItem.platform, ContentItem.content_type)
     ).all()
-    totals = {"play": 0, "like": 0, "comment": 0, "favorite": 0}
-    for plat, play, like, comment, fav in metric_rows:
+    # A sum is unknown if every latest snapshot omitted the field; a measured
+    # zero still contributes zero.  Do not turn API-wide "unknown" into 0.
+    totals: dict[str, int | None] = {"play": 0, "like": 0, "comment": 0, "favorite": 0}
+    known = {"play": False, "like": False, "comment": False, "favorite": False}
+    coverage: dict[str, dict[str, int]] = {
+        key: {"known": 0, "total": metric_totals[key]} for key in totals
+    }
+    metric_platform_known: dict[str, dict[str, int]] = {
+        key: {plat: 0 for plat in platforms}
+        for key in totals
+    }
+    for plat, ctype, play, like, comment, fav, n_play, n_like, n_comment, n_fav, n_rows in metric_rows:
+        content_type = str(ctype or "video")
         p = platforms.setdefault(
             plat or "unknown",
             {
                 "platform": plat or "unknown", "total": 0, "video": 0, "article": 0,
-                "play": 0, "like": 0, "transcribed": 0, "categorized": 0,
+                "play": None, "like": None, "comment": None, "favorite": None,
+                "metric_coverage": {},
+                "transcribed": 0, "categorized": 0,
             },
         )
-        p["play"] = int(play or 0)
-        p["like"] = int(like or 0)
-        totals["play"] += int(play or 0)
-        totals["like"] += int(like or 0)
-        totals["comment"] += int(comment or 0)
-        totals["favorite"] += int(fav or 0)
+        raw_values = {"play": play, "like": like, "comment": comment, "favorite": fav}
+        raw_counts = {"play": n_play, "like": n_like, "comment": n_comment, "favorite": n_fav}
+        # Keep numerator and denominator on the same applicability rule.  An
+        # article may carry a stray play_count, but it must not make coverage
+        # report known > total or inflate the video-only total.
+        values = {
+            key: value
+            for key, value in raw_values.items()
+            if metric_applies_to(plat or "unknown", content_type, key)
+        }
+        counts = {
+            key: value
+            for key, value in raw_counts.items()
+            if metric_applies_to(plat or "unknown", content_type, key)
+        }
+        for key, count in counts.items():
+            metric_platform_known[key][plat or "unknown"] += int(count or 0)
+        for key, value in values.items():
+            coverage[key]["known"] += int(counts[key] or 0)
+            if value is None:
+                continue
+            p[key] = int(p[key] or 0) + int(value)
+            totals[key] = int(totals[key] or 0) + int(value)
+            known[key] = True
+    for key in totals:
+        if not known[key] and platforms:
+            totals[key] = None
+    for plat, p in platforms.items():
+        p["metric_coverage"] = {
+            key: {
+                "known": metric_platform_known[key].get(plat, 0),
+                "total": metric_platform_totals[key].get(plat, 0),
+            }
+            for key in totals
+        }
 
     # 每平台加工进度：已转录（media_asset.transcribe_status=done）/ 已判类（auto_category 非空）。
     transcribed_rows = db.execute(
@@ -278,21 +367,34 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
         )
         trend.append({"date": day.strftime("%m-%d"), "added": int(cnt)})
 
-    # 最近 24h 热门 Top10（按最新快照的播放量）
-    since = datetime.utcnow() - timedelta(hours=24)
+    # 热门 Top10（按每个内容最新快照的播放量，不按历史峰值）
+    latest_hot = _latest_snapshot_subquery()
+    hot_platforms = [
+        platform
+        for platform, total in metric_platform_totals["play"].items()
+        if total > 0
+    ]
     hot_rows = db.execute(
-        select(ContentItem.title, ContentItem.platform, ContentItem.author_name, func.max(ContentMetricSnapshot.play))
-        .join(ContentMetricSnapshot, ContentMetricSnapshot.content_id == ContentItem.id)
+        select(
+            ContentItem.title,
+            ContentItem.platform,
+            ContentItem.content_type,
+            ContentItem.author_name,
+            ContentMetricSnapshot.play,
+        )
+        .select_from(latest_hot)
+        .join(ContentMetricSnapshot, ContentMetricSnapshot.id == latest_hot.c.snapshot_id)
+        .join(ContentItem, ContentItem.id == latest_hot.c.content_id)
         .where(
-            ContentMetricSnapshot.captured_at >= since,
             ContentMetricSnapshot.play.is_not(None),
+            ContentItem.content_type == "video",
+            ContentItem.platform.in_(hot_platforms),
             *content_filter,
         )
-        .group_by(ContentItem.id, ContentItem.title, ContentItem.platform, ContentItem.author_name)
-        .order_by(desc(func.max(ContentMetricSnapshot.play)))
+        .order_by(desc(ContentMetricSnapshot.play), ContentItem.id)
         .limit(10)
     ).all()
-    hot = [{"title": t, "platform": p, "author": a, "play": play} for t, p, a, play in hot_rows]
+    hot = [{"title": t, "platform": p, "author": a, "play": play} for t, p, _ctype, a, play in hot_rows]
 
     return {
         "accounts": {"total": accounts_total, "abnormal": accounts_bad},
@@ -308,7 +410,7 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
         "jobs": {"pending": jobs_pending, "failed": jobs_failed},
         "assets_total": assets_total,
         "content": {
-            "total": sum(by_type.values()),
+            "total": content_total,
             "video": video_total,
             "article": article_total,
             "duration_sec": int(duration_total),
@@ -322,6 +424,7 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
             "failed": int(jobs_failed),
         },
         "engagement": totals,
+        "metric_coverage": coverage,
         "storage": {
             "used_bytes": used_bytes,
             "by_platform": storage_by_platform,
@@ -332,7 +435,7 @@ def dashboard_summary(db: Session = Depends(get_db), account_id: int | None = No
     }
 
 
-@router.get("/analytics/creators")
+@router.get("/analytics/creators", response_model=list[schemas.CreatorStatOut])
 def analytics_creators(
     db: Session = Depends(get_db),
     limit: int = Query(20, ge=1, le=200),
@@ -381,7 +484,7 @@ def analytics_creators(
     return out
 
 
-@router.get("/analytics/keywords")
+@router.get("/analytics/keywords", response_model=list[schemas.KeywordStatOut])
 def analytics_keywords(db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=200)):
     """关键词维度：各采集任务近期新增内容量。"""
     rows = db.execute(
@@ -393,7 +496,7 @@ def analytics_keywords(db: Session = Depends(get_db), limit: int = Query(20, ge=
     return [{"task_id": tid, "total_added": added or 0, "runs": runs} for tid, added, runs in rows]
 
 
-@router.get("/analytics/content/{content_id}/trend")
+@router.get("/analytics/content/{content_id}/trend", response_model=list[schemas.MetricSnapshotOut])
 def content_trend(content_id: int, db: Session = Depends(get_db)):
     """单条内容的互动走势（画趋势图用）。"""
     snaps = db.scalars(
@@ -487,7 +590,7 @@ def _avg(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-@router.get("/analytics/creator/{author_id}/report")
+@router.get("/analytics/creator/{author_id}/report", response_model=schemas.CreatorReportOut)
 def creator_report(author_id: str, platform: str | None = None, db: Session = Depends(get_db)):
     """对标账号拆解：单个作者的内容策略聚合（确定性、实时计算）。
 

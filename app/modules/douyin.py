@@ -507,11 +507,13 @@ def _aweme_to_item(aw: dict, fallback_author_id: str = "") -> dict:
         # create_time 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
         "published_at": _ts_to_iso(aw.get("create_time")),
         "metrics": {
-            "play": stats.get("play_count", 0),
-            "like": stats.get("digg_count", 0),
-            "comment": stats.get("comment_count", 0),
-            "favorite": stats.get("collect_count", 0),
-            "share": stats.get("share_count", 0),
+            # Missing is not zero.  normalize_metrics() turns absent keys into
+            # NULL; never invent a measured zero when the platform omitted it.
+            "play": stats.get("play_count"),
+            "like": stats.get("digg_count"),
+            "comment": stats.get("comment_count"),
+            "favorite": stats.get("collect_count"),
+            "share": stats.get("share_count"),
         },
     }
 

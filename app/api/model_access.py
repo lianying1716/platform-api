@@ -7,11 +7,12 @@ import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app import schemas
 from app.core import crypto
 from app.core.api_auth import require_admin_or_scope
 from app.db import get_db
@@ -29,12 +30,18 @@ from app.models import (
 from app.modules import model_protocols
 from app.services import model_probe
 from app.services.legacy_llm_migration import legacy_migration_status
-from app.services.model_access_service import WORK_TYPES, capabilities_of, model_access_setup_state
+from app.services.model_access_service import (
+    WORK_TYPES,
+    capabilities_of,
+    model_access_setup_state,
+    model_can_serve,
+    required_capabilities,
+)
 
 router = APIRouter(prefix="/api/model-access", tags=["model-access"])
 
 
-@router.get("/legacy")
+@router.get("/legacy", response_model=schemas.LegacyMigrationOut)
 def legacy_migration_overview(
     db: Session = Depends(get_db),
     actor=Depends(require_admin_or_scope("read", "operate", "admin")),
@@ -276,7 +283,7 @@ async def _fetch_model_names(provider: AiProvider, api_key: str, *, timeout: flo
 
 
 # ---------------- 供应商 ----------------
-@router.get("/providers")
+@router.get("/providers", response_model=list[schemas.ProviderOut])
 def list_providers(
     db: Session = Depends(get_db), actor=Depends(require_admin_or_scope("read", "operate", "admin"))
 ):
@@ -287,7 +294,7 @@ def list_providers(
     return out
 
 
-@router.post("/providers")
+@router.post("/providers", response_model=schemas.ProviderOut)
 def create_provider(
     body: ProviderIn,
     db: Session = Depends(get_db),
@@ -316,7 +323,7 @@ def create_provider(
     return _mask_provider(row)
 
 
-@router.patch("/providers/{provider_id}")
+@router.patch("/providers/{provider_id}", response_model=schemas.ProviderOut)
 def patch_provider(
     provider_id: int,
     body: ProviderPatch,
@@ -366,7 +373,7 @@ def patch_provider(
     return _mask_provider(row)
 
 
-@router.delete("/providers/{provider_id}")
+@router.delete("/providers/{provider_id}", response_model=schemas.OkOut)
 def delete_provider(
     provider_id: int,
     db: Session = Depends(get_db),
@@ -384,7 +391,7 @@ def delete_provider(
     return {"ok": True}
 
 
-@router.post("/providers/{provider_id}/test")
+@router.post("/providers/{provider_id}/test", response_model=schemas.ProviderTestOut)
 async def test_provider(
     provider_id: int,
     db: Session = Depends(get_db),
@@ -413,7 +420,7 @@ async def test_provider(
         return {"ok": False, "message": crypto.redact_text(str(exc), extra_secrets=(key,))[:1000]}
 
 
-@router.post("/providers/{provider_id}/discover-models")
+@router.post("/providers/{provider_id}/discover-models", response_model=schemas.ModelNamesOut)
 async def discover_models(
     provider_id: int,
     db: Session = Depends(get_db),
@@ -435,7 +442,7 @@ async def discover_models(
         raise HTTPException(status_code=502, detail=f"无法读取模型清单: {safe}") from exc
 
 
-@router.post("/providers/{provider_id}/refresh-balance")
+@router.post("/providers/{provider_id}/refresh-balance", response_model=schemas.ProviderOut)
 async def refresh_balance(
     provider_id: int,
     db: Session = Depends(get_db),
@@ -484,7 +491,7 @@ async def refresh_balance(
     return _mask_provider(row)
 
 
-@router.post("/providers/{provider_id}/refresh-latency")
+@router.post("/providers/{provider_id}/refresh-latency", response_model=schemas.ProviderOut)
 async def refresh_latency(
     provider_id: int,
     db: Session = Depends(get_db),
@@ -516,7 +523,7 @@ async def refresh_latency(
     return _mask_provider(row)
 
 
-@router.post("/providers/preview-models")
+@router.post("/providers/preview-models", response_model=schemas.ModelNamesOut)
 async def preview_models(
     body: PreviewModelsBody,
     db: Session = Depends(get_db),
@@ -560,7 +567,7 @@ async def preview_models(
     return {"models": names}
 
 
-@router.post("/providers/import-models")
+@router.post("/providers/import-models", response_model=schemas.ProviderImportOut)
 def provider_import_models(
     body: ProviderImportBody,
     db: Session = Depends(get_db),
@@ -618,7 +625,7 @@ def provider_import_models(
 
 
 # ---------------- 模型 ----------------
-@router.get("/models")
+@router.get("/models", response_model=list[schemas.ModelOut])
 def list_models(
     provider_id: int | None = None,
     work_type: str | None = None,
@@ -643,7 +650,7 @@ class ProbeReconcileBody(BaseModel):
     older_than_minutes: int = Field(default=7, ge=1, le=1440)
 
 
-@router.post("/probes/reconcile")
+@router.post("/probes/reconcile", response_model=schemas.ReconcileProbesOut)
 def reconcile_probes(
     body: ProbeReconcileBody | None = None,
     db: Session = Depends(get_db),
@@ -692,7 +699,7 @@ def reconcile_probes(
     return {"recovered": counts.get("probe", 0), "models": [_model_payload(db, row) for row in rows]}
 
 
-@router.post("/models/import")
+@router.post("/models/import", response_model=schemas.ModelImportOut)
 def import_models(
     body: ModelImportBody,
     db: Session = Depends(get_db),
@@ -776,7 +783,7 @@ def import_models(
     }
 
 
-@router.patch("/models/{model_id}")
+@router.patch("/models/{model_id}", response_model=schemas.ModelOut)
 def patch_model(
     model_id: int,
     body: ModelPatch,
@@ -812,7 +819,7 @@ def patch_model(
     return _model_payload(db, row)
 
 
-@router.delete("/models/{model_id}")
+@router.delete("/models/{model_id}", response_model=schemas.OkOut)
 def delete_model(
     model_id: int,
     db: Session = Depends(get_db),
@@ -836,7 +843,7 @@ def delete_model(
     return {"ok": True}
 
 
-@router.post("/models/{model_id}/probe")
+@router.post("/models/{model_id}/probe", response_model=schemas.ModelOut)
 async def probe(
     model_id: int,
     body: ProbeSpec | None = None,
@@ -854,7 +861,7 @@ async def probe(
     return _model_payload(db, row)
 
 
-@router.post("/models/{model_id}/manual-capability")
+@router.post("/models/{model_id}/manual-capability", response_model=schemas.ModelOut)
 async def manual_capability(
     model_id: int,
     body: ManualCapabilityBody,
@@ -873,7 +880,7 @@ async def manual_capability(
 
 
 # ---------------- 工作分配 ----------------
-@router.get("/assignments")
+@router.get("/assignments", response_model=schemas.AssignmentListOut)
 def list_assignments(
     db: Session = Depends(get_db),
     actor=Depends(require_admin_or_scope("read", "operate", "admin")),
@@ -893,7 +900,9 @@ def list_assignments(
                 "fallback_model": _model_payload(db, fallback) if fallback else None,
                 "auto_configured": bool(row.auto_configured) if row else False,
                 "legacy_pending_validation": bool(row.legacy_pending_validation) if row else False,
-                "configured": bool(row and row.primary_model_id),
+                "configured": bool(row and (row.primary_model_id or row.fallback_model_id)),
+                "primary_configured": bool(row and row.primary_model_id),
+                "required_capabilities": list(required_capabilities(db, work_type)),
             }
         )
     candidates = db.scalars(select(AiModel).where(AiModel.enabled.is_(True))).all()
@@ -907,7 +916,7 @@ def list_assignments(
     return {"assignments": out, "models": out_models, "setup_state": model_access_setup_state(db)}
 
 
-@router.put("/assignments/{work_type}")
+@router.put("/assignments/{work_type}", response_model=schemas.OkOut)
 def update_assignment(
     work_type: str,
     body: AssignmentBody,
@@ -928,7 +937,7 @@ def update_assignment(
         if model is None or provider is None or not model.enabled or not provider.enabled:
             raise HTTPException(status_code=422, detail=f"模型 {model_id} 不存在或已停用")
         caps = capabilities_of(model, provider)
-        required = ("text", "json") if work_type in ("text_analysis", "cover_classify") else ("json", "video")
+        required = required_capabilities(db, work_type)
         if not all((caps.get(key) or {}).get("value") for key in required):
             raise HTTPException(status_code=422, detail=f"模型 {model_id} 不满足该工作的能力要求")
         models[model_id] = model
@@ -945,7 +954,7 @@ def update_assignment(
     return {"ok": True}
 
 
-@router.post("/assignments/recommend")
+@router.post("/assignments/recommend", response_model=schemas.OkOut)
 def recommend_assignments(
     db: Session = Depends(get_db),
     actor=Depends(_sensitive("operate")),
@@ -956,14 +965,11 @@ def recommend_assignments(
         assignment = db.scalar(select(ModelAssignment).where(ModelAssignment.work_type == work_type))
         if assignment is not None and assignment.primary_model_id is not None:
             continue
-        required = ("text", "json") if work_type in ("text_analysis", "cover_classify") else ("json", "video")
+        required = required_capabilities(db, work_type)
         chosen = None
         for model in models:
             provider = db.get(AiProvider, model.provider_id)
-            if provider is None or not provider.enabled:
-                continue
-            caps = capabilities_of(model, provider)
-            if all((caps.get(key) or {}).get("value") for key in required):
+            if model_can_serve(db, model, provider, work_type, required=required):
                 chosen = model
                 break
         if chosen is None:
@@ -979,7 +985,12 @@ def recommend_assignments(
 
 
 # ---------------- 调用审计 ----------------
-@router.get("/calls")
+@router.get(
+    "/calls",
+    response_class=JSONResponse,
+    response_model=list[schemas.ModelCallAttemptOut],
+    responses={200: {"headers": {"X-Total-Count": {"schema": {"type": "integer"}}}}},
+)
 def list_calls(
     work_type: str | None = None,
     model_id: int | None = None,
@@ -1013,17 +1024,13 @@ def list_calls(
     rows = db.scalars(stmt.limit(limit).offset(offset)).all()
     _api_log(db, actor, "model_access.list_calls", "ok", started)
     asset_titles = _asset_titles(db, rows)
-    content = json.dumps(
-        [_attempt_payload(db, row, asset_titles=asset_titles) for row in rows], ensure_ascii=False
-    ).encode("utf-8")
-    return Response(
-        content=content,
-        media_type="application/json",
-        headers={"X-Total-Count": str(int(total)), "Content-Length": str(len(content))},
+    return JSONResponse(
+        content=[_attempt_payload(db, row, asset_titles=asset_titles) for row in rows],
+        headers={"X-Total-Count": str(int(total))},
     )
 
 
-@router.get("/calls/{attempt_group_id}")
+@router.get("/calls/{attempt_group_id}", response_model=list[schemas.ModelCallAttemptOut])
 def get_call_group(
     attempt_group_id: str,
     db: Session = Depends(get_db),

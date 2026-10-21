@@ -508,6 +508,7 @@
   }
   .ui-mobile-nav {
     display: flex; align-items: center; gap: 4px; overflow-x: auto;
+    max-width: 100%; min-width: 0;
     padding: 8px 12px; margin: 0; background: var(--surface);
     border-bottom: 1px solid var(--line); white-space: nowrap;
   }

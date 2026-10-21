@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import schemas
 from app.core import api_auth, security
 from app.db import get_db
 from app.models import ApiCallLog, ApiKey
@@ -26,7 +27,7 @@ class KeyCreate(BaseModel):
     rate_limit_per_min: int = Field(default=60, ge=1, le=10000)
 
 
-@router.get("/keys")
+@router.get("/keys", response_model=list[schemas.ApiKeyOut])
 def list_keys(db: Session = Depends(get_db)):
     keys = db.scalars(select(ApiKey).order_by(ApiKey.id.desc())).all()
     return [
@@ -44,7 +45,7 @@ def list_keys(db: Session = Depends(get_db)):
     ]
 
 
-@router.post("/keys")
+@router.post("/keys", response_model=schemas.ApiKeyCreatedOut)
 def create_key(body: KeyCreate, db: Session = Depends(get_db)):
     bad = set(body.scopes) - _VALID_SCOPES
     if bad:
@@ -64,7 +65,7 @@ def create_key(body: KeyCreate, db: Session = Depends(get_db)):
     return {"id": key.id, "name": key.name, "api_key": raw, "scopes": key.scopes}
 
 
-@router.delete("/keys/{key_id}")
+@router.delete("/keys/{key_id}", response_model=schemas.OkOut)
 def revoke_key(key_id: int, db: Session = Depends(get_db)):
     key = db.get(ApiKey, key_id)
     if key is None:
@@ -74,7 +75,7 @@ def revoke_key(key_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.get("/call-logs")
+@router.get("/call-logs", response_model=list[schemas.ApiCallLogOut])
 def call_logs(
     db: Session = Depends(get_db),
     limit: int = Query(100, ge=1, le=500),

@@ -24,7 +24,8 @@
           <div class="big">还没有 API Key</div>
           <p>创建一个 Key，第三方智能体就能通过 /api/* 调用平台能力。</p>
         </div>
-        <table v-else class="ui-table">
+        <div v-else class="ui-table-scroll">
+        <table class="ui-table">
           <thead>
             <tr>
               <th>名称</th><th style="width: 130px">前缀</th><th>权限</th>
@@ -50,6 +51,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </section>
     </template>
 
@@ -167,7 +169,8 @@
           <div class="big">还没有调用记录</div>
           <p>外部智能体通过 API Key 调用之后，这里会留下审计日志。</p>
         </div>
-        <table v-else class="ui-table">
+        <div v-else class="ui-table-scroll">
+        <table class="ui-table">
           <thead>
             <tr>
               <th style="width: 180px">时间</th>
@@ -189,6 +192,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </section>
     </template>
 
@@ -244,18 +248,19 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { computed, onMounted, reactive, ref } from 'vue'
-import { api } from '../api'
-import { parseUtc } from '../utils/time'
+import { apiCall } from '../api'
+import type { KeyCreate, ApiKeyOut, ApiCallLogOut } from '../api.generated'
+import { formatDateTime } from '../utils/time'
 
 const tab = ref('keys')
-const keys = ref<any[]>([])
-const logs = ref<any[]>([])
+const keys = ref<ApiKeyOut[]>([])
+const logs = ref<ApiCallLogOut[]>([])
 const loading = ref(false)
 const loadingLogs = ref(false)
 const dialog = ref(false)
 const showKey = ref(false)
 const newKey = ref('')
-const form = reactive({ name: '', scopes: ['read', 'operate'], rate_limit_per_min: 60 })
+const form = reactive<KeyCreate>({ name: '', scopes: ['read', 'operate'], rate_limit_per_min: 60 })
 
 // MCP 接入向导：用户只填三项，其余自动生成。
 /** MCP 必须连后端而不是 Vite 页面：开发态 5173 自动换成同主机的 9100。 */
@@ -333,13 +338,13 @@ const agentPrompt = computed(() => [
 ].join('\n'))
 
 function fmt(v: string | null) {
-  return parseUtc(v)?.toLocaleString('zh-CN', { hour12: false }) ?? '—'
+  return formatDateTime(v)
 }
 
 async function load() {
   loading.value = true
   try {
-    keys.value = (await api.get('/api/ai/keys')).data
+    keys.value = await apiCall('list_keys_api_ai_keys_get')
   } finally {
     loading.value = false
   }
@@ -348,7 +353,7 @@ async function load() {
 async function loadLogs() {
   loadingLogs.value = true
   try {
-    logs.value = (await api.get('/api/ai/call-logs')).data
+    logs.value = await apiCall('call_logs_api_ai_call_logs_get')
   } finally {
     loadingLogs.value = false
   }
@@ -357,7 +362,7 @@ async function loadLogs() {
 async function create() {
   if (!form.name.trim()) return ElMessage.warning('请填名称')
   if (!form.scopes.length) return ElMessage.warning('至少选一个权限')
-  const { data } = await api.post('/api/ai/keys', form)
+  const data = await apiCall('create_key_api_ai_keys_post', {}, { body: form })
   dialog.value = false
   newKey.value = data.api_key
   showKey.value = true
@@ -401,7 +406,7 @@ function confirmRevoke(row: any) {
 
 async function doRevoke() {
   if (!revokeTarget.value) return
-  await api.delete(`/api/ai/keys/${revokeTarget.value.id}`)
+  await apiCall('revoke_key_api_ai_keys__key_id__delete', { key_id: revokeTarget.value.id })
   revokeTarget.value = null
   ElMessage.success('已吊销')
   await load()
@@ -443,6 +448,11 @@ onMounted(load)
 <style scoped>
 .bar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 .bar .grow { margin-left: auto; }
+.ui-table-scroll { width: 100%; max-width: 100%; overflow-x: auto; }
+@media (max-width: 620px) {
+  .bar { row-gap: 8px; }
+  .bar .grow { display: none; }
+}
 .ellip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 
 /* MCP 配置代码块 */

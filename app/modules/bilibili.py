@@ -470,9 +470,9 @@ class BilibiliAdapter:
                     "published_at": _ts_to_iso(v.get("pubdate")),
                     "duration_sec": int(v.get("duration") or 0),
                     "metrics": {
-                        "play": stat.get("view", 0),
-                        "favorite": stat.get("favorite", 0),
-                        "comment": stat.get("danmaku", 0),
+                        "play": stat.get("view"),
+                        "favorite": stat.get("favorite"),
+                        "comment": stat.get("danmaku"),
                     },
                 }
             )
@@ -507,9 +507,9 @@ class BilibiliAdapter:
                             # pubtime 为 Unix 秒；缺失留 None（同步侧 publish_after_days 依赖它）
                             "published_at": _ts_to_iso(m.get("pubtime")),
                             "metrics": {
-                                "play": (m.get("cnt_info") or {}).get("play", 0),
-                                "favorite": (m.get("cnt_info") or {}).get("collect", 0),
-                                "comment": (m.get("cnt_info") or {}).get("danmaku", 0),
+                                "play": (m.get("cnt_info") or {}).get("play"),
+                                "favorite": (m.get("cnt_info") or {}).get("collect"),
+                                "comment": (m.get("cnt_info") or {}).get("danmaku"),
                             },
                         }
                     )
@@ -569,9 +569,9 @@ class BilibiliAdapter:
                             "cover_url": _https(v.get("pic", "")),
                             "published_at": _ts_to_iso(v.get("created")),
                             "metrics": {
-                                "play": v.get("play", 0),
-                                "comment": v.get("video_review", 0) or v.get("comment", 0),
-                                "favorite": v.get("favorites", 0),
+                                "play": v.get("play"),
+                                "comment": v.get("video_review") or v.get("comment"),
+                                "favorite": v.get("favorites"),
                             },
                         }
                     )

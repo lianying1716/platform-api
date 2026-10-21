@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import schemas
 from app.core import security
 from app.core.crypto import decrypt_credential
 from app.db import get_db
@@ -147,7 +148,7 @@ class SubscriptionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-@router.get("/accounts/{account_id}/remote-sources")
+@router.get("/accounts/{account_id}/remote-sources", response_model=list[schemas.RemoteSourceOut])
 async def remote_sources(account_id: int, source_type: str = "favorite", db: Session = Depends(get_db)):
     """拉取账号的收藏夹/合集/关注列表（source_type: favorite/collection/creator）。需要有效凭证。"""
     account = db.get(PlatformAccount, account_id)
@@ -287,7 +288,7 @@ def patch_subscription(sub_id: int, body: SubscriptionPatch, db: Session = Depen
     return sub
 
 
-@router.delete("/subscriptions/{sub_id}")
+@router.delete("/subscriptions/{sub_id}", response_model=schemas.SubscriptionDeletedOut)
 def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
     sub = db.get(Subscription, sub_id)
     if sub is None or sub.deleted_at is not None:
@@ -302,7 +303,7 @@ def delete_subscription(sub_id: int, db: Session = Depends(get_db)):
     return {"ok": True, "deactivated_sources": len(sources), "kept_contents": len(sources)}
 
 
-@router.post("/subscriptions/{sub_id}/sync", status_code=202)
+@router.post("/subscriptions/{sub_id}/sync", status_code=202, response_model=schemas.JobRefOut)
 async def trigger_sync(sub_id: int, db: Session = Depends(get_db)):
     try:
         job = enqueue_sync(db, sub_id, force=True)
@@ -311,7 +312,7 @@ async def trigger_sync(sub_id: int, db: Session = Depends(get_db)):
     return {"job_id": job.id, "status": "queued"}
 
 
-@router.get("/subscriptions/{sub_id}/runs")
+@router.get("/subscriptions/{sub_id}/runs", response_model=list[schemas.SyncRunOut])
 def sync_runs(sub_id: int, db: Session = Depends(get_db)):
     rows = db.scalars(
         select(SyncRun).where(SyncRun.subscription_id == sub_id).order_by(SyncRun.id.desc()).limit(50)
@@ -333,7 +334,7 @@ def sync_runs(sub_id: int, db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/subscriptions/{sub_id}/runs/{run_id}")
+@router.get("/subscriptions/{sub_id}/runs/{run_id}", response_model=schemas.SyncRunOut)
 def sync_run_detail(sub_id: int, run_id: int, db: Session = Depends(get_db)):
     run = db.scalar(
         select(SyncRun).where(SyncRun.id == run_id, SyncRun.subscription_id == sub_id)

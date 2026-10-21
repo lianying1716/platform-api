@@ -14,6 +14,18 @@ def test_transcription_capability_reports_missing_dependency(monkeypatch):
     assert "transcribe" in rows["transcription"].fix
 
 
+def test_transcription_capability_detects_unimportable_stack(monkeypatch):
+    """Package metadata alone is not proof: av/faster-whisper may be incompatible."""
+    import app.core.runtime_capabilities as runtime
+
+    monkeypatch.setattr(runtime, "_module_available", lambda name: True)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(runtime, "_transcription_stack_error", lambda: "TypeError: metadata_errors")
+    row = runtime.runtime_capabilities()[0]
+    assert row.available is False
+    assert "metadata_errors" in row.detail
+
+
 def test_diagnostics_separates_required_and_optional_failures(client, session, monkeypatch):
     import app.core.runtime_capabilities as runtime
     from app.modules import browser_runtime

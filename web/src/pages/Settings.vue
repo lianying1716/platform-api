@@ -395,6 +395,9 @@
         <el-descriptions :column="2" border style="max-width: 720px">
           <el-descriptions-item label="应用版本">{{ ver.app_version || '—' }}</el-descriptions-item>
           <el-descriptions-item label="提交">{{ ver.git_commit || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="版本来源">
+            {{ ver.version_source === 'release_image' ? '发行镜像' : '源码运行' }}
+          </el-descriptions-item>
           <el-descriptions-item label="数据库版本">{{ ver.db_revision || '—' }}</el-descriptions-item>
           <el-descriptions-item label="内置迁移 head">{{ ver.db_head || '—' }}</el-descriptions-item>
           <el-descriptions-item label="数据库同步">
@@ -412,6 +415,16 @@
           style="margin-top: 12px; max-width: 720px"
           title="发现新版本"
           :description="`最新 ${update.latest}，当前 ${update.current}。查看发布说明：${update.url}`"
+          show-icon
+        />
+
+        <el-alert
+          v-if="update.available && !update.expected_commit"
+          type="warning"
+          :closable="false"
+          style="margin-top: 12px; max-width: 720px"
+          title="无法确认发行提交"
+          description="已发现新版本，但未能从 Release 解析对应 commit；升级将只校验版本字符串。建议稍后重试检查更新。"
           show-icon
         />
 
@@ -457,6 +470,12 @@
                 size="small"
                 style="margin-left: 12px"
               >{{ update.available ? `有新版本 ${update.latest}` : '已是最新版本' }}</el-tag>
+              <el-tag
+                v-if="upgradeJob?.expected_commit"
+                :type="upgradeJob.commit_verified ? 'success' : 'warning'"
+                size="small"
+                style="margin-left: 8px"
+              >{{ upgradeJob.commit_verified ? '提交已核验' : '仅核验版本' }}</el-tag>
               <span v-if="upgradeTarget" class="upgrade-hint">当前 {{ update.current || ver.app_version }}</span>
             </div>
 
@@ -611,8 +630,8 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
-import { parseUtc } from '../utils/time'
+import { apiCall } from '../api'
+import { formatMonthDayTime } from '../utils/time'
 
 const router = useRouter()
 const tab = ref('storage')
@@ -690,14 +709,14 @@ function rootLabel(r: any) {
 }
 
 async function loadFsRoots() {
-  const { data } = await api.get('/api/system/fs/roots')
+  const data = await apiCall('list_fs_roots_api_system_fs_roots_get')
   fsRoots.value = data.roots || []
 }
 
 async function loadDir(path: string) {
   loadingDir.value = true
   try {
-    const { data } = await api.get('/api/system/fs/list', { params: { path } })
+    const data = await apiCall('list_fs_dir_api_system_fs_list_get', { path })
     browsePath.value = data.path
     browseParent.value = data.parent || null
     browseSep.value = data.sep || '/'
@@ -801,13 +820,12 @@ function toggleAiDay(w: any, day: number) {
 }
 
 function fmtAiTime(value: string | null) {
-  if (!value) return ''
-  return parseUtc(value)?.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) ?? ''
+  return value ? formatMonthDayTime(value, '') : ''
 }
 
 async function loadAiSchedule() {
   try {
-    const { data } = await api.get('/api/system/ai-schedule')
+    const data = await apiCall('get_ai_schedule_api_api_system_ai_schedule_get')
     aiSchedule.enabled = !!data.enabled
     aiSchedule.timezone = data.timezone || 'Asia/Shanghai'
     aiSchedule.windows = (data.windows || []).map((w: any) => ({ days: [...(w.days || [])], start: w.start, end: w.end }))
@@ -830,7 +848,9 @@ async function saveAiSchedule() {
     return ElMessage.warning('时段的开始和结束不能相同')
   }
   try {
-    const { data } = await api.put('/api/system/ai-schedule', aiScheduleSnapshot())
+    const data = await apiCall('update_ai_schedule_api_api_system_ai_schedule_put', {}, {
+      body: aiScheduleSnapshot(),
+    })
     aiSchedule.is_open = !!data.schedule?.is_open
     aiSchedule.next_open_at = data.schedule?.next_open_at || null
     aiScheduleSaved.value = JSON.stringify(aiScheduleSnapshot())
@@ -867,7 +887,7 @@ const bd = reactive<any>({
 })
 
 async function loadBreakdownSettings() {
-  const { data } = await api.get('/api/system/breakdown-settings')
+  const data = await apiCall('get_breakdown_settings_api_api_system_breakdown_settings_get')
   bd.prompt = data.prompt ?? ''
   bd.viral_multiple = data.viral_multiple ?? 3
   bd.min_play = data.min_play ?? 0
@@ -884,7 +904,7 @@ async function saveBreakdownSettings() {
   if (!bd.prompt || !bd.prompt.trim()) return ElMessage.warning('提示词不能为空')
   if (!(bd.viral_multiple > 0)) return ElMessage.warning('爆款倍数必须为正数')
   try {
-    await api.put('/api/system/breakdown-settings', {
+    await apiCall('update_breakdown_settings_api_api_system_breakdown_settings_put', {}, { body: {
       prompt: bd.prompt,
       viral_multiple: bd.viral_multiple,
       min_play: bd.min_play,
@@ -895,7 +915,7 @@ async function saveBreakdownSettings() {
       auto_transcribe: bd.auto_transcribe,
       auto_understand: bd.auto_understand,
       auto_breakdown: bd.auto_breakdown,
-    })
+    } })
     ElMessage.success('已保存')
     await loadBreakdownSettings()
   } catch (e: any) {
@@ -911,7 +931,7 @@ const sync = reactive<any>({
 })
 
 async function loadSyncSettings() {
-  const { data } = await api.get('/api/system/sync-settings')
+  const data = await apiCall('get_sync_settings_api_api_system_sync_settings_get')
   Object.assign(sync, data)
 }
 
@@ -926,7 +946,7 @@ async function saveSyncSettings() {
     return ElMessage.warning('下载间隔下限不能大于上限')
   }
   try {
-    await api.put('/api/system/sync-settings', { ...sync })
+    await apiCall('update_sync_settings_api_api_system_sync_settings_put', {}, { body: { ...sync } })
     ElMessage.success('已保存')
     await loadSyncSettings()
   } catch (e: any) {
@@ -937,7 +957,7 @@ async function saveSyncSettings() {
 async function loadRoots() {
   loadingRoots.value = true
   try {
-    roots.value = (await api.get('/api/system/storage-roots')).data
+    roots.value = await apiCall('list_storage_roots_api_system_storage_roots_get')
   } finally {
     loadingRoots.value = false
   }
@@ -946,7 +966,7 @@ async function loadRoots() {
 async function scanOrphans() {
   scanningOrphans.value = true
   try {
-    const { data } = await api.get('/api/system/storage-roots/orphans')
+    const data = await apiCall('storage_orphans_api_system_storage_roots_orphans_get')
     orphanReport.value = data
     ElMessage.success(data.orphan_count ? `发现 ${data.orphan_count} 个孤儿文件` : '没有发现孤儿文件')
   } finally {
@@ -956,7 +976,7 @@ async function scanOrphans() {
 
 async function createRoot() {
   if (!rootForm.name.trim() || !rootForm.path.trim()) return ElMessage.warning('名称和路径必填')
-  await api.post('/api/system/storage-roots', rootForm)
+  await apiCall('create_storage_root_api_system_storage_roots_post', {}, { body: rootForm })
   storageDialog.value = false
   rootForm.name = ''
   rootForm.path = ''
@@ -973,7 +993,9 @@ function delRoot(row: any) {
 async function doDelRoot() {
   if (!rootTarget.value) return
   try {
-    await api.delete(`/api/system/storage-roots/${rootTarget.value.id}`)
+    await apiCall('delete_storage_root_api_system_storage_roots__root_id__delete', {
+      root_id: rootTarget.value.id,
+    })
     ElMessage.success('已删除存储根')
     rootTarget.value = null
     await loadRoots()
@@ -983,25 +1005,27 @@ async function doDelRoot() {
 async function loadDiag() {
   loadingDiag.value = true
   try {
-    checks.value = (await api.get('/api/system/diagnostics')).data.checks
+    checks.value = (await apiCall('diagnostics_api_system_diagnostics_get')).checks
   } finally {
     loadingDiag.value = false
   }
 }
 
-async function loadVersion() {
+async function loadVersion(): Promise<boolean> {
   try {
-    ver.value = (await api.get('/api/system/version')).data
-    upgradeStatus.value = (await api.get('/api/system/update/status')).data
+    ver.value = await apiCall('get_version_api_system_version_get')
+    upgradeStatus.value = await apiCall('update_status_api_system_update_status_get')
+    return true
   } catch (e) {
     /* 版本信息获取失败不阻断设置页其它功能 */
+    return false
   }
 }
 
 async function checkUpdate() {
   checkingUpdate.value = true
   try {
-    const { data } = await api.get('/api/system/update/check')
+    const data = await apiCall('check_update_api_system_update_check_get')
     if (data.ok === false) {
       // Keep the failure in the page instead of only showing a transient toast.
       // A rate-limited GitHub quota otherwise looks like the button did nothing.
@@ -1019,16 +1043,25 @@ async function checkUpdate() {
 
 function jobLabel(status: string) {
   return (
-    { running: '升级进行中', success: '升级成功', failed: '升级失败', rolled_back: '已自动回滚' }[status] ||
+    {
+      running: '升级进行中', success: '升级成功', failed: '升级失败',
+      rolled_back: '已自动回滚', partially_rolled_back: '回滚不完整',
+    }[status] ||
     status
   )
 }
 function jobTagType(status: string) {
-  return ({ running: 'warning', success: 'success', failed: 'danger', rolled_back: 'warning' } as any)[status] || 'info'
+  return ({
+    running: 'warning', success: 'success', failed: 'danger',
+    rolled_back: 'warning', partially_rolled_back: 'danger',
+  } as any)[status] || 'info'
 }
 function stepLabel(step: string) {
   return (
-    { backup: '备份', pull: '拉取镜像', recreate: '重建服务', verify: '健康校验', pin: '记录版本', rollback: '回滚' } as any
+    {
+      backup: '备份', pull: '拉取镜像', recreate: '重建服务', verify: '健康校验',
+      pin: '记录版本', db_restore: '恢复数据库', data_restore: '恢复 data 卷', rollback: '回滚',
+    } as any
   )[step] || step
 }
 function jobActive(job: any) {
@@ -1048,13 +1081,14 @@ function startPolling() {
   stopPolling()
   pollTimer = window.setInterval(async () => {
     try {
-      const { data } = await api.get('/api/system/upgrade/status')
+      const data = await apiCall('upgrade_status_api_system_upgrade_status_get')
       if (data?.job) upgradeJob.value = data.job
       const status = upgradeJob.value?.status
       if (status && status !== 'running') {
         stopPolling()
         if (status === 'success') ElMessage.success('升级成功，服务已更新')
         else if (status === 'rolled_back') ElMessage.warning('升级未成功，已自动回滚到原版本')
+        else if (status === 'partially_rolled_back') ElMessage.error('回滚不完整：数据库与旧版本已恢复，data 卷仍需按备份人工恢复')
         else ElMessage.error('升级失败，请查看进度详情')
         // 升级结束后刷新版本信息
         await loadVersion()
@@ -1070,7 +1104,7 @@ async function confirmUpgrade() {
   if (!target) return ElMessage.warning('没有可升级的新版本，请先点「检查更新」')
   try {
     await ElMessageBox.confirm(
-      `将升级到 ${target}。系统会先自动备份，然后拉取镜像并重建服务，期间服务短暂不可用；若新版本启动失败会自动回滚。是否继续？`,
+      `将升级到 ${target}${update.value.expected_commit ? `（提交 ${update.value.expected_commit.slice(0, 12)}）` : ''}。系统会先自动备份，然后拉取镜像并重建服务，期间服务短暂不可用；若新版本启动失败或提交不一致会自动回滚。是否继续？`,
       '确认升级',
       { type: 'warning', confirmButtonText: '开始升级', cancelButtonText: '取消' },
     )
@@ -1079,7 +1113,10 @@ async function confirmUpgrade() {
   }
   upgrading.value = true
   try {
-    await api.post('/api/system/upgrade', { version: target })
+    await apiCall('trigger_upgrade_api_system_upgrade_post', {}, { body: {
+      version: target,
+      expected_commit: update.value.expected_commit || '',
+    } })
     ElMessage.info('已开始升级，下方会显示进度')
     startPolling()
   } catch (e: any) {
@@ -1092,7 +1129,7 @@ async function confirmUpgrade() {
 async function changePwd() {
   if (pwd.new_password.length < 6) return ElMessage.warning('新密码至少 6 位')
   try {
-    await api.post('/api/auth/change-password', pwd)
+    await apiCall('change_password_api_auth_change_password_post', {}, { body: pwd })
     // The server invalidates every old session. Drop the local token before
     // navigating so the login page cannot mount with a dead credential.
     localStorage.removeItem('token')
@@ -1104,16 +1141,16 @@ async function changePwd() {
 }
 
 async function loadCommentSettings() {
-  Object.assign(commentSettings, (await api.get('/api/system/comment-settings')).data)
+  Object.assign(commentSettings, await apiCall('get_comment_settings_api_api_system_comment_settings_get'))
 }
 
 async function saveCommentSettings() {
-  await api.put('/api/system/comment-settings', commentSettings)
+  await apiCall('update_comment_settings_api_api_system_comment_settings_put', {}, { body: commentSettings })
   ElMessage.success('已保存')
 }
 
 async function loadProcessSettings() {
-  const { data } = await api.get('/api/system/process-settings')
+  const data = await apiCall('get_process_settings_api_api_system_process_settings_get')
   Object.assign(proc, data, {
     taxonomyText: JSON.stringify(data.taxonomy ?? {}, null, 2),
     typePromptsText: JSON.stringify(data.type_prompts ?? {}, null, 2),
@@ -1129,7 +1166,7 @@ async function saveProcessSettings() {
   } catch (e: any) {
     return ElMessage.error('JSON 解析失败：' + e.message)
   }
-  await api.put('/api/system/process-settings', {
+  await apiCall('update_process_settings_api_api_system_process_settings_put', {}, { body: {
     min_heat: proc.min_heat,
     min_likes_floor: proc.min_likes_floor,
     budget: proc.budget,
@@ -1146,12 +1183,12 @@ async function saveProcessSettings() {
     auto_analyze: proc.auto_analyze,
     taxonomy,
     type_prompts,
-  })
+  } })
   ElMessage.success('已保存')
   await loadProcessSettings()
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadRoots()
   loadDiag()
   loadCommentSettings()
@@ -1159,7 +1196,10 @@ onMounted(() => {
   loadProcessSettings()
   loadBreakdownSettings()
   loadSyncSettings()
-  loadVersion()
+  const versionLoaded = await loadVersion()
+  // The updater lives in a sidecar and keeps the last job.  Recover it on a
+  // page reload instead of making a completed upgrade look like it vanished.
+  if (versionLoaded && upgradeStatus.value.enabled) startPolling()
 })
 
 onUnmounted(stopPolling)

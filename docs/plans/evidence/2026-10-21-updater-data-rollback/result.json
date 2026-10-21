@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-21",
+  "scope": "updater._restore_data_volume on an isolated Docker volume",
+  "volume": "xsai-updater-drill-data",
+  "before_backup": {
+    "marker.txt": "before-backup",
+    "media/cover.txt": "cover-before",
+    "secret.key": "secret-before"
+  },
+  "simulated_upgrade_damage": {
+    "marker.txt": "after-upgrade",
+    "deleted": ["secret.key", "media/cover.txt"],
+    "added": ["junk/orphan.txt"]
+  },
+  "restore_result": {
+    "ok": true,
+    "volume": "xsai-updater-drill-data"
+  },
+  "verified": {
+    "marker.txt": "before-backup",
+    "media/cover.txt": "cover-before",
+    "secret.key": "secret-before",
+    "junk/orphan.txt": "absent"
+  },
+  "commands": [
+    "docker volume create xsai-updater-drill-data",
+    "tar czf /tmp/xsai-updater-drill/data.tar.gz -C /data .",
+    "python -c 'from app.updater import service as s; print(s._restore_data_volume(payload))'",
+    "docker run --rm -v xsai-updater-drill-data:/data alpine:3.20 sh -c 'test ...'"
+  ]
+}

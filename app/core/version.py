@@ -63,6 +63,21 @@ def load_build_info() -> BuildInfo:
     return BuildInfo(version=f"{_pyproject_version()}-dev+{commit}", commit=commit, build_time=build_time)
 
 
+def build_provenance() -> dict[str, str]:
+    """Return how this process learned its version, without exposing secrets.
+
+    A release image and a source checkout can both report ``v1.0.9`` while
+    running different commits.  The diagnostic surface needs to expose that
+    distinction so operators can audit which artifact is actually live.
+    """
+    info = load_build_info()
+    return {
+        "version": info.version,
+        "commit": info.commit,
+        "source": "release_image" if os.environ.get("PLATFORM_BUILD_VERSION", "").strip() else "source_checkout",
+    }
+
+
 _VERSIONS_DIR = _ROOT / "alembic" / "versions"
 
 

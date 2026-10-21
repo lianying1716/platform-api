@@ -1,0 +1,110 @@
+captured_at=2026-10-21T22:57:50Z
+branch=main
+head=a6646c2c0349773f831852f5b0bd595c59cf6a24
+describe=v1.0.9-3-ga6646c2
+latest_tag=v1.0.9
+dirty_paths=102
+release_version=v1.0.10
+authorized_by_user=yes (version v1.0.10; release and NAS upgrade authorized)
+ M .github/workflows/release.yml
+ M Dockerfile
+ M Dockerfile.updater
+ M alembic/env.py
+ M app/api/accounts.py
+ M app/api/ai_access.py
+ M app/api/analytics.py
+ M app/api/assets.py
+ M app/api/auth.py
+ M app/api/crawl_tasks.py
+ M app/api/followed_creators.py
+ M app/api/imports.py
+ M app/api/model_access.py
+ M app/api/pipeline.py
+ M app/api/subscriptions.py
+ M app/api/sync_switches.py
+ M app/api/system.py
+ M app/config.py
+ M app/core/runtime_capabilities.py
+ M app/core/version.py
+ M app/core/version_guard.py
+ M app/core/version_upgrade.py
+ M app/db.py
+ M app/domain/capabilities.py
+ M app/modules/bilibili.py
+ M app/modules/content_metrics.py
+ M app/modules/crawler/client.py
+ M app/modules/crawler/kuaishou.py
+ M app/modules/crawler/zhihu.py
+ M app/modules/creator_fetch.py
+ M app/modules/douyin.py
+ M app/modules/zhihu_metrics.py
+ M app/schemas.py
+ M app/services/model_access_service.py
+ M app/services/run_reconciler.py
+ M app/services/understand_service.py
+ M app/updater/engine.py
+ M app/updater/service.py
+ M app/workers/handlers.py
+ M docker-compose.yml
+ M scripts/export_demo_snapshot.py
+ M scripts/install-local.sh
+ M scripts/upgrade.sh
+ M tests/test_breakdown_api.py
+ M tests/test_capabilities_and_commands.py
+ M tests/test_crawler_zhihu.py
+ M tests/test_dashboard_and_media.py
+ M tests/test_deployment_contract.py
+ M tests/test_execution_plane.py
+ M tests/test_fetch_douyin_sources.py
+ M tests/test_metric_refresh.py
+ M tests/test_metric_unknown_values.py
+ M tests/test_model_access_api.py
+ M tests/test_model_access_routing.py
+ M tests/test_runtime_capabilities.py
+ M tests/test_tiered_handlers.py
+ M tests/test_understand_service.py
+ M tests/test_updater_restore_archive.py
+ M tests/test_updater_sidecar.py
+ M tests/test_upgrade_api.py
+ M tests/test_upgrade_engine.py
+ M tests/test_upgrade_health_version.py
+ M tests/test_upgrade_rollback_db.py
+ M tests/test_version.py
+ M tests/test_zhihu_metrics.py
+ M web/package.json
+ M web/src/api.ts
+ M web/src/demo/runtime.ts
+ M web/src/layout/Layout.vue
+ M web/src/main.ts
+ M web/src/pages/Accounts.vue
+ M web/src/pages/AiAccess.vue
+ M web/src/pages/Assets.vue
+ M web/src/pages/Crawl.vue
+ M web/src/pages/FollowedCreators.vue
+ M web/src/pages/Login.vue
+ M web/src/pages/ModelAccess.vue
+ M web/src/pages/Overview.vue
+ M web/src/pages/Pipeline.vue
+ M web/src/pages/Settings.vue
+ M web/src/styles/ui.css
+ M web/src/utils/time.ts
+?? app/core/alembic_config.py
+?? docs/plans/evidence/2026-10-21-release-readiness/
+?? docs/plans/evidence/2026-10-21-structured-acceptance/
+?? docs/plans/evidence/2026-10-21-updater-data-rollback/
+?? scripts/acceptance_nas_pages.py
+?? scripts/acceptance_nas_upgrade.py
+?? scripts/audit_archive_avatars.py
+?? scripts/audit_frontend_api_calls.py
+?? scripts/generate_api_types.py
+?? scripts/verify_release_provenance.py
+?? tests/test_alembic_url_with_special_characters.py
+?? tests/test_api_contract_generation.py
+?? tests/test_audit_archive_avatars.py
+?? tests/test_audit_frontend_api_calls.py
+?? tests/test_dashboard_postgres_smoke.py
+?? tests/test_demo_snapshot.py
+?? tests/test_release_provenance.py
+?? web/src/api.generated.ts
+?? web/src/components/PagedBar.vue
+?? web/src/vue-modules.d.ts

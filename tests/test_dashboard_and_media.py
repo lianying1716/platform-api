@@ -151,9 +151,12 @@ def test_dashboard_summary_has_new_sections(client, session):
     assert body["content"]["total"] == 2
     assert body["content"]["duration_sec"] == 192
     assert body["platforms"][0]["platform"] == "douyin"
-    assert body["platforms"][0]["play"] == 24000
+    # Play is video-only: the article's synthetic play value must not inflate
+    # the platform total or the coverage numerator.
+    assert body["platforms"][0]["play"] == 12000
+    assert body["platforms"][0]["metric_coverage"]["play"] == {"known": 1, "total": 1}
     assert {c["key"] for c in body["categories"]} == {"food"}
-    assert body["engagement"]["play"] == 24000
+    assert body["engagement"]["play"] == 12000
     assert body["processing"]["transcribed"] == 2
     assert "storage" in body and "used_bytes" in body["storage"]
     assert len(body["trend"]) == 14

@@ -5,7 +5,12 @@ import json
 from sqlalchemy import select
 
 from app.core.api_auth import generate_key
+from app.core.crypto import encrypt_credential
 from app.models import AiModel, AiProvider, ApiKey, ModelAssignment, ModelCallAttempt, SystemSetting
+
+
+def _key():
+    return encrypt_credential({"api_key": "test-key"})
 
 
 def _api_key(session, scopes=("admin",), *, raw: str | None = None) -> str:
@@ -63,7 +68,7 @@ def test_legacy_status_is_visible_without_secret_values(client, session):
 def test_import_models_and_list_not_expose_ciphertext(client, session):
     provider = AiProvider(
         name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",
-        api_key_encrypted="cipher", enabled=True,
+        api_key_encrypted=_key(), enabled=True,
     )
     session.add(provider)
     session.commit()
@@ -88,7 +93,7 @@ def test_setup_state_tracks_generic_provider_model_progression(client, session):
 
     provider = AiProvider(
         name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",
-        api_key_encrypted="cipher", enabled=False,
+        api_key_encrypted=_key(), enabled=False,
     )
     session.add(provider)
     session.commit()
@@ -116,8 +121,209 @@ def test_setup_state_tracks_generic_provider_model_progression(client, session):
         json={"primary_model_id": model.id, "fallback_model_id": None},
     )
     state = client.get("/api/model-access/assignments").json()["setup_state"]
-    assert state["stage"] == "ready"
+    assert state["stage"] == "assignment_incomplete"
+    assert state["ready"] is False
+    assert state["assigned_work_types"] == ["text_analysis"]
     assert "cover_classify" in state["missing_work_types"]
+    assert "video_understanding" in state["missing_work_types"]
+
+
+def test_setup_state_rejects_assignment_with_stale_video_capability(client, session):
+    """An assignment is not ready when its model cannot serve that work now."""
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",
+        api_key_encrypted=_key(), enabled=True, config_revision=1,
+    )
+    session.add(provider)
+    session.flush()
+    common = {
+        "text": {"value": True, "source": "probe", "config_revision": 1},
+        "json": {"value": True, "source": "probe", "config_revision": 1},
+    }
+    text = AiModel(provider_id=provider.id, model_key="text-only", capabilities=common)
+    video = AiModel(
+        provider_id=provider.id,
+        model_key="vision",
+        capabilities={**common, "video": {"value": True, "source": "probe", "config_revision": 1}},
+        probe_status="passed",
+    )
+    session.add_all([text, video])
+    session.commit()
+    for work_type in ("text_analysis", "cover_classify"):
+        assert client.put(
+            f"/api/model-access/assignments/{work_type}",
+            json={"primary_model_id": text.id, "fallback_model_id": None},
+        ).status_code == 200
+    assert client.put(
+        "/api/model-access/assignments/video_understanding",
+        json={"primary_model_id": video.id, "fallback_model_id": None},
+    ).status_code == 200
+
+    state = client.get("/api/model-access/assignments").json()["setup_state"]
+    assert state["stage"] == "ready"
+    assert state["ready"] is True
+
+    provider.config_revision = 2
+    session.commit()
+    state = client.get("/api/model-access/assignments").json()["setup_state"]
+    assert state["stage"] == "assignment_invalid"
+    assert state["ready"] is False
+    assert state["missing_work_types"] == [
+        "text_analysis", "cover_classify", "video_understanding"
+    ]
+
+
+def test_cover_classify_requires_image_when_cover_based_classification_is_enabled(client, session):
+    """Setup state must follow the same capability requirements as runtime."""
+    provider = AiProvider(
+        name="p", preset_key="custom", protocol="openai", base_url="https://api.example.com/v1",
+        api_key_encrypted=_key(), enabled=True, config_revision=1,
+    )
+    session.add(provider)
+    session.flush()
+    text_only = AiModel(
+        provider_id=provider.id,
+        model_key="text-only",
+        capabilities={
+            "text": {"value": True, "source": "probe", "config_revision": 1},
+            "json": {"value": True, "source": "probe", "config_revision": 1},
+            "image": {"value": False, "source": "probe", "config_revision": 1},
+        },
+    )
+    video = AiModel(
+        provider_id=provider.id,
+        model_key="vision",
+        capabilities={
+            "text": {"value": True, "source": "probe", "config_revision": 1},
+            "json": {"value": True, "source": "probe", "config_revision": 1},
+            "video": {"value": True, "source": "probe", "config_revision": 1},
+        },
+    )
+    session.add_all([text_only, video])
+    session.commit()
+    for work_type in ("text_analysis", "cover_classify"):
+        assert client.put(
+            f"/api/model-access/assignments/{work_type}",
+            json={"primary_model_id": text_only.id, "fallback_model_id": None},
+        ).status_code == 200
+    assert client.put(
+        "/api/model-access/assignments/video_understanding",
+        json={"primary_model_id": video.id, "fallback_model_id": None},
+    ).status_code == 200
+
+    state = client.get("/api/model-access/assignments").json()["setup_state"]
+    assert "cover_classify" not in state["missing_work_types"]
+
+    session.add(SystemSetting(key="process_classify_enabled", value="true"))
+    session.add(SystemSetting(key="process_use_cover", value="true"))
+    session.commit()
+    state = client.get("/api/model-access/assignments").json()["setup_state"]
+    assert state["stage"] == "assignment_invalid"
+    assert "cover_classify" in state["missing_work_types"]
+
+
+def test_setup_state_requires_decryptable_provider_credential(client, session):
+    """Legacy capabilities alone must not make a credential-less provider ready."""
+    from app.core.crypto import encrypt_credential
+
+    no_key = AiProvider(
+        name="no-key",
+        preset_key="custom",
+        protocol="openai",
+        base_url="https://api.example.com/v1",
+        api_key_encrypted=encrypt_credential({}),
+        enabled=True,
+        config_revision=1,
+    )
+    session.add(no_key)
+    session.flush()
+    model = AiModel(
+        provider_id=no_key.id,
+        model_key="legacy-model",
+        probe_status="untested",
+        capabilities={
+            "text": {"value": True, "source": "legacy", "config_revision": 1},
+            "json": {"value": True, "source": "legacy", "config_revision": 1},
+            "video": {"value": True, "source": "legacy", "config_revision": 1},
+        },
+    )
+    session.add(model)
+    session.commit()
+    for work_type in ("text_analysis", "cover_classify", "video_understanding"):
+        assert client.put(
+            f"/api/model-access/assignments/{work_type}",
+            json={"primary_model_id": model.id, "fallback_model_id": None},
+        ).status_code == 200
+
+    state = client.get("/api/model-access/assignments").json()["setup_state"]
+    assert state["ready"] is False
+    assert state["stage"] == "no_models"
+
+
+def test_setup_state_surfaces_legacy_capabilities_as_unverified_not_green(client, session):
+    """Legacy continuity is allowed, but the UI must say the capability is unproven."""
+    provider = AiProvider(
+        name="legacy-provider", preset_key="custom", protocol="openai",
+        base_url="https://api.example.com/v1", api_key_encrypted=_key(), enabled=True,
+        config_revision=1,
+    )
+    session.add(provider)
+    session.flush()
+    caps = {
+        "text": {"value": True, "source": "legacy", "config_revision": 1},
+        "json": {"value": True, "source": "legacy", "config_revision": 1},
+        "video": {"value": True, "source": "legacy", "config_revision": 1},
+    }
+    model = AiModel(provider_id=provider.id, model_key="legacy", capabilities=caps)
+    session.add(model)
+    session.flush()
+    for work_type in ("text_analysis", "cover_classify", "video_understanding"):
+        session.add(ModelAssignment(
+            work_type=work_type, primary_model_id=model.id, legacy_pending_validation=True,
+        ))
+    session.commit()
+
+    state = client.get("/api/model-access/assignments").json()["setup_state"]
+    assert state["stage"] == "verify_recommended"
+    assert state["ready"] is False
+    assert state["unverified_work_types"] == [
+        "text_analysis", "cover_classify", "video_understanding"
+    ]
+
+
+def test_assignment_configured_matches_fallback_only_semantics(client, session):
+    from app.core.crypto import encrypt_credential
+
+    provider = AiProvider(
+        name="p",
+        preset_key="custom",
+        protocol="openai",
+        base_url="https://api.example.com/v1",
+        api_key_encrypted=encrypt_credential({"api_key": "key"}),
+        enabled=True,
+        config_revision=1,
+    )
+    session.add(provider)
+    session.flush()
+    model = AiModel(
+        provider_id=provider.id,
+        model_key="m1",
+        capabilities={
+            "text": {"value": True, "source": "probe", "config_revision": 1},
+            "json": {"value": True, "source": "probe", "config_revision": 1},
+        },
+    )
+    session.add(model)
+    session.commit()
+    assert client.put(
+        "/api/model-access/assignments/text_analysis",
+        json={"primary_model_id": None, "fallback_model_id": model.id},
+    ).status_code == 200
+
+    body = client.get("/api/model-access/assignments").json()
+    item = next(row for row in body["assignments"] if row["work_type"] == "text_analysis")
+    assert item["configured"] is True
+    assert item["primary_configured"] is False
 
 
 def test_assignment_validation_and_update(client, session):

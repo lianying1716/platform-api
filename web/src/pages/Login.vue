@@ -65,7 +65,7 @@
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
+import { apiCall } from '../api'
 
 const router = useRouter()
 const initialized = ref<boolean | null>(null)
@@ -74,7 +74,7 @@ const confirm = ref('')
 const loading = ref(false)
 
 onMounted(async () => {
-  const { data } = await api.get('/api/auth/status')
+  const data = await apiCall('auth_status_api_auth_status_get')
   initialized.value = data.initialized
 })
 
@@ -86,8 +86,9 @@ async function submit() {
   }
   loading.value = true
   try {
-    const url = initialized.value === false ? '/api/auth/setup' : '/api/auth/login'
-    const { data } = await api.post(url, { password: password.value })
+    const data = initialized.value === false
+      ? await apiCall('setup_api_auth_setup_post', {}, { body: { password: password.value } })
+      : await apiCall('login_api_auth_login_post', {}, { body: { password: password.value } })
     localStorage.setItem('token', data.token)
     router.push('/overview')
   } catch {

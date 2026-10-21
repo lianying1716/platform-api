@@ -29,7 +29,10 @@ def test_capability_manifest_is_consumed_by_platform_endpoint(client):
     assert {item["value"] for item in douyin["download_qualities"]} == {"best", "1080", "720"}
     assert douyin["keyword_crawl"] is True
     assert douyin["comments"] is True
+    assert "play" in douyin["metrics"]
     assert rows["kuaishou"]["source_types"] == []
+    assert "play" in rows["kuaishou"]["metrics"]
+    assert rows["wechat_mp"]["metrics"] == []
 
 
 def test_unsupported_subscription_source_is_rejected(client, session):

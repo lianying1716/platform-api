@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
-from sqlalchemy.engine import URL
+from typing import Annotated
+
+from pydantic_settings import BaseSettings, NoDecode
+from sqlalchemy.engine import URL, make_url
 
 
 class Settings(BaseSettings):
@@ -89,7 +91,10 @@ class Settings(BaseSettings):
     # PLATFORM_OUTBOUND_PROXY 为全局代理；PLATFORM_PLATFORM_PROXIES 为按平台 JSON，
     # 例如 {"douyin": "http://user:pass@host:port", "bilibili": "none"}（none=强制直连）。
     outbound_proxy: str = ""
-    platform_proxies: dict = {}
+    # Compose always exports this key, even when the operator leaves it blank.
+    # NoDecode lets the field validator below turn the empty string into the
+    # documented "no overrides" default instead of failing inside json.loads().
+    platform_proxies: Annotated[dict, NoDecode] = {}
     # 转录默认模型与设备（faster-whisper）
     whisper_model: str = "base"
     whisper_device: str = "auto"  # auto / cpu / cuda
@@ -113,10 +118,38 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("platform_proxies", mode="before")
+    @classmethod
+    def _platform_proxies_json_or_empty(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return {}
+        if isinstance(value, str):
+            import json
+
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError("PLATFORM_PLATFORM_PROXIES 必须是 JSON 对象") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("PLATFORM_PLATFORM_PROXIES 必须是 JSON 对象")
+            return parsed
+        return value
+
     @property
     def resolved_database_url(self) -> str:
         explicit = (self.database_url or "").strip()
         if explicit:
+            # An explicit DSN is an advanced escape hatch, not an invitation to
+            # paste a raw password into a URL.  Fail at the configuration edge
+            # with a fix that names the two supported options instead of
+            # surfacing SQLAlchemy's ``invalid literal for int()`` later.
+            try:
+                make_url(explicit)
+            except Exception as exc:  # noqa: BLE001 - normalize parser errors
+                raise ValueError(
+                    "PLATFORM_DATABASE_URL 不是有效 DSN；密码中的 @ : / 等字符必须 URL 编码，"
+                    "或改用 PLATFORM_DB_HOST/PORT/USER/PASSWORD/NAME 结构化配置"
+                ) from exc
             return explicit
         return URL.create(
             "postgresql+psycopg2",

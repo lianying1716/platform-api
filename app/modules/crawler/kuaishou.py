@@ -61,9 +61,9 @@ def _normalize_feed(feed: dict) -> dict | None:
         "url": f"https://www.kuaishou.com/short-video/{photo_id}",
         "cover_url": photo.get("coverUrl") or "",
         "metrics": {
-            "play": photo.get("viewCount", 0),
-            "like": photo.get("likeCount", 0),
-            "comment": photo.get("commentCount", 0),
+            "play": photo.get("viewCount"),
+            "like": photo.get("likeCount"),
+            "comment": photo.get("commentCount"),
         },
     }
 

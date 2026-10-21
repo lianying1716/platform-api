@@ -48,6 +48,44 @@ if [ "$MODE" = "local" ]; then
   git checkout --detach "refs/tags/$TARGET"
   echo "==> [2/3] 同步依赖"
   uv sync --extra postgres --extra browser --extra transcribe
+
+  # Source upgrades must replace the browser bundle as well as Python.  The
+  # service is still stopped here, so a build failure leaves the old API+worker
+  # untouched and the previous app/static intact.  SKIP_WEB_BUILD is only for a
+  # backend-only install that explicitly has no served frontend.
+  if [ "${SKIP_WEB_BUILD:-0}" != "1" ]; then
+    command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || {
+      echo "!! 源码升级缺少 Node/npm，无法重建前端；为免旧页面配新后端，已中止" >&2
+      echo "   安装 Node 22+ 后重试；仅部署 API 时可用 SKIP_WEB_BUILD=1 并设置 PLATFORM_SERVE_FRONTEND=false" >&2
+      exit 1
+    }
+    echo "==> [2/3] 构建前端正式包（成功后才替换 app/static）"
+    STATIC_STAGE="$(mktemp -d "$ROOT/.app-static-XXXXXX")"
+    STATIC_BACKUP="$ROOT/.app-static-backup-$$"
+    cleanup_static() { rm -rf "$STATIC_STAGE"; }
+    trap cleanup_static EXIT
+    (
+      cd web
+      npm ci --no-audit --no-fund >/dev/null 2>&1 || npm install --no-audit --no-fund >/dev/null 2>&1
+      npx vite build --outDir "$STATIC_STAGE" --emptyOutDir
+    )
+    test -f "$STATIC_STAGE/index.html" || {
+      echo "!! 前端构建未产出 index.html；保留旧 app/static 并中止" >&2
+      exit 1
+    }
+    # An EXIT trap runs after a successful `exit 0` too, so cleanup must be
+    # explicit here. Otherwise the freshly swapped app/static would be removed.
+    if [ -e app/static ]; then mv app/static "$STATIC_BACKUP"; fi
+    if ! mv "$STATIC_STAGE" app/static; then
+      [ ! -e "$STATIC_BACKUP" ] || mv "$STATIC_BACKUP" app/static
+      exit 1
+    fi
+    rm -rf "$STATIC_BACKUP"
+    STATIC_BACKUP=""
+    trap - EXIT
+    unset STATIC_STAGE
+  fi
+
   echo "==> [3/3] 迁移（单事务 + 互斥锁）"
   uv run alembic upgrade head
   if systemctl --user cat stargather-platform-api.service >/dev/null 2>&1; then

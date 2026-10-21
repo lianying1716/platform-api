@@ -59,7 +59,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api } from '../api'
+import { apiCall } from '../api'
 import { DEMO_MODE } from '../demo/runtime'
 import '../styles/ui.css'
 
@@ -148,7 +148,7 @@ function logout() {
   eventSource = null
   localStorage.removeItem('token')
   // 清掉服务端会话 Cookie，避免 <video> 等标签仍能访问受保护资源
-  api.post('/api/auth/logout').catch(() => {})
+  apiCall('logout_api_auth_logout_post').catch(() => {})
   router.push('/login')
 }
 

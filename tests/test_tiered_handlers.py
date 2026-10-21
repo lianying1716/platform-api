@@ -83,3 +83,95 @@ def test_handle_understand_video_generic_error_propagates(monkeypatch, session):
         assert "网络炸了" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("应抛出 RuntimeError")
+
+
+def test_handle_understand_video_model_config_error_is_non_retryable(monkeypatch, session):
+    from app.core.queue import NonRetryableJobError
+    from app.services.model_access_service import ModelConfigError
+
+    a = _seed(session)
+
+    async def missing_config(*args, **kwargs):
+        raise ModelConfigError(
+            "视频理解没有配置可用模型",
+            attempt_group_id="mg_test",
+            primary_model_id=None,
+            primary_model_key="",
+            fallback_model_id=None,
+            fallback_model_key="",
+            primary_error_class="not_configured",
+            primary_error_message="该工作尚未配置模型",
+            fallback_error_class="",
+            fallback_error_message="",
+        )
+
+    monkeypatch.setattr(svc, "run_understand", missing_config)
+    try:
+        asyncio.run(handlers.handle_understand_video(session, {"asset_id": a.id}))
+    except NonRetryableJobError as exc:
+        assert "没有配置可用模型" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("模型配置错误不应进入自动重试")
+
+
+def test_handle_breakdown_model_config_error_is_non_retryable(monkeypatch, session):
+    import app.services.breakdown_service as breakdown
+    from app.core.queue import NonRetryableJobError
+    from app.services.model_access_service import ModelConfigError
+
+    a = _seed(session)
+
+    async def missing_config(*args, **kwargs):
+        raise ModelConfigError(
+            "文字分析没有配置可用模型",
+            attempt_group_id="mg_test",
+            primary_model_id=None,
+            primary_model_key="",
+            fallback_model_id=None,
+            fallback_model_key="",
+            primary_error_class="not_configured",
+            primary_error_message="该工作尚未配置模型",
+            fallback_error_class="",
+            fallback_error_message="",
+        )
+
+    monkeypatch.setattr(breakdown, "run_breakdown", missing_config)
+    try:
+        asyncio.run(handlers.handle_breakdown(session, {"asset_id": a.id}))
+    except NonRetryableJobError as exc:
+        assert "没有配置可用模型" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("模型配置错误不应进入自动重试")
+
+
+def test_handle_analyze_model_config_error_is_non_retryable(monkeypatch, session):
+    import app.services.model_access_service as model_access
+    from app.core.queue import NonRetryableJobError
+    from app.models import Transcript
+    from app.services.model_access_service import ModelConfigError
+
+    a = _seed(session)
+    session.add(Transcript(asset_id=a.id, full_text="可分析文本", language="zh", model="base"))
+    session.commit()
+
+    async def missing_config(*args, **kwargs):
+        raise ModelConfigError(
+            "文字分析没有配置可用模型",
+            attempt_group_id="mg_test",
+            primary_model_id=None,
+            primary_model_key="",
+            fallback_model_id=None,
+            fallback_model_key="",
+            primary_error_class="not_configured",
+            primary_error_message="该工作尚未配置模型",
+            fallback_error_class="",
+            fallback_error_message="",
+        )
+
+    monkeypatch.setattr(model_access.ModelAccessService, "call_with_fallback", missing_config)
+    try:
+        asyncio.run(handlers.handle_analyze(session, {"asset_id": a.id}))
+    except NonRetryableJobError as exc:
+        assert "没有配置可用模型" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("文字分析的模型配置错误不应进入自动重试")

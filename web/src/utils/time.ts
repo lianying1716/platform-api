@@ -20,3 +20,36 @@ export function utcMs(value: string | null | undefined): number | null {
   const date = parseUtc(value)
   return date ? date.getTime() : null
 }
+
+function format(
+  value: string | null | undefined,
+  options: Intl.DateTimeFormatOptions,
+  fallback: string,
+): string {
+  const date = parseUtc(value)
+  return date ? date.toLocaleString('zh-CN', options) : fallback
+}
+
+/** Full local date and time, used for logs and exact timestamps. */
+export function formatDateTime(value: string | null | undefined, fallback = '—'): string {
+  return format(value, { hour12: false }, fallback)
+}
+
+/** Local calendar date without time. */
+export function formatDate(value: string | null | undefined, fallback = '—'): string {
+  return format(value, { year: 'numeric', month: '2-digit', day: '2-digit' }, fallback)
+}
+
+/** Compact local month/day/hour/minute label for cards and schedules. */
+export function formatMonthDayTime(value: string | null | undefined, fallback = '—'): string {
+  return format(
+    value,
+    { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false },
+    fallback,
+  )
+}
+
+/** Local clock label for logs and near-term queue schedules. */
+export function formatClock(value: string | null | undefined, fallback = '—'): string {
+  return format(value, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }, fallback)
+}

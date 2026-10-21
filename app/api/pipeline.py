@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import schemas
 from app.core import queue, security
 from app.db import get_db
 from app.models import ContentItem, JobQueue, MediaAsset, TaskLog
@@ -16,7 +17,7 @@ from app.models import ContentItem, JobQueue, MediaAsset, TaskLog
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"], dependencies=[Depends(security.require_admin)])
 
 
-@router.get("/jobs")
+@router.get("/jobs", response_model=list[schemas.QueueJob])
 def list_jobs(
     db: Session = Depends(get_db),
     status: str | None = None,
@@ -90,7 +91,7 @@ def list_jobs(
     return out
 
 
-@router.get("/jobs/{job_id}")
+@router.get("/jobs/{job_id}", response_model=schemas.JobStatusOut)
 def get_job(job_id: int, db: Session = Depends(get_db)):
     """轻量任务状态端点：手动操作提交后，前端只轮询这一条任务。"""
     job = db.get(JobQueue, job_id)
@@ -129,7 +130,7 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/jobs/{job_id}/logs")
+@router.get("/jobs/{job_id}/logs", response_model=schemas.JobLogsOut)
 def get_job_logs(
     job_id: int,
     db: Session = Depends(get_db),
@@ -165,7 +166,7 @@ def get_job_logs(
     }
 
 
-@router.get("/assets/{asset_id}")
+@router.get("/assets/{asset_id}", response_model=schemas.AssetWorkflow)
 def get_asset_workflow(asset_id: int, db: Session = Depends(get_db)):
     """Expose the durable processing DAG for one asset.
 
@@ -192,7 +193,7 @@ def get_asset_workflow(asset_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/summary")
+@router.get("/summary", response_model=schemas.PipelineSummaryOut)
 def queue_summary(db: Session = Depends(get_db)):
     """各 job_type x status 的计数，前端流水线视图用。"""
     rows = db.execute(
@@ -204,7 +205,7 @@ def queue_summary(db: Session = Depends(get_db)):
     return summary
 
 
-@router.get("/alerts")
+@router.get("/alerts", response_model=schemas.QueueAlertList)
 def list_alerts(
     db: Session = Depends(get_db),
     status: str | None = None,
@@ -234,7 +235,7 @@ def list_alerts(
     }
 
 
-@router.post("/alerts/{alert_id}/acknowledge")
+@router.post("/alerts/{alert_id}/acknowledge", response_model=schemas.AlertActionOut)
 def acknowledge_alert(alert_id: int, db: Session = Depends(get_db)):
     from app.services import alerts
 
@@ -244,7 +245,7 @@ def acknowledge_alert(alert_id: int, db: Session = Depends(get_db)):
     return {"id": row.id, "status": row.status}
 
 
-@router.post("/alerts/{alert_id}/resolve")
+@router.post("/alerts/{alert_id}/resolve", response_model=schemas.AlertActionOut)
 def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     from app.services import alerts
 
@@ -254,7 +255,7 @@ def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     return {"id": row.id, "status": row.status}
 
 
-@router.get("/ai-schedule")
+@router.get("/ai-schedule", response_model=schemas.AiScheduleOut)
 def pipeline_ai_schedule(db: Session = Depends(get_db)):
     """队列页展示的 AI 时段状态（与系统设置读写同一份配置）。"""
     from app.core.ai_schedule import ai_schedule_status, get_ai_schedule
@@ -262,7 +263,7 @@ def pipeline_ai_schedule(db: Session = Depends(get_db)):
     return ai_schedule_status(get_ai_schedule(db))
 
 
-@router.post("/jobs/{job_id}/retry")
+@router.post("/jobs/{job_id}/retry", response_model=schemas.AlertActionOut)
 def retry_job(job_id: int, db: Session = Depends(get_db)):
     job = queue.retry(db, job_id)
     if job is None:
@@ -274,7 +275,7 @@ def retry_job(job_id: int, db: Session = Depends(get_db)):
     return {"id": job.id, "status": job.status}
 
 
-@router.post("/jobs/retry-failed")
+@router.post("/jobs/retry-failed", response_model=schemas.RetryAllOut)
 def retry_all_failed(db: Session = Depends(get_db), job_type: str | None = None):
     """批量重试所有失败任务。"""
     ids = queue.retry_failed(db, job_type=job_type)
