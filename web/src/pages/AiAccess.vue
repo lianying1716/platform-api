@@ -98,7 +98,7 @@
           </label>
           <label class="gfield">
             <span>platform-api 目录</span>
-            <el-input v-model="mcpProjectDir" placeholder="/home/you/platform-api" />
+            <el-input v-model="mcpProjectDir" placeholder="填写部署 platform-api 代码的绝对路径" />
             <small>Agent 会在这个目录执行 <code>uv sync --extra mcp</code> 并启动 MCP。</small>
           </label>
         </div>
@@ -271,7 +271,7 @@ function backendOrigin() {
 
 const mcpBase = ref(backendOrigin())
 const mcpKey = ref('')
-const mcpProjectDir = ref('/home/you/platform-api')
+const mcpProjectDir = ref('')
 
 function maskKey(value: string) {
   const key = (value || '').trim()
@@ -284,21 +284,27 @@ const mcpKeyPreview = computed(() => maskKey(mcpKey.value))
 
 // MCP 走本地 stdio 进程（不是 HTTP URL）：这里给出可直接粘贴的配置。
 const apiBase = computed(() => mcpBase.value.trim() || backendOrigin())
+const projectDir = computed(() => mcpProjectDir.value.trim())
+const missingProjectDir = computed(() => !projectDir.value)
 const mcpConfig = computed(
-  () => `[mcp_servers.xsai-platform]
+  () => missingProjectDir.value
+    ? '请先填写 platform-api 代码目录，再生成 MCP 配置。'
+    : `[mcp_servers.xsai-platform]
 command = "uv"
-args = ["run", "--project", "${mcpProjectDir.value}", "python", "-m", "mcp_server.server"]
-cwd = "${mcpProjectDir.value}"
+args = ["run", "--project", "${projectDir.value}", "python", "-m", "mcp_server.server"]
+cwd = "${projectDir.value}"
 
 [mcp_servers.xsai-platform.env]
 PLATFORM_API_BASE = "${apiBase.value}"
 PLATFORM_API_KEY  = "${mcpKey.value.trim() || 'sk-你的key'}"`,
 )
 const claudeCmd = computed(
-  () => `claude mcp add xsai-platform \\
+  () => missingProjectDir.value
+    ? '请先填写 platform-api 代码目录，再生成 Claude Code 命令。'
+    : `claude mcp add xsai-platform \\
   --env PLATFORM_API_BASE=${apiBase.value} \\
   --env PLATFORM_API_KEY=${mcpKey.value.trim() || 'sk-你的key'} \\
-  -- uv run --project ${mcpProjectDir.value} python -m mcp_server.server`,
+  -- uv run --project ${projectDir.value} python -m mcp_server.server`,
 )
 
 const agentPrompt = computed(() => [
@@ -307,10 +313,12 @@ const agentPrompt = computed(() => [
   '平台信息：',
   `- 平台 API 地址：${apiBase.value}`,
   `- 平台 API Key：${mcpKey.value.trim() || '（请先提醒我在「AI 接入」页创建并粘贴 API Key）'}`,
-  `- platform-api 项目目录：${mcpProjectDir.value}`,
+  `- platform-api 项目目录：${projectDir.value || '（请先在页面上填写）'}`,
   '',
   '你要执行的步骤：',
-  `1. 进入项目目录并安装 MCP 依赖：cd ${mcpProjectDir.value} && uv sync --extra mcp`,
+  missingProjectDir.value
+    ? '1. 先向我要 platform-api 的部署目录，再执行该目录下的 uv sync --extra mcp。'
+    : `1. 进入项目目录并安装 MCP 依赖：cd ${projectDir.value} && uv sync --extra mcp`,
   `2. 运行自检，确认后端连通、Key 有效、14 个工具可见：PLATFORM_API_BASE=${apiBase.value} PLATFORM_API_KEY=<上面的Key> uv run python -m mcp_server.server --self-check`,
   '3. 自检通过后，把 MCP 配置写入当前客户端：Codex 写 ~/.codex/config.toml；Claude Code 执行下面这条 claude mcp add 命令。',
   mcpConfig.value,
@@ -400,6 +408,10 @@ async function doRevoke() {
 }
 
 async function copyMcp() {
+  if (!mcpProjectDir.value.trim()) {
+    ElMessage.warning('请先填写 platform-api 代码目录')
+    return
+  }
   try {
     await navigator.clipboard.writeText(mcpConfig.value)
     ElMessage.success('已复制 MCP 配置')
@@ -411,6 +423,10 @@ async function copyMcp() {
 async function copyAgentPrompt() {
   if (!mcpKey.value.trim()) {
     ElMessage.warning('请先填写 API Key（在「API Key」页创建后复制过来）')
+    return
+  }
+  if (!mcpProjectDir.value.trim()) {
+    ElMessage.warning('请先填写 platform-api 代码目录')
     return
   }
   try {

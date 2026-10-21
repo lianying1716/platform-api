@@ -12,7 +12,13 @@ cd "$ROOT"
 PKG="${1:-}"
 [ -n "$PKG" ] && [ -f "$PKG" ] || { echo "用法: $0 <backup-*.tar.gz>" >&2; exit 1; }
 
-DATA_VOLUME="${DATA_VOLUME:-$(basename "$ROOT")_platform-data}"
+# shellcheck disable=SC1091
+. "$ROOT/scripts/lib/compose.sh"
+
+DB_USER="$(compose_service_env db POSTGRES_USER platform)"
+DB_NAME="$(compose_service_env db POSTGRES_DB platform)"
+DATA_VOLUME="${DATA_VOLUME:-$(compose_volume_name platform-data)}"
+[ -n "$DATA_VOLUME" ] || { echo "!! 无法从 compose 解析 data 卷名（可用 DATA_VOLUME=xxx 指定）" >&2; exit 1; }
 
 echo "==> 校验备份完整性"
 if [ -f "$PKG.sha256" ]; then
@@ -36,7 +42,7 @@ echo "==> [1/4] 停止 api/worker（保留 db）"
 docker compose stop platform-api platform-worker
 
 echo "==> [2/4] 还原数据库（--clean 覆盖）"
-docker compose exec -T db pg_restore -U "${POSTGRES_USER:-platform}" -d "${POSTGRES_DB:-platform}" \
+docker compose exec -T db pg_restore -U "$DB_USER" -d "$DB_NAME" \
   --clean --if-exists < "$WORK/db.dump"
 
 # 先解压到卷内临时目录并确认成功，再原子替换原内容——避免"先清空、后失败"丢数据。
@@ -57,4 +63,5 @@ docker run --rm -v "$DATA_VOLUME":/data -v "$WORK":/backup alpine sh -c '
 echo "==> [4/4] 重启"
 docker compose up -d
 
-echo "==> 完成。校验：curl -s localhost:9100/api/system/version"
+PORT="$(compose_host_port)"
+echo "==> 完成。校验：curl -s http://127.0.0.1:${PORT}/api/system/version"

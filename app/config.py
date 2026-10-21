@@ -2,14 +2,21 @@ from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
+from sqlalchemy.engine import URL
 
 
 class Settings(BaseSettings):
     """全局配置。环境变量前缀 PLATFORM_，例如 PLATFORM_PORT=9100。"""
 
     data_dir: Path = Path(__file__).resolve().parent.parent / "data"
-    # 默认连本地开发用 PostgreSQL（容器映射 5433，与生产同构）；生产由 PLATFORM_DATABASE_URL 覆盖
-    database_url: str = "postgresql+psycopg2://platform:platform@127.0.0.1:5433/platform"
+    # 完整 DSN 是兼容入口（脚本/既有部署常用）。为空时由下面的结构化字段
+    # 在进程内构建 URL，避免数据库密码里的 @ : / 等字符破坏连接串。
+    database_url: str = ""
+    db_host: str = "127.0.0.1"
+    db_port: int = 5433
+    db_user: str = "platform"
+    db_password: str = "platform"
+    db_name: str = "platform"
     # 启动时是否用 SQLAlchemy create_all 自动建表。开发默认 True；
     # 生产（compose）置 false，建表完全交给 Alembic（docker-entrypoint.sh）。
     auto_create_tables: bool = True
@@ -108,7 +115,17 @@ class Settings(BaseSettings):
 
     @property
     def resolved_database_url(self) -> str:
-        return self.database_url
+        explicit = (self.database_url or "").strip()
+        if explicit:
+            return explicit
+        return URL.create(
+            "postgresql+psycopg2",
+            username=self.db_user,
+            password=self.db_password,
+            host=self.db_host,
+            port=self.db_port,
+            database=self.db_name,
+        ).render_as_string(hide_password=False)
 
 
 settings = Settings()

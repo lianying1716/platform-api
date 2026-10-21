@@ -40,15 +40,16 @@
 ```bash
 PLATFORM_VERSION=v1.3.0 docker compose pull
 PLATFORM_VERSION=v1.3.0 docker compose up -d
-curl -s localhost:9100/api/system/version   # 确认版本与 db_revision
+curl -s "http://127.0.0.1:${PLATFORM_PORT:-9100}/api/system/version"   # 确认版本与 db_revision
 ```
 
 ## 升级（本地源码）
 
 ```bash
 MODE=local ./scripts/upgrade.sh v1.3.0
-# 内部步骤：备份 → git checkout tag → uv sync → alembic upgrade head
-# 之后重启 systemd：systemctl --user restart platform-api-dev platform-web-dev
+# 内部步骤：源码备份（SQLite/pg_dump + data 目录）→ git checkout tag →
+# uv sync（含转录）→ alembic upgrade head → 重启 API + worker → 健康检查
+# 安装目录有 systemd/launchd 服务时自动重启服务，否则重启记录的 PID 进程。
 ```
 
 ## 回滚
@@ -59,6 +60,9 @@ PLATFORM_VERSION=v1.2.0 docker compose up -d
 
 # 方式二：改了结构 —— 恢复升级前的备份（唯一可靠方式）
 ./scripts/restore.sh backups/backup-v1.2.0-<时间戳>.tar.gz
+
+# 源码安装（SQLite 或本机 PostgreSQL）：
+./scripts/restore-local.sh backups/backup-v1.2.0-<时间戳>.tar.gz
 ```
 
 ## 升级失败时会发生什么（重要）
@@ -68,7 +72,7 @@ PLATFORM_VERSION=v1.2.0 docker compose up -d
 1. **原子性**：整批迁移在单个事务内；任一脚本失败 → 整体回滚，数据库停在升级前 revision。
 2. **排他性**：迁移由 api 单容器执行，worker 等待；即使配置失误并发，PG advisory lock 也会串行化。
 3. **门禁性**：迁移失败或版本对不上 → 容器**拒绝对外服务**（fail fast），不会带病运行。
-4. **可恢复性**：升级前已强制备份，可用 `restore.sh` 回到升级前。
+4. **可恢复性**：升级前已强制备份；Docker 用 `restore.sh`，源码安装用 `restore-local.sh` 回到升级前。
 
 因此**升级失败的结果是"服务暂时不可用 + 数据完好"**，而不是"数据损坏 + 静默运行"。
 
@@ -78,4 +82,5 @@ PLATFORM_VERSION=v1.2.0 docker compose up -d
 |---|---|---|
 | 容器反复重启，日志 `版本门禁未通过` | 代码与库版本不匹配 | 用匹配版本的镜像；或临时 `PLATFORM_ALLOW_UNKNOWN_DB=1` 仅排障 |
 | 日志 `等待迁移锁超时` | 另一进程正在迁移 | 等其完成；持续失败则检查是否有卡死的迁移进程 |
-| 升级后 `/api/system/version` 的 `db_in_sync=false` | 迁移未跑完或失败 | 查看 `docker compose logs platform-api`；必要时 `restore.sh` |
+| 升级后 `/api/system/version` 的 `db_in_sync=false` | 迁移未跑完或失败 | Docker 查看 `docker compose logs platform-api`；源码查看 `data/server.log`；必要时用对应 `restore.sh` / `restore-local.sh` |
+| 诊断页“任务执行器”异常 | worker 未启动、退出或心跳超过 5 分钟 | 启动 worker；Docker 检查 `platform-worker`，源码查看 `data/worker.log` |

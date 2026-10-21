@@ -14,7 +14,7 @@ def test_transcription_capability_reports_missing_dependency(monkeypatch):
     assert "transcribe" in rows["transcription"].fix
 
 
-def test_diagnostics_separates_required_and_optional_failures(client, monkeypatch):
+def test_diagnostics_separates_required_and_optional_failures(client, session, monkeypatch):
     import app.core.runtime_capabilities as runtime
     from app.modules import browser_runtime
 
@@ -43,6 +43,12 @@ def test_diagnostics_separates_required_and_optional_failures(client, monkeypatc
         running = True
 
     monkeypatch.setattr(system_api, "scheduler", _Scheduler())
+    from datetime import datetime
+
+    from app.models import SystemSetting
+
+    session.add(SystemSetting(key="worker_last_heartbeat", value=datetime.utcnow().isoformat()))
+    session.commit()
     body = client.get("/api/system/diagnostics").json()
     checks = {row["name"]: row for row in body["checks"]}
 
@@ -50,3 +56,40 @@ def test_diagnostics_separates_required_and_optional_failures(client, monkeypatc
     assert body["required_ok"] is True
     assert "Node" in body["optional_failures"]
     assert body["all_ok"] is True
+
+
+def test_diagnostics_requires_worker_heartbeat_even_when_queue_is_empty(client, session):
+    """An idle queue must not mask an API-only install.
+
+    The common failure mode is a healthy web server with no worker process; in
+    that state the queue is empty until the first user action, so a queue-count
+    check alone reports a false green.
+    """
+    from app.models import SystemSetting
+
+    session.query(SystemSetting).filter_by(key="worker_last_heartbeat").delete()
+    session.commit()
+
+    body = client.get("/api/system/diagnostics").json()
+    row = next(c for c in body["checks"] if c["name"] == "任务执行器")
+    assert row["ok"] is False
+    assert row["required"] is True
+    assert "未检测到 worker 心跳" in row["detail"]
+
+
+def test_diagnostics_accepts_fresh_worker_heartbeat(client, session):
+    from datetime import datetime
+
+    from app.models import SystemSetting
+
+    row = session.get(SystemSetting, "worker_last_heartbeat")
+    if row is None:
+        row = SystemSetting(key="worker_last_heartbeat")
+        session.add(row)
+    row.value = datetime.utcnow().isoformat()
+    session.commit()
+
+    body = client.get("/api/system/diagnostics").json()
+    task = next(c for c in body["checks"] if c["name"] == "任务执行器")
+    assert task["ok"] is True
+    assert "最后心跳" in task["detail"]

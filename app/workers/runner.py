@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import logging
 import signal
+from datetime import datetime
 
 from app.config import settings
 from app.core import queue
@@ -206,6 +207,18 @@ async def _janitor() -> None:
                 logger.info("恢复中断的素材删除任务 %s 个", recovered)
             from app.services.foundation import purge_old_task_logs
 
+            # 无任务时也要留下存活证据：诊断页用最后心跳判断“worker 在但空闲”
+            # 和“worker 根本没启动”，两者对用户是完全不同的处理动作。
+            from datetime import datetime as _dt
+            from app.models import SystemSetting as _Setting
+
+            hb = db.get(_Setting, "worker_last_heartbeat")
+            if hb is None:
+                hb = _Setting(key="worker_last_heartbeat")
+                db.add(hb)
+            hb.value = _dt.utcnow().isoformat()
+            db.commit()
+
             logs, purged_events, purged_windows = purge_old_task_logs(db, older_than_days=30)
             if logs:
                 logger.info(
@@ -250,6 +263,14 @@ async def _startup_reconcile() -> None:
         recovered = recover_pending_deletions(db)
         if recovered:
             logger.info("启动恢复中断的素材删除任务 %s 个", recovered)
+        from app.models import SystemSetting
+
+        hb = db.get(SystemSetting, "worker_last_heartbeat")
+        if hb is None:
+            hb = SystemSetting(key="worker_last_heartbeat")
+            db.add(hb)
+        hb.value = datetime.utcnow().isoformat()
+        db.commit()
     except Exception:  # noqa: BLE001 启动对账失败不应阻止 worker 起来
         logger.exception("启动对账异常")
     finally:

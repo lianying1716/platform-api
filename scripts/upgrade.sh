@@ -16,30 +16,77 @@ TARGET="${1:-}"
 
 echo "==> 升级目标：${TARGET}（当前 $(git describe --tags --always 2>/dev/null || echo unknown)）"
 
-# ---- 强制备份：没有成功备份就不进入升级 ----
-echo "==> [0/3] 强制备份"
-BUILD_VERSION="$TARGET" ./scripts/backup.sh
-
 MODE="${MODE:-docker}"
 if [ "$MODE" = "local" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/lib/local-install.sh"
+  local_load_env
+fi
+
+# ---- 强制备份：没有成功备份就不进入升级 ----
+echo "==> [0/3] 强制备份"
+# 原实现只给子进程临时 BUILD_VERSION，backup.sh 读的却是 PLATFORM_VERSION，
+# 结果备份包永远显示 dev。两边统一用 PLATFORM_VERSION。
+if [ "$MODE" = "local" ]; then
+  PLATFORM_VERSION="$TARGET" ./scripts/backup-local.sh
+else
+  PLATFORM_VERSION="$TARGET" ./scripts/backup.sh
+fi
+
+if [ "$MODE" = "local" ]; then
+  # Stop before checkout: a running worker must not execute mixed old Python
+  # modules from a worktree whose files are being replaced tag by tag.
+  local_stop
   echo "==> [1/3] 本地源码：fetch tag + checkout"
   git fetch --tags
-  git checkout "$TARGET"
+  # A deployment checkout must never trigger an implicit merge or branch
+  # switch while the operator thinks they are upgrading to a release tag.
+  git check-ref-format "refs/tags/$TARGET" >/dev/null 2>&1 \
+    || { echo "!! 目标必须是发布 tag（例如 v1.0.9），不能是任意 ref" >&2; exit 1; }
+  git rev-parse --verify --quiet "refs/tags/$TARGET^{commit}" >/dev/null \
+    || { echo "!! 找不到 tag $TARGET；请确认版本号或先 git fetch --tags" >&2; exit 1; }
+  git checkout --detach "refs/tags/$TARGET"
   echo "==> [2/3] 同步依赖"
-  uv sync --extra postgres --extra browser
+  uv sync --extra postgres --extra browser --extra transcribe
   echo "==> [3/3] 迁移（单事务 + 互斥锁）"
   uv run alembic upgrade head
-  echo "==> 完成。若用 systemd 请重启：systemctl --user restart platform-api-dev platform-web-dev"
+  if systemctl --user cat stargather-platform-api.service >/dev/null 2>&1; then
+    systemctl --user restart stargather-platform-api stargather-platform-worker
+    echo "==> 已重启 systemd 用户服务（API + worker）"
+  elif [ "$(uname -s)" = "Darwin" ] && launchctl list 2>/dev/null | grep -q com.stargather.platform-api; then
+    launchctl kickstart -k "gui/$(id -u)/com.stargather.platform-api"
+    launchctl kickstart -k "gui/$(id -u)/com.stargather.platform-worker"
+    echo "==> 已重启 launchd 服务（API + worker）"
+  else
+    local_start
+    echo "==> 已重启后台 API + worker（日志在 ${PLATFORM_DATA_DIR:-$ROOT/data}/server.log 与 worker.log）"
+  fi
+  PORT="${PLATFORM_PORT:-9100}"
+  for _ in $(seq 1 45); do
+    if curl -fsS "http://127.0.0.1:${PORT}/api/system/version" >/dev/null 2>&1; then
+      echo "==> 服务已就绪："
+      curl -s "http://127.0.0.1:${PORT}/api/system/version"; echo
+      exit 0
+    fi
+    sleep 2
+  done
+  echo "!! 升级完成但 90 秒内未就绪；先检查日志，回滚用 ./scripts/restore-local.sh <备份包>" >&2
+  echo "   备份目录：${BACKUP_DIR:-$ROOT/backups}" >&2
+  exit 1
 else
   echo "==> [1/3] 拉取镜像 $TARGET"
   PLATFORM_VERSION="$TARGET" docker compose pull
   echo "==> [2/3] 启动（api 先迁移，worker 等 api 健康）"
   PLATFORM_VERSION="$TARGET" docker compose up -d
   echo "==> [3/3] 等待健康检查"
+  # 读 compose 解析出的宿主端口；健康探针不能写死，否则改端口后升级永远误报失败。
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/lib/compose.sh"
+  PORT="$(compose_host_port)"
   for _ in $(seq 1 30); do
-    if curl -fsS localhost:9100/api/system/version >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:${PORT}/api/system/version" >/dev/null 2>&1; then
       echo "==> 服务已就绪："
-      curl -s localhost:9100/api/system/version; echo
+      curl -s "http://127.0.0.1:${PORT}/api/system/version"; echo
       exit 0
     fi
     sleep 3

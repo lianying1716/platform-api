@@ -123,12 +123,14 @@ docker compose up -d          # 起 api + worker + postgres，首次自动迁移
 
 - 从源码构建镜像（不走 GHCR）：`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`
 - 网页一键升级（可选）：见 [`.env.example`](.env.example) 的 `PLATFORM_UPDATER_*` 与 [`docs/upgrade-compatibility.md`](docs/upgrade-compatibility.md)
-- 升级 / 备份 / 回滚：`./scripts/backup.sh` → `./scripts/upgrade.sh v1.4.0` → 需要时 `./scripts/restore.sh`
+- 升级 / 备份 / 回滚：Docker 用 `./scripts/backup.sh` / `restore.sh`；源码安装用 `MODE=local ./scripts/upgrade.sh <tag>`（内部自动走 `backup-local.sh`，回滚用 `restore-local.sh`）
+  （脚本从 Compose 解析项目名、卷名、数据库账号与宿主端口；部署目录不需要叫 `platform-api`）
 
 ### 方式 B · 无 Docker 一键安装（macOS / Linux 裸机）
 
 **不想装 Docker（尤其 macOS）就用这个**：不需要 Docker，也不需要 PostgreSQL——用
 [`uv`](https://docs.astral.sh/uv/) 装依赖、SQLite 存数据、构建前端正式包后以生产模式起服务。
+安装前需要 `uv` 与 `ffmpeg`；缺任何一个脚本会在改动环境前明确退出。
 
 ```bash
 git clone https://github.com/lianying1716/platform-api.git
@@ -136,19 +138,20 @@ cd platform-api
 ./scripts/install-local.sh
 ```
 
-脚本会：装依赖 → 生成凭证加密密钥（`data/secret.key`，**请备份**）→ 构建前端 →
-迁移数据库 → 起服务，最后打印访问地址。默认 `http://127.0.0.1:9100`，首次访问设置管理员密码。
+脚本会：装 Python / 转录 / 浏览器依赖 → 生成凭证加密密钥（`data/secret.key`，**请备份**）→
+构建前端 → 迁移数据库 → 同时启动 API 与 worker，最后打印访问地址。默认
+`http://127.0.0.1:9100`，首次访问设置管理员密码。`--service` 会注册 API 与 worker 两个常驻服务。
 
 - 只要后端接口、不要网页：`SKIP_WEB_BUILD=1 ./scripts/install-local.sh`（此模式需先有
   `app/static/` 产物；没有 Node 时也可让后端只提供 `/api`）
 - 局域网访问：`PLATFORM_HOST=0.0.0.0 ./scripts/install-local.sh`
 - 想用 PostgreSQL：`./scripts/install-local.sh --postgres 'postgresql+psycopg2://u:p@host:5432/db'`
 - 只装不启动：`--no-start`
-- 下载 / 转录 / 同步需要 worker，另开一个终端：
-  ```bash
-  set -a; . ./.env.local-install; set +a; uv run python -m app.workers.runner
-  ```
-- 装 Playwright 扫码能力（抖音/小红书）：脚本默认已带 `--extra browser`；跳过用 `SKIP_BROWSER=1`
+- 脚本默认同时启动 worker；手工重启用 `set -a; . ./.env.local-install; set +a; uv run python -m app.workers.runner`
+- 装 Playwright 扫码能力（抖音/小红书）：脚本默认安装并下载 Chromium；跳过用 `SKIP_BROWSER=1`
+- 不装本地转录：`SKIP_TRANSCRIBE=1`；默认会安装 faster-whisper
+- 备份 / 恢复：`./scripts/backup-local.sh` → `./scripts/restore-local.sh backups/backup-<版本>-<时间>.tar.gz`
+- 安装配置写到其他位置：`PLATFORM_LOCAL_ENV_FILE=/path/to/install.env ./scripts/install-local.sh`
 
 > 无 Docker 安装的数据都在 `data/`（SQLite + 密钥 + 素材）。备份整个目录即可；
 > `secret.key` 丢失 = 所有已存账号凭证作废。生产规模较大时建议改用方式 A 的 PostgreSQL。
@@ -265,9 +268,11 @@ uv sync --extra mcp                                             # 接入 Claude 
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `PLATFORM_PORT` | `9100` | 监听端口 |
-| `PLATFORM_SERVE_FRONTEND` | `false` | 是否由后端托管前端正式包；生产置 `true` |
-| `PLATFORM_DATABASE_URL` | 本地 PG `…:5433/platform` | 生产配 PostgreSQL DSN |
+| `PLATFORM_PORT` | `9100` | 监听端口；Docker 下同时作为宿主映射端口 |
+| `COMPOSE_PROJECT_NAME` | `platform-api` | Compose 项目名；同机多实例必须不同 |
+| `PLATFORM_SERVE_FRONTEND` | `false` | 是否托管前端正式包；Compose 默认覆盖为 `true` |
+| `PLATFORM_DB_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_NAME` | 本地 PG `127.0.0.1:5433` | 结构化数据库连接；密码含特殊字符也安全 |
+| `PLATFORM_DATABASE_URL` | 空 | 可选完整 DSN；设置后覆盖上面的结构化字段 |
 | `PLATFORM_CREDENTIAL_ENC_KEY` | 空 | base64 的 32 字节凭证密钥，**生产首选** |
 | `PLATFORM_CREDENTIAL_KEY_FILE` | 空 | 密钥文件路径，可置于项目目录外 |
 | `PLATFORM_LLM_BASE_URL` / `_API_KEY` / `_MODEL` | 空 / 空 | 旧版模型配置，仅首次启动认领到「模型接入」；运行期不读取 |

@@ -2,6 +2,7 @@ import json
 import platform as py_platform
 import shutil
 import sys
+from datetime import datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -644,6 +645,38 @@ def diagnostics(db: Session = Depends(get_db)):
     except ImportError:
         add("浏览器运行时", False, "未安装。抖音/小红书扫码不可用，可用手动粘 Cookie 兜底")
     add("定时体检", scheduler.running, f"间隔 {settings.account_check_interval} 分钟")
+    # API 能起不代表后台任务能跑。裸机安装只起 uvicorn 时，所有下载/转录/同步
+    # 会永久停在 queued；这个检查必须进入必需项，而不是让用户从队列页猜。
+    from app.models import JobQueue
+
+    queued = db.scalar(select(func.count(JobQueue.id)).where(JobQueue.status == "queued")) or 0
+    running = db.scalar(select(func.count(JobQueue.id)).where(JobQueue.status == "running")) or 0
+    heartbeat = db.get(SystemSetting, "worker_last_heartbeat")
+    try:
+        hb_at = datetime.fromisoformat(heartbeat.value) if heartbeat and heartbeat.value else None
+    except ValueError:
+        hb_at = None
+    heartbeat_fresh = bool(hb_at and hb_at >= datetime.utcnow() - timedelta(minutes=5))
+    # 心跳是“进程活着”的证据。队列为空时也必须检查心跳，否则“API 起来了
+    # 但没 worker”会被误报为全部正常——这正是首次上机最常见的静默故障。
+    # running>0 而没有新鲜心跳只说明上次领取后进程消失，仍应判异常。
+    worker_seen = heartbeat_fresh
+    if worker_seen:
+        detail = f"运行中 {running}、排队 {queued}"
+        if hb_at:
+            detail += f"；最后心跳 {hb_at.isoformat(timespec='seconds')}Z"
+        add("任务执行器", True, detail)
+    else:
+        if hb_at:
+            detail = f"worker 心跳已过期（最后 {hb_at.isoformat(timespec='seconds')}Z），运行中 {running}、排队 {queued}"
+        else:
+            detail = f"未检测到 worker 心跳，运行中 {running}、排队 {queued}（空闲队列也必须有心跳）"
+        add(
+            "任务执行器",
+            False,
+            detail,
+            fix="启动 worker：uv run python -m app.workers.runner；Docker 部署请确认 platform-worker 容器运行",
+        )
     required_ok = all(c["ok"] for c in checks if c["required"])
     return {
         "checks": checks,

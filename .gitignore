@@ -5,6 +5,7 @@ data/
 *.db
 *.sqlite*
 .env
+.env.local-install
 !.env.example
 web/node_modules/
 web/dist/

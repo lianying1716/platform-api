@@ -82,7 +82,14 @@ def _prewarm_storage_index() -> None:
 
         db = SessionLocal()
         try:
-            for root in db.scalars(select(StorageRoot)).all():
+            try:
+                roots = db.scalars(select(StorageRoot)).all()
+            except Exception as exc:  # noqa: BLE001 表尚未就绪/数据库瞬断不是预热错误
+                logging.getLogger("platform.startup").info(
+                    "跳过存储索引预热：数据库暂不可用（%s）", type(exc).__name__
+                )
+                return
+            for root in roots:
                 try:
                     storage.cached_root_file_sizes(root.path)
                     storage.cached_dir_size(root.path)
