@@ -1,0 +1,13 @@
+
+> platform-web@0.1.0 check
+> npm run api:check && npm run typecheck
+
+
+> platform-web@0.1.0 api:check
+> python3 ../scripts/generate_api_types.py --check
+
+API types are up to date: /www/wwwroot/xsai-workbench/platform-api/web/src/api.generated.ts
+
+> platform-web@0.1.0 typecheck
+> tsc -p tsconfig.json --noEmit
+

@@ -7,7 +7,7 @@
       "scrollWidth": 1440,
       "innerWidth": 1440,
       "h1": "总览",
-      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n总览\n素材库\n系统设置\n总览\n你的个人素材库\n近 14 天\n近 7 天\n全部账号\n刷新\n\n素材库里已有 40 条\n\n视频总时长 2 小时 48 分 · 占用 580 KB · 覆盖 5 个账号\n\n7\n项待办\n去处理\n",
+      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n总览\n素材库\n系统设置\n总览\n你的个人素材库\n近 14 天\n近 7 天\n全部账号\n刷新\n\n素材库里已有 0 条\n\n视频总时长 0 分 0 秒 · 占用 — · 覆盖 0 个账号\n\n队列已清空\n没有待办\n素材总量\n0\n",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-overview.png",
       "overflow": false
     },
@@ -17,7 +17,7 @@
       "scrollWidth": 1440,
       "innerWidth": 1440,
       "h1": "账号中心",
-      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n账号中心\n素材库\n系统设置\n账号中心\n登录凭证、状态体检与扫码登录\n新建账号\n刷新\n在线 3\n掉线/异常 1\n抖音\n在线\n[DEMO] 抖音·主号\n\n抖音 · ID chef0001\n\n同步\n已开启 · 按配置正常同",
+      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n账号中心\n素材库\n系统设置\n账号中心\n登录凭证、状态体检与扫码登录\n新建账号\n刷新\n在线 0\n掉线/异常 0\n还没有接入账号\n\n点「新建账号」用扫码或 Cookie 接入抖音 / B站等平台，之后即可同步关注列表与素",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-accounts.png",
       "overflow": false
     },
@@ -27,7 +27,7 @@
       "scrollWidth": 1440,
       "innerWidth": 1440,
       "h1": "关注列表",
-      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n关注列表\n素材库\n系统设置\n关注列表\n跟踪我关注的博主 / 收藏夹 / 合集。同步总开关在「账号中心」每个账号的卡片上。\n新建跟踪\n导入我的关注\n强制刷新\n跟踪中 4\n已开启 1\n 抖音 4\n B站 5\n 小红书\n[",
+      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n关注列表\n素材库\n系统设置\n关注列表\n跟踪我关注的博主 / 收藏夹 / 合集。同步总开关在「账号中心」每个账号的卡片上。\n新建跟踪\n导入我的关注\n强制刷新\n跟踪中 0\n已开启 0\n全部\n博主\n收藏\n收藏夹 / 合集\n",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-followed.png",
       "overflow": false
     },
@@ -37,7 +37,7 @@
       "scrollWidth": 1440,
       "innerWidth": 1440,
       "h1": "关键词采集",
-      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n关键词采集\n素材库\n系统设置\n关键词采集\n按关键词发现作品 · 评论策略由任务显式控制\n新建采集任务\n刷新\n任务 4\n启用 3\n\n关键词采集走平台原生适配器，需先在「账号中心」完成对应平台登录；采集结果进素材库， 评",
+      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n关键词采集\n素材库\n系统设置\n关键词采集\n按关键词发现作品 · 评论策略由任务显式控制\n新建采集任务\n刷新\n任务 0\n启用 0\n\n关键词采集走平台原生适配器，需先在「账号中心」完成对应平台登录；采集结果进素材库， 评",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-crawl.png",
       "overflow": false
     },
@@ -47,7 +47,7 @@
       "scrollWidth": 1440,
       "innerWidth": 1440,
       "h1": "素材库",
-      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n素材库\n素材库\n系统设置\n素材库\n共 33 条 · 视频可播放，文章可阅读\n刷新\n导入文章\n导出 Markdown\n导出 JSON\n全部\n视频\n文章\n内容类型\n平台\n账号\n分类\n转录状态\n最新（默认）\n¶\n图文\n阅\n",
+      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n素材库\n素材库\n系统设置\n素材库\n共 0 条 · 视频可播放，文章可阅读\n刷新\n导入文章\n导出 Markdown\n导出 JSON\n全部\n视频\n文章\n内容类型\n平台\n账号\n分类\n转录状态\n最新（默认）\n还没有素材\n\n去",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-assets.png",
       "overflow": false
     },
@@ -57,7 +57,7 @@
       "scrollWidth": 1440,
       "innerWidth": 1440,
       "h1": "处理队列",
-      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n处理队列\n素材库\n系统设置\n处理队列\n下载 · 转录 · 视频理解 · 采集 · 评论抓取 的后台任务\n刷新\n全部重试\n10\n全部\n3\n排队中\n2\n执行中\n1\n失败\n4\n已完成\n每 5 秒自动刷新 · 21:50:3",
+      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\n处理队列\n素材库\n系统设置\n处理队列\n下载 · 转录 · 视频理解 · 采集 · 评论抓取 的后台任务\n刷新\n0\n全部\n0\n排队中\n0\n执行中\n0\n失败\n0\n已完成\n每 5 秒自动刷新 · 23:06:21\n队列是空",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-pipeline.png",
       "overflow": false
     },
@@ -77,7 +77,7 @@
       "scrollWidth": 1440,
       "innerWidth": 1440,
       "h1": "AI 接入",
-      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\nAI 接入\n素材库\n系统设置\nAI 接入\nAPI Key、MCP 与 Skill 能力开放\nAPI Key\nMCP 接入\n调用日志\n创建 Key\n共 1\n启用 1\n名称\t前缀\t权限\t限流/分\t状态\t操作\n演示 Age",
+      "body": "星采\nSTARGATHER\n◧\n总览\n◆\n账号中心\n⌕\n关键词采集\n★\n关注列表\n▤\n素材库\n≡\n处理队列\n◈\n模型接入\n⌘\nAI 接入\n⚙\n系统设置\nadmin · 本机\n退出登录\nAI 接入\n素材库\n系统设置\nAI 接入\nAPI Key、MCP 与 Skill 能力开放\nAPI Key\nMCP 接入\n调用日志\n创建 Key\n共 0\n启用 0\n还没有 API Key\n\n创建一个 Key，第三方智",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/desktop-ai.png",
       "overflow": false
     },
@@ -97,7 +97,7 @@
       "scrollWidth": 390,
       "innerWidth": 390,
       "h1": "总览",
-      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n总览\n素材库\n系统设置\n总览\n你的个人素材库\n近 14 天\n近 7 天\n全部账号\n刷新\n\n素材库里已有 40 条\n\n视频总时长 2 小时 48 分 · 占用 580 KB · 覆盖 5 个账号\n\n7\n项待办\n去处理\n素材总量\n40\n32 视频 · 8 文章\n待加工\n5\n失败 1 条，需重试\n已判类\n100%\n4",
+      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n总览\n素材库\n系统设置\n总览\n你的个人素材库\n近 14 天\n近 7 天\n全部账号\n刷新\n\n素材库里已有 0 条\n\n视频总时长 0 分 0 秒 · 占用 — · 覆盖 0 个账号\n\n队列已清空\n没有待办\n素材总量\n0\n0 视频 · 0 文章\n待加工\n0\n队列顺畅\n已判类\n—\n0 已分类 · 0 待判\n账号在线\n0",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-overview.png",
       "overflow": false
     },
@@ -107,7 +107,7 @@
       "scrollWidth": 390,
       "innerWidth": 390,
       "h1": "账号中心",
-      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n账号中心\n素材库\n系统设置\n账号中心\n登录凭证、状态体检与扫码登录\n新建账号\n刷新\n在线 3\n掉线/异常 1\n抖音\n在线\n[DEMO] 抖音·主号\n\n抖音 · ID chef0001\n\n同步\n已开启 · 按配置正常同步\n收藏同步\n已开启\n关注列表\n已导入 3 位 · 视频同步 0 位\n到期\n2027/1/19 ",
+      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n账号中心\n素材库\n系统设置\n账号中心\n登录凭证、状态体检与扫码登录\n新建账号\n刷新\n在线 0\n掉线/异常 0\n还没有接入账号\n\n点「新建账号」用扫码或 Cookie 接入抖音 / B站等平台，之后即可同步关注列表与素材。",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-accounts.png",
       "overflow": false
     },
@@ -117,7 +117,7 @@
       "scrollWidth": 390,
       "innerWidth": 390,
       "h1": "关注列表",
-      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n关注列表\n素材库\n系统设置\n关注列表\n跟踪我关注的博主 / 收藏夹 / 合集。同步总开关在「账号中心」每个账号的卡片上。\n新建跟踪\n导入我的关注\n强制刷新\n跟踪中 4\n已开启 1\n 抖音 4\n B站 5\n 小红书\n[DEMO] 抖音·主号\n[DEMO] 抖音·备用号\n全部\n博主 3\n收藏 1\n收藏夹 / 合集\n",
+      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n关注列表\n素材库\n系统设置\n关注列表\n跟踪我关注的博主 / 收藏夹 / 合集。同步总开关在「账号中心」每个账号的卡片上。\n新建跟踪\n导入我的关注\n强制刷新\n跟踪中 0\n已开启 0\n全部\n博主\n收藏\n收藏夹 / 合集\n这个账号下还没有跟踪任何来源\n\n用「导入我的关注」把平台上的关注博主拉进来，或点「新建跟踪」手动",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-followed.png",
       "overflow": false
     },
@@ -127,7 +127,7 @@
       "scrollWidth": 390,
       "innerWidth": 390,
       "h1": "关键词采集",
-      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n关键词采集\n素材库\n系统设置\n关键词采集\n按关键词发现作品 · 评论策略由任务显式控制\n新建采集任务\n刷新\n任务 4\n启用 3\n\n关键词采集走平台原生适配器，需先在「账号中心」完成对应平台登录；采集结果进素材库， 评论可选不抓、按热度门控或强制抓取；未开启评论的平台不会展示该选项。\n\n抖音\n热门优先\n[demo",
+      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n关键词采集\n素材库\n系统设置\n关键词采集\n按关键词发现作品 · 评论策略由任务显式控制\n新建采集任务\n刷新\n任务 0\n启用 0\n\n关键词采集走平台原生适配器，需先在「账号中心」完成对应平台登录；采集结果进素材库， 评论可选不抓、按热度门控或强制抓取；未开启评论的平台不会展示该选项。\n\n还没有采集任务\n\n点「新建",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-crawl.png",
       "overflow": false
     },
@@ -137,7 +137,7 @@
       "scrollWidth": 390,
       "innerWidth": 390,
       "h1": "素材库",
-      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n素材库\n素材库\n系统设置\n素材库\n共 33 条 · 视频可播放，文章可阅读\n刷新\n导入文章\n导出 Markdown\n导出 JSON\n全部\n视频\n文章\n内容类型\n平台\n账号\n分类\n转录状态\n最新（默认）\n¶\n图文\n阅\n图文\n一个人也要好好吃饭\n城市美食猎人\n生活\n发布\n2026/08/24\n同步\n10/21 21",
+      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n素材库\n素材库\n系统设置\n素材库\n共 0 条 · 视频可播放，文章可阅读\n刷新\n导入文章\n导出 Markdown\n导出 JSON\n全部\n视频\n文章\n内容类型\n平台\n账号\n分类\n转录状态\n最新（默认）\n还没有素材\n\n去「关键词采集」或「关注列表」跑一次同步，素材会自动入库。",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-assets.png",
       "overflow": false
     },
@@ -147,7 +147,7 @@
       "scrollWidth": 390,
       "innerWidth": 390,
       "h1": "处理队列",
-      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n处理队列\n素材库\n系统设置\n处理队列\n下载 · 转录 · 视频理解 · 采集 · 评论抓取 的后台任务\n刷新\n全部重试\n13\n全部\n6\n排队中\n2\n执行中\n1\n失败\n4\n已完成\n每 5 秒自动刷新 · 21:50:51\n#13\n第 1 位\n同步收藏\n订阅 #3\n排队中\n进度等待 worker 领取\n排队2 秒\n",
+      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\n处理队列\n素材库\n系统设置\n处理队列\n下载 · 转录 · 视频理解 · 采集 · 评论抓取 的后台任务\n刷新\n0\n全部\n0\n排队中\n0\n执行中\n0\n失败\n0\n已完成\n每 5 秒自动刷新 · 23:06:33\n队列是空的\n\n发起采集、同步或加工后，任务会按顺序出现在这里。",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-pipeline.png",
       "overflow": false
     },
@@ -167,7 +167,7 @@
       "scrollWidth": 390,
       "innerWidth": 390,
       "h1": "AI 接入",
-      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\nAI 接入\n素材库\n系统设置\nAI 接入\nAPI Key、MCP 与 Skill 能力开放\nAPI Key\nMCP 接入\n调用日志\n创建 Key\n共 1\n启用 1\n名称\t前缀\t权限\t限流/分\t状态\t操作\n演示 Agent\tsk-xyGiPMM\treadoperate\t60\t启用\t吊销",
+      "body": "总览\n账号中心\n关键词采集\n关注列表\n素材库\n处理队列\n模型接入\nAI 接入\n系统设置\nAI 接入\n素材库\n系统设置\nAI 接入\nAPI Key、MCP 与 Skill 能力开放\nAPI Key\nMCP 接入\n调用日志\n创建 Key\n共 0\n启用 0\n还没有 API Key\n\n创建一个 Key，第三方智能体就能通过 /api/* 调用平台能力。",
       "screenshot": "docs/plans/evidence/2026-10-21-structured-acceptance/narrow-ai.png",
       "overflow": false
     },

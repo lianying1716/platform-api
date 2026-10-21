@@ -1,0 +1,6 @@
+transcribe|done|1
+transcribe|error|12
+transcribe|running|2
+platform-worker-1  | 2026-10-21 23:50:15,244 INFO platform.worker 处理任务 #262 transcribe (第 1 次)
+platform-worker-1  | 2026-10-21 23:50:15,375 INFO platform.worker 处理任务 #264 transcribe (第 1 次)
+platform-worker-1  | 2026-10-21 23:51:24,148 INFO platform.worker 处理任务 #265 transcribe (第 1 次)

@@ -1,0 +1,28 @@
+...                                                                      [100%]
+=============================== warnings summary ===============================
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+  /www/wwwroot/xsai-workbench/platform-api/app/models.py:23: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return datetime.utcnow()
+
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+  /www/wwwroot/xsai-workbench/platform-api/tests/test_dashboard_postgres_smoke.py:88: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+  /www/wwwroot/xsai-workbench/platform-api/app/core/security.py:107: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return datetime.utcnow()
+
+tests/test_dashboard_postgres_smoke.py::test_dashboard_aggregation_on_real_postgres
+  /www/wwwroot/xsai-workbench/platform-api/app/api/analytics.py:60: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 12 warnings in 2.64s

@@ -1,0 +1,50 @@
+
+> platform-web@0.1.0 build
+> vite build
+
+vite v6.4.3 building for production...
+transforming...
+✓ 1803 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                  1.23 kB │ gzip:   0.56 kB
+dist/assets/EChart-DS45pVnd.css                  0.15 kB │ gzip:   0.11 kB
+dist/assets/PagedBar-CFSm31YS.css                0.17 kB │ gzip:   0.14 kB
+dist/assets/PlatformMark-abx2j1c4.css            1.16 kB │ gzip:   0.45 kB
+dist/assets/Crawl-D1jzpjrM.css                   2.28 kB │ gzip:   0.79 kB
+dist/assets/AiAccess-BoqKtR-f.css                3.36 kB │ gzip:   0.98 kB
+dist/assets/FollowedCreators-ioLKZDKQ.css        3.83 kB │ gzip:   1.09 kB
+dist/assets/Login-CGK2JHdw.css                   4.29 kB │ gzip:   1.28 kB
+dist/assets/Settings-C3bndW8F.css                4.65 kB │ gzip:   1.19 kB
+dist/assets/Pipeline-CZbHFsom.css                5.35 kB │ gzip:   1.29 kB
+dist/assets/Accounts-BKN7y623.css                6.30 kB │ gzip:   1.55 kB
+dist/assets/Overview-ODVtXJUr.css                6.86 kB │ gzip:   1.61 kB
+dist/assets/DesignPreview-DZAwdEVR.css           7.86 kB │ gzip:   1.74 kB
+dist/assets/ModelAccess-BbGnANFd.css             8.76 kB │ gzip:   1.71 kB
+dist/assets/Assets-nYtOgUKH.css                 12.57 kB │ gzip:   2.77 kB
+dist/assets/index-xyj30ZiX.css                  26.61 kB │ gzip:   5.66 kB
+dist/assets/vendor-element-BDGieMGj.css        157.75 kB │ gzip:  21.64 kB
+dist/assets/safeUrl-Cs3rjEzi.js                  0.17 kB │ gzip:   0.15 kB
+dist/assets/echarts-registry-DGqW0ze4.js         0.17 kB │ gzip:   0.16 kB
+dist/assets/echarts-all-k4IuKapv.js              0.32 kB │ gzip:   0.24 kB
+dist/assets/time-CC_edIbQ.js                     0.64 kB │ gzip:   0.32 kB
+dist/assets/PagedBar-DQtvaf_b.js                 0.87 kB │ gzip:   0.55 kB
+dist/assets/Login-DTi7oYff.js                    3.68 kB │ gzip:   1.85 kB
+dist/assets/PlatformMark-Bfyn29RH.js             9.61 kB │ gzip:   4.63 kB
+dist/assets/Pipeline-6UNIRfu4.js                10.28 kB │ gzip:   4.38 kB
+dist/assets/Crawl-DNSHKE_1.js                   11.74 kB │ gzip:   4.51 kB
+dist/assets/EChart-WPXP-b9t.js                  15.58 kB │ gzip:   6.50 kB
+dist/assets/Accounts-BFFczZBO.js                16.33 kB │ gzip:   6.05 kB
+dist/assets/AiAccess-DLMYZ-0_.js                16.78 kB │ gzip:   6.63 kB
+dist/assets/Overview-CAZejLHL.js                18.33 kB │ gzip:   6.58 kB
+dist/assets/FollowedCreators-BF4L3k4B.js        29.78 kB │ gzip:   9.87 kB
+dist/assets/DesignPreview-C0tOEq_J.js           37.15 kB │ gzip:  12.27 kB
+dist/assets/ModelAccess-DSFqgSLP.js             37.45 kB │ gzip:  12.34 kB
+dist/assets/Assets-CeKaHMuj.js                  39.60 kB │ gzip:  13.56 kB
+dist/assets/Settings-Dbsikl6x.js                43.36 kB │ gzip:  13.91 kB
+dist/assets/index-BC87txjK.js                   77.87 kB │ gzip:  26.91 kB
+dist/assets/vendor-vue-CDsSulIB.js             112.55 kB │ gzip:  43.82 kB
+dist/assets/vendor-charts-zrender-BTvwpnCd.js  177.73 kB │ gzip:  59.41 kB
+dist/assets/vendor-element-2lpQX24n.js         409.93 kB │ gzip: 139.37 kB
+dist/assets/vendor-charts-core-sjDugEi3.js     561.79 kB │ gzip: 189.78 kB
+✓ built in 12.79s
